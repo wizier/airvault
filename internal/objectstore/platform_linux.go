@@ -1,5 +1,3 @@
-//go:build darwin || linux
-
 package objectstore
 
 import (
@@ -31,4 +29,11 @@ func acquireStoreLock(root string) (*os.File, error) {
 func releaseStoreLock(file *os.File) error {
 	unlockErr := unix.Flock(int(file.Fd()), unix.LOCK_UN)
 	return errors.Join(unlockErr, file.Close())
+}
+
+// Sync flushes the whole filesystem, making prior writes and removals durable.
+// sync(2) cannot fail on Linux, so unix.Sync has no return value here.
+func (s *Store) Sync() error {
+	unix.Sync()
+	return nil
 }

@@ -319,9 +319,9 @@ type PairingOutcome string
 // Pairing outcomes reported by AdvancePairing.
 const (
 	TrustPaired                  PairingOutcome = "paired"
-	TrustPending                 PairingOutcome = "trust_pending" // Trust dialog is up; poll again
-	TrustLocked                  PairingOutcome = "locked"        // phone must be unlocked first
-	TrustDenied                  PairingOutcome = "denied"        // user tapped "Don't Trust"
+	TrustPending                 PairingOutcome = "trust_pending"             // Trust dialog is up; poll again
+	TrustLocked                  PairingOutcome = "locked"                    // phone must be unlocked first
+	TrustDenied                  PairingOutcome = "denied"                    // user tapped "Don't Trust"
 	TrustWiFiAuthorizationFailed PairingOutcome = "wifi_authorization_failed" // USB trust saved, mandatory Wi-Fi setup failed
 	TrustError                   PairingOutcome = "error"
 )
