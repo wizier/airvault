@@ -1,0 +1,92 @@
+// Package devicefs owns the Go-side model and orchestration for AFC file trees.
+package devicefs
+
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/wizier/airvault/internal/engine"
+)
+
+const (
+	maxPathBytes      = 4096
+	maxComponentBytes = 255
+)
+
+// Path is a canonical path relative to the root visible in the UI.
+type Path struct{ relative string }
+
+func ParsePath(value string) (Path, error) {
+	if value == "" || value == "/" {
+		return Path{}, nil
+	}
+	if len(value) > maxPathBytes || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") ||
+		strings.ContainsAny(value, "\\\x00") || !utf8.ValidString(value) {
+		return Path{}, fmt.Errorf("invalid device path")
+	}
+	for _, component := range strings.Split(value, "/") {
+		if component == "" || component == "." || component == ".." || len(component) > maxComponentBytes {
+			return Path{}, fmt.Errorf("invalid device path component")
+		}
+	}
+	return Path{relative: value}, nil
+}
+
+func (p Path) String() string { return p.relative }
+
+// Name is the final component. The root has no name in the UI projection.
+func (p Path) Name() string {
+	if index := strings.LastIndexByte(p.relative, '/'); index >= 0 {
+		return p.relative[index+1:]
+	}
+	return p.relative
+}
+
+func (p Path) Child(name string) (Path, error) {
+	if name == "" || strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." ||
+		len(name) > maxComponentBytes || !utf8.ValidString(name) {
+		return Path{}, fmt.Errorf("invalid device filename")
+	}
+	if p.relative == "" {
+		return Path{relative: name}, nil
+	}
+	child := p.relative + "/" + name
+	if len(child) > maxPathBytes {
+		return Path{}, fmt.Errorf("device path is too long")
+	}
+	return Path{relative: child}, nil
+}
+
+// Root captures the native service and the path prefix it exposes to users.
+type Root struct {
+	source   engine.AFCSource
+	bundleID string
+	prefix   string
+}
+
+func Media() Root { return Root{source: engine.AFCMedia} }
+
+func AppDocuments(bundleID string) (Root, error) {
+	if bundleID == "" || len(bundleID) > 512 || strings.ContainsRune(bundleID, '\x00') || !utf8.ValidString(bundleID) {
+		return Root{}, fmt.Errorf("invalid bundle id")
+	}
+	return Root{source: engine.AFCAppDocuments, bundleID: bundleID, prefix: "/Documents"}, nil
+}
+
+func (r Root) physical(path Path) (string, error) {
+	var physical string
+	if path.relative == "" {
+		if r.prefix != "" {
+			physical = r.prefix
+		} else {
+			physical = "/"
+		}
+	} else {
+		physical = r.prefix + "/" + path.relative
+	}
+	if len(physical) > maxPathBytes {
+		return "", fmt.Errorf("physical device path is too long")
+	}
+	return physical, nil
+}

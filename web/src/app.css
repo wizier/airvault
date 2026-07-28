@@ -1,0 +1,110 @@
+@import "tailwindcss";
+@plugin "daisyui";
+
+/* AirVault light theme (default) — warm paper neutrals, landing orange as brand.
+   Palette shared with site/: accent #f45f3a family, green/amber/danger statuses. */
+@plugin "daisyui/theme" {
+  name: "airvault";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+
+  --color-base-100: #ffffff;
+  --color-base-200: #f2f0ea;
+  --color-base-300: #e3dfd6;
+  --color-base-content: #16181b;
+  --color-primary: #c43d20;
+  --color-primary-content: #fffaf5;
+  --color-secondary: #5c6167;
+  --color-secondary-content: #ffffff;
+  --color-accent: #f45f3a;
+  --color-accent-content: #331109;
+  --color-neutral: #23262b;
+  --color-neutral-content: #f2f0ea;
+  --color-info: #2a76a2;
+  --color-info-content: #ffffff;
+  --color-success: #178a5d;
+  --color-success-content: #ffffff;
+  --color-warning: #c87c15;
+  --color-warning-content: #221302;
+  --color-error: #d84258;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+/* AirVault dark theme — the landing palette, surfaces lifted a notch for an
+   app UI (the landing's near-black reads too dark in a working dashboard). */
+@plugin "daisyui/theme" {
+  name: "airvaultdark";
+  default: false;
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: #191d24;
+  --color-base-200: #10131a;
+  --color-base-300: #272d38;
+  --color-base-content: #f0eee8;
+  --color-primary: #f45f3a;
+  --color-primary-content: #fffaf5;
+  --color-secondary: #b8bbc0;
+  --color-secondary-content: #0b0d10;
+  --color-accent: #ff8b68;
+  --color-accent-content: #2a1710;
+  --color-neutral: #272d38;
+  --color-neutral-content: #f0eee8;
+  --color-info: #6cb1dd;
+  --color-info-content: #08131b;
+  --color-success: #69d79c;
+  --color-success-content: #052e1e;
+  --color-warning: #d5a949;
+  --color-warning-content: #201502;
+  --color-error: #e56772;
+  --color-error-content: #2a090d;
+
+  --radius-selector: 1rem;
+  --radius-field: 0.5rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+@theme {
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", ui-monospace, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+/* mockup-phone has no size modifier: render it at its own natural 462px width
+   so the fixed border, camera and superellipse corners keep the real iPhone
+   proportions, then scale the whole component down to the preview size. Driving
+   it at a smaller pre-scale width would exaggerate the corner radius. overflow
+   clips the large pre-scale box so it never widens the page. */
+@layer utilities {
+  .device-phone-preview {
+    position: relative;
+    width: 5rem;
+    aspect-ratio: 462 / 978;
+    flex: none;
+    overflow: hidden;
+  }
+
+  .device-phone-preview > .mockup-phone {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 28.875rem; /* 462px — the component's own max-width */
+    transform: scale(calc(5 / 28.875)); /* down to the 5rem preview */
+    transform-origin: top left;
+  }
+}

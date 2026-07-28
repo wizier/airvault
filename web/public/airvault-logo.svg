@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="airvault-title airvault-desc">
+  <title id="airvault-title">AirVault phone backup</title>
+  <desc id="airvault-desc">A large graphite phone with a crisp Lucide database-backup symbol on its screen.</desc>
+  <defs>
+    <clipPath id="screen-clip">
+      <rect x="152" y="43" width="208" height="426" rx="45"/>
+    </clipPath>
+
+    <linearGradient id="phone-edge" x1="97" y1="31" x2="420" y2="482" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E0E5EB"/>
+      <stop offset="0.12" stop-color="#65717F"/>
+      <stop offset="0.42" stop-color="#252D37"/>
+      <stop offset="0.7" stop-color="#687483"/>
+      <stop offset="0.88" stop-color="#F27655"/>
+      <stop offset="1" stop-color="#313B47"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="147" y1="65" x2="366" y2="452" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#182434"/>
+      <stop offset="0.4" stop-color="#0B111B"/>
+      <stop offset="1" stop-color="#2D0D0E"/>
+    </linearGradient>
+    <radialGradient id="screen-halo" cx="0" cy="0" r="1" gradientTransform="translate(256 264) rotate(90) scale(170 137)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F45F3A" stop-opacity="0.27"/>
+      <stop offset="0.54" stop-color="#CB3C23" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#A72B1C" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="icon-stroke" x1="206" y1="193" x2="321" y2="334" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF4EC"/>
+      <stop offset="0.46" stop-color="#FFB194"/>
+      <stop offset="1" stop-color="#F45F3A"/>
+    </linearGradient>
+
+    <filter id="phone-shadow" x="45" y="-8" width="422" height="548" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000" flood-opacity="0.74"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#phone-shadow)">
+      <rect x="142" y="24" width="228" height="464" rx="57" fill="#0D131B" stroke="url(#phone-edge)" stroke-width="4"/>
+
+      <g clip-path="url(#screen-clip)">
+        <ellipse cx="256" cy="264" rx="146" ry="176" fill="url(#screen-halo)"/>
+
+        <!-- Lucide database-backup, original 24 × 24 geometry. -->
+        <g
+          transform="translate(181 181) scale(6.25)"
+          fill="none"
+          stroke="url(#icon-stroke)"
+          stroke-width="1.55"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <ellipse cx="12" cy="5" rx="9" ry="3"/>
+          <path d="M3 12a9 3 0 0 0 5 2.69"/>
+          <path d="M21 9.3V5"/>
+          <path d="M3 5v14a9 3 0 0 0 6.47 2.88"/>
+          <path d="M12 12v4h4"/>
+          <path d="M13 20a5 5 0 0 0 9-3 4.5 4.5 0 0 0-4.5-4.5c-1.33 0-2.54.54-3.41 1.41L12 16"/>
+        </g>
+      </g>
+
+      <rect x="218" y="40" width="80" height="22" rx="11" fill="#010204" stroke="#334252" stroke-width="1.25"/>
+      <circle cx="280" cy="50" r="2.75" fill="#1A3149"/>
+      <path d="M229 462H283" stroke="#E8EBEE" stroke-opacity="0.72" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+</svg>

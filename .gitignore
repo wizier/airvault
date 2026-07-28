@@ -1,0 +1,17 @@
+/bin/
+/.air/
+/engine/rust/target/
+/web/node_modules/
+/web/dist/
+
+/data/
+/config/
+/backups/
+
+/.env
+
+.vscode/
+.idea/
+.claude/
+.codex/
+.DS_Store

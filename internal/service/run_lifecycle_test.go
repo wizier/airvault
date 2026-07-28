@@ -1,0 +1,180 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"maps"
+	"testing"
+
+	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/events"
+)
+
+// newTestService builds a Service with only the fields the run-lifecycle phase
+// machine touches (the event bus and the live-run map).
+func newTestService() *Service {
+	return &Service{bus: events.New(), runs: map[string]*activeRun{},
+		lastRunError: map[runIdentity]string{}}
+}
+
+// registerRun installs backup run "run-1" on "udid-1" in phase Active, as
+// reserveRun would.
+func registerRun(s *Service) *runReservation {
+	ctx, cancel := context.WithCancel(context.Background())
+	run := &runReservation{id: "run-1", udid: "udid-1", kind: runKindBackup,
+		app: context.Background(), ctx: ctx, cancel: cancel}
+	s.runs[run.udid] = &activeRun{
+		run:      run,
+		progress: RunProgress{RunID: run.id, UDID: run.udid, Stage: StageBackingUp},
+	}
+	return run
+}
+
+func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
+	s := newTestService()
+	_, eventsCh, _, _ := s.bus.Subscribe(0)
+	run := registerRun(s)
+
+	err := errors.New("unclassified native failure")
+	if got := s.completeRun(run, runOutcome{}, err); !errors.Is(got, err) {
+		t.Fatalf("completeRun() = %v, want %v", got, err)
+	}
+	event := <-eventsCh
+	if event.Type != events.BackupFailed {
+		t.Fatalf("event type = %q, want %q", event.Type, events.BackupFailed)
+	}
+	data := event.Data.(map[string]any)
+	if got := data["errorCode"]; got != "backup_failed" {
+		t.Fatalf("errorCode = %#v, want backup_failed", got)
+	}
+	if _, exists := data["error"]; exists {
+		t.Fatal("terminal event unexpectedly contains a presentation error string")
+	}
+}
+
+// TestLastRunErrorLifecycle pins the runtime last-outcome record: a failed
+// run stores its code per kind for the device overview, the next success of
+// that kind clears it without touching the other kind's record.
+func TestLastRunErrorLifecycle(t *testing.T) {
+	s := newTestService()
+	s.lastRunError[runIdentity{"udid-1", runKindRestore}] = "restore_failed"
+
+	run := registerRun(s)
+	_ = s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("native failure"))
+	want := map[string]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
+	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+		t.Fatalf("after failure lastRunErrors = %v, want %v", got, want)
+	}
+
+	run = registerRun(s)
+	if err := s.completeRun(run, runOutcome{}, nil); err != nil {
+		t.Fatalf("completeRun(success) = %v", err)
+	}
+	want = map[string]string{runKindRestore: "restore_failed"}
+	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+		t.Fatalf("after success lastRunErrors = %v, want %v", got, want)
+	}
+}
+
+// TestBeginCommitWinsRefusesCancel and TestCancelWinsRefusesCommit pin both
+// runMu-serialized orderings of the cancellation boundary: whichever of
+// beginCommit / CancelRun runs first, the other is refused.
+func TestBeginCommitWinsRefusesCancel(t *testing.T) {
+	s := newTestService()
+	run := registerRun(s)
+
+	if !s.beginCommit(run) {
+		t.Fatal("beginCommit on an active run returned false")
+	}
+	if got := s.runs[run.udid].phase; got != runPhaseCommitting {
+		t.Fatalf("phase = %d, want Committing", got)
+	}
+	if err := s.CancelRun("run-1"); !errors.Is(err, domain.ErrOperationState) {
+		t.Fatalf("CancelRun after commit returned %v, want ErrOperationState", err)
+	}
+	if run.ctx.Err() != nil {
+		t.Fatal("committing run must not be cancelled")
+	}
+}
+
+func TestCancelWinsRefusesCommit(t *testing.T) {
+	s := newTestService()
+	run := registerRun(s)
+
+	if err := s.CancelRun("run-1"); err != nil {
+		t.Fatalf("CancelRun on an active run: %v", err)
+	}
+	if got := s.runs[run.udid].phase; got != runPhaseCancelling {
+		t.Fatalf("phase = %d, want Cancelling", got)
+	}
+	if run.ctx.Err() == nil {
+		t.Fatal("cancelled run ctx must be cancelled")
+	}
+	if s.beginCommit(run) {
+		t.Fatal("beginCommit succeeded after cancel")
+	}
+}
+
+// TestProgressSinkPhaseTransitions checks the sink's phase-driven presentation:
+// a finalizing frame latches Finalizing, and once Cancelling a stray finalizing
+// frame cannot revert the display.
+func TestProgressSinkPhaseTransitions(t *testing.T) {
+	s := newTestService()
+	run := registerRun(s)
+	sink := s.progressSink(run, StageBackingUp)
+
+	sink(engine.Progress{BytesDone: 123})
+	if got := s.runs[run.udid]; got.phase != runPhaseActive || got.progress.Stage != StageBackingUp {
+		t.Fatalf("normal frame: phase=%d stage=%q", got.phase, got.progress.Stage)
+	}
+
+	sink(engine.Progress{Phase: engine.ProgressPhaseSealing})
+	if got := s.runs[run.udid]; got.phase != runPhaseFinalizing ||
+		got.progress.Stage != StageFinalizing || got.progress.Percent != 100 ||
+		got.progress.Transferred != 123 || got.progress.Speed != 0 {
+		t.Fatalf("finalizing frame: phase=%d stage=%q pct=%d transferred=%d speed=%d",
+			got.phase, got.progress.Stage, got.progress.Percent, got.progress.Transferred, got.progress.Speed)
+	}
+
+	if err := s.CancelRun("run-1"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	sink(engine.Progress{Phase: engine.ProgressPhaseSealing})
+	if got := s.runs[run.udid]; got.phase != runPhaseCancelling ||
+		got.progress.Stage != StageCancellingBackup {
+		t.Fatalf("finalizing after cancel: phase=%d stage=%q", got.phase, got.progress.Stage)
+	}
+}
+
+func TestUnclassifiedErrorHasNoCode(t *testing.T) {
+	err := errors.New("device returned an unfamiliar error")
+
+	if got := engineErrorCode(err); got != "" {
+		t.Fatalf("engineErrorCode() = %q, want empty", got)
+	}
+}
+
+func TestEngineErrorCodes(t *testing.T) {
+	tests := []struct {
+		kind engine.ErrorKind
+		want string
+	}{
+		{engine.ErrorStorageFull, "storage_full"},
+		{engine.ErrorBusy, "resource_busy"},
+		{engine.ErrorProtocol, "device_connection_interrupted"},
+		{engine.ErrorTimeout, "device_timeout"},
+		{engine.ErrorDeviceUnavailable, "device_offline"},
+		{engine.ErrorTrustRequired, "pairing_required"},
+		{engine.ErrorDeviceLocked, "device_locked"},
+		{engine.ErrorIntegrity, "backup_integrity_failed"},
+		{engine.ErrorInvalidBackupPassword, "invalid_backup_password"},
+		{engine.ErrorOutcomeUnknown, "operation_outcome_unknown"},
+	}
+	for _, test := range tests {
+		err := &engine.Error{Kind: test.kind, Detail: "native diagnostic"}
+		if got := engineErrorCode(err); got != test.want {
+			t.Errorf("engineErrorCode(kind=%d) = %q, want %q", test.kind, got, test.want)
+		}
+	}
+}

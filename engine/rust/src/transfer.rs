@@ -1,0 +1,632 @@
+//! Cancellable mobilebackup2 backup/restore orchestration.
+
+use std::ffi::c_char;
+use std::path::Path;
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
+
+use idevice::services::mobilebackup2::RestoreOptions;
+use tracing::Instrument;
+
+mod metadata;
+mod sync_session;
+
+use metadata::{
+    prepare_backup_info, remove_restore_applications, stage_restore_applications,
+    RestoreApplicationsError, RESTORE_APPLICATIONS_TIMEOUT,
+};
+use sync_session::SyncSession;
+
+use crate::{
+    backup_storage::{BackupCb, BackupProgress, BackupStorage, BACKUP_PHASE_FINALIZING},
+    bounded::{cancel_or_timeout, Interrupt},
+    engine_error::{EngineFailure, ErrorKind},
+    ffi::{engine_udid, guard_error, AvEngine, AvError},
+    in_str, mobilebackup2,
+    object_store::ObjectSession,
+    operation_registry::RegisterError,
+    operation_span, opt_owned, out_str,
+    path_sandbox::PathSandbox,
+    provider_for, req_str, AirvaultProvider, EngineContext,
+};
+
+// Wide enough for the app census: one icon round-trip per installed app.
+const INFO_PLIST_TIMEOUT: Duration = Duration::from_secs(180);
+const MB2_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const CANCEL_OBSERVER_TIMEOUT: Duration = Duration::from_secs(5);
+const FMIP_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn merge_transfer_cleanup<T>(
+    primary: Result<T, EngineFailure>,
+    cleanup: Result<(), String>,
+    stage: &str,
+) -> Result<T, EngineFailure> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        // The device verdict stands (a restore may already be applied and
+        // rebooting); a teardown hiccup must not discard it.
+        (Ok(value), Err(cleanup)) => {
+            tracing::warn!(error = %cleanup, "{stage} failed after success");
+            Ok(value)
+        }
+        (Err(primary), Err(cleanup)) => Err(primary.with_cleanup(cleanup)),
+    }
+}
+
+fn interrupt_failure(
+    operation: &str,
+    stage: &str,
+    limit: Duration,
+    interrupt: Interrupt,
+) -> EngineFailure {
+    match interrupt {
+        Interrupt::Cancelled => EngineFailure::new(
+            ErrorKind::Cancelled,
+            format!("{operation} cancelled during {stage}"),
+        ),
+        Interrupt::TimedOut => EngineFailure::new(
+            ErrorKind::Timeout,
+            format!("{operation} {stage} timed out after {}s", limit.as_secs()),
+        ),
+    }
+}
+
+/// Finder refuses to restore while Find My iPhone is on; the device would
+/// reject with MBErrorDomain/211 anyway, so fail fast with the same
+/// classification. Read failures never block — the device stays the authority.
+async fn ensure_find_my_disabled(provider: &AirvaultProvider) -> Result<(), EngineFailure> {
+    let read = async {
+        let mut lc = crate::authed_lockdown(provider).await?;
+        lc.get_value(Some("IsAssociated"), Some("com.apple.fmip"))
+            .await
+    };
+    let read = tokio::time::timeout(FMIP_PREFLIGHT_TIMEOUT, read)
+        .await
+        .unwrap_or(Err(idevice::IdeviceError::Timeout));
+    match read {
+        Ok(value) if value.as_boolean() == Some(true) => Err(EngineFailure::new(
+            ErrorKind::FindMyEnabled,
+            "Find My iPhone is on; turn it off on the phone before restoring",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) => {
+            tracing::debug!(error = ?error, "Find My preflight unavailable; the device enforces");
+            Ok(())
+        }
+    }
+}
+
+/// One valid transfer configuration. Keeping operation and store selection in
+/// the same enum makes mismatched backup/restore combinations unrepresentable.
+enum TransferSpec {
+    Backup {
+        snapshot_id: String,
+        base_snapshot_id: Option<String>,
+    },
+    Restore {
+        snapshot_id: String,
+        options: RestoreOptions,
+    },
+}
+
+impl TransferSpec {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Backup { .. } => "backup",
+            Self::Restore { .. } => "restore",
+        }
+    }
+
+    fn is_backup(&self) -> bool {
+        matches!(self, Self::Backup { .. })
+    }
+}
+
+struct Mb2Storage<'a> {
+    target_udid: &'a str,
+    source: &'a str,
+    root: &'a Path,
+    sandbox: PathSandbox,
+}
+
+/// Runs one mobilebackup2 transfer against `udid`. `source` owns the selected
+/// object tree and may differ from the target during a phone migration.
+/// A backup resolves to the payload bytes it added to the pool; a restore to 0.
+async fn run_mb2(
+    context: &EngineContext,
+    udid: &str,
+    source: &str,
+    spec: TransferSpec,
+    progress: BackupProgress,
+    cancel: CancellationToken,
+) -> Result<u64, EngineFailure> {
+    let root = context.backup_root();
+    let is_backup = spec.is_backup();
+    let sandbox = PathSandbox::new(root, source)
+        .map_err(|error| EngineFailure::integrity(error.to_string()))?;
+    let provider = provider_for(context, udid)
+        .await
+        .map_err(|error| EngineFailure::from_idevice("device provider lookup failed", error))?;
+    if !is_backup {
+        ensure_find_my_disabled(&provider).await?;
+    }
+    // Announce a real sync session first — locked backups depend on it. All
+    // later exits merge their primary result with bounded session cleanup.
+    let sync = SyncSession::open(&provider, udid).await?;
+    let storage = Mb2Storage {
+        target_udid: udid,
+        source,
+        root,
+        sandbox,
+    };
+    let transfer = run_mb2_transfer(&provider, storage, spec, progress, cancel.clone()).await;
+    let cleanup = sync.finish().await;
+    let session = merge_transfer_cleanup(transfer, cleanup, "sync session teardown")?;
+    if is_backup {
+        progress.emit(BACKUP_PHASE_FINALIZING, -1.0, 0, 0);
+        // Expose cancellable local finalization. If cancellation raced the
+        // callback, stop before starting the manifest pass.
+        if cancel.is_cancelled() {
+            return Err(EngineFailure::new(ErrorKind::Cancelled, "backup cancelled"));
+        }
+        let added = session.finish(&cancel).map_err(|failure| {
+            if cancel.is_cancelled() {
+                EngineFailure::new(ErrorKind::Cancelled, failure.detail)
+            } else {
+                EngineFailure::from(failure)
+            }
+        })?;
+        if cancel.is_cancelled() {
+            return Err(EngineFailure::new(ErrorKind::Cancelled, "backup cancelled"));
+        }
+        return Ok(added);
+    }
+    // A restore has no post-transfer step: reaching here means the device
+    // already accepted it (an in-flight cancel would have errored the transfer
+    // above), so it is applied and irreversible — never report a late cancel.
+    Ok(0)
+}
+
+async fn run_mb2_transfer(
+    provider: &AirvaultProvider,
+    storage: Mb2Storage<'_>,
+    spec: TransferSpec,
+    progress: BackupProgress,
+    cancel: CancellationToken,
+) -> Result<ObjectSession, EngineFailure> {
+    let Mb2Storage {
+        target_udid: udid,
+        source,
+        root,
+        sandbox,
+    } = storage;
+    let label = spec.label();
+    let fallback = format!("the device reported a {label} error");
+    let session = match &spec {
+        TransferSpec::Backup {
+            snapshot_id,
+            base_snapshot_id,
+        } => ObjectSession::backup(root, source, snapshot_id, base_snapshot_id.as_deref())
+            .map_err(EngineFailure::from)?,
+        TransferSpec::Restore { snapshot_id, .. } => {
+            ObjectSession::restore(root, source, snapshot_id).map_err(EngineFailure::from)?
+        }
+    };
+    let is_restore = !spec.is_backup();
+    let delegate = BackupStorage::new(session.clone(), sandbox, progress, is_restore);
+    let info_path = delegate.sandbox().allowed_root().join("Info.plist");
+    let restore_apps_staged = match &spec {
+        // Refresh Info.plist (device identity + app census) before backing up.
+        TransferSpec::Backup { .. } => {
+            match cancel_or_timeout(
+                &cancel,
+                INFO_PLIST_TIMEOUT,
+                prepare_backup_info(provider, udid, &delegate, &info_path),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if let Some(failure) = session.error() {
+                        return Err(EngineFailure::from(failure));
+                    }
+                    return Err(EngineFailure::integrity(format!(
+                        "backup: required Info.plist could not be written: {error}"
+                    )));
+                }
+                Err(interrupt) => {
+                    return Err(interrupt_failure(
+                        label,
+                        "Info.plist preparation",
+                        INFO_PLIST_TIMEOUT,
+                        interrupt,
+                    ))
+                }
+            }
+            false
+        }
+        // Stage the app-reinstall list on the device. Continuing without it
+        // would silently restore with no App Store apps, so failure aborts
+        // (idevicebackup2 parity).
+        TransferSpec::Restore { .. } => {
+            let staged = match cancel_or_timeout(
+                &cancel,
+                RESTORE_APPLICATIONS_TIMEOUT,
+                stage_restore_applications(provider, &delegate, &info_path),
+            )
+            .await
+            {
+                Ok(Ok(staged)) => Ok(staged),
+                // A snapshot-side failure never reached the device.
+                Ok(Err(RestoreApplicationsError::Snapshot(error))) => {
+                    if let Some(failure) = session.error() {
+                        return Err(EngineFailure::from(failure));
+                    }
+                    return Err(EngineFailure::integrity(format!(
+                        "restore: RestoreApplications.plist source is invalid: {error}"
+                    )));
+                }
+                Ok(Err(RestoreApplicationsError::Device(error))) => Err(EngineFailure::new(
+                    ErrorKind::DeviceUnavailable,
+                    format!("restore: RestoreApplications.plist could not be staged: {error}"),
+                )),
+                Err(interrupt) => Err(interrupt_failure(
+                    label,
+                    "RestoreApplications.plist preparation",
+                    RESTORE_APPLICATIONS_TIMEOUT,
+                    interrupt,
+                )),
+            };
+            match staged {
+                Ok(staged) => staged,
+                // The staging write may have partially reached the device.
+                Err(failure) => {
+                    remove_restore_applications(provider, udid).await;
+                    return Err(failure);
+                }
+            }
+        }
+    };
+    let connected = async {
+        if let Some(error) = session.error() {
+            return Err(EngineFailure::from(error));
+        }
+        match cancel_or_timeout(
+            &cancel,
+            MB2_CONNECT_TIMEOUT,
+            mobilebackup2::connect(provider),
+        )
+        .await
+        {
+            Ok(Ok(client)) => Ok(client),
+            Ok(Err(error)) => Err(EngineFailure::from_idevice(
+                &format!("{label} mobilebackup2 connect failed"),
+                error,
+            )),
+            Err(interrupt) => Err(interrupt_failure(
+                label,
+                "mobilebackup2 connect",
+                MB2_CONNECT_TIMEOUT,
+                interrupt,
+            )),
+        }
+    }
+    .await;
+    let mut mb2 = match connected {
+        Ok(client) => client,
+        Err(failure) => {
+            if restore_apps_staged {
+                remove_restore_applications(provider, udid).await;
+            }
+            return Err(failure);
+        }
+    };
+    // netmuxd owns the device heartbeat, so no heartbeat service is opened here.
+    let (cancel_obs, observer_error) = match cancel_or_timeout(
+        &cancel,
+        CANCEL_OBSERVER_TIMEOUT,
+        mobilebackup2::spawn_cancel_observer(provider, cancel.clone()),
+    )
+    .await
+    {
+        Ok(observer) => (observer, None),
+        Err(Interrupt::Cancelled) => (
+            None,
+            Some(interrupt_failure(
+                label,
+                "cancel-observer setup",
+                CANCEL_OBSERVER_TIMEOUT,
+                Interrupt::Cancelled,
+            )),
+        ),
+        Err(Interrupt::TimedOut) => {
+            let error = interrupt_failure(
+                label,
+                "cancel-observer setup",
+                CANCEL_OBSERVER_TIMEOUT,
+                Interrupt::TimedOut,
+            );
+            tracing::warn!(udid = %udid, error = %error.detail, "mb2: proceeding without device cancel observer");
+            (None, None)
+        }
+    };
+    // From this point delegate activity comes from the device conversation,
+    // not from preparing local metadata such as Info.plist.
+    delegate.begin_transfer();
+    let res = match observer_error {
+        Some(error) => Err(error),
+        None => tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(EngineFailure::new(
+                ErrorKind::Cancelled,
+                format!("{label} cancelled"),
+            )),
+            r = async {
+                match spec {
+                    TransferSpec::Backup { .. } => {
+                        mb2.backup_from_path(root, Some(source), None, &delegate).await
+                    }
+                    TransferSpec::Restore { options, .. } => {
+                        mb2.restore_from_path(root, Some(source), Some(options), &delegate).await
+                    }
+                }
+            } => r.map_err(|error| EngineFailure::from_active_transfer(
+                &format!("{label} mobilebackup2 transfer failed"),
+                error,
+            )),
+            // Off charger iOS standby reaps service sockets ~15 min in; hold
+            // the keep-awake assertion Finder's Wi-Fi sync uses.
+            _ = crate::power_assertion::keep_device_awake(provider, udid, label) => unreachable!(),
+        },
+    };
+    if let Some(obs) = cancel_obs {
+        obs.abort();
+    }
+    let transfer = match session.error() {
+        Some(error) => Err(EngineFailure::from(error)),
+        None => match delegate.violation() {
+            Some(violation) => Err(EngineFailure::integrity(violation)),
+            None => res.and_then(|outcome| {
+                mobilebackup2::verdict(outcome, &fallback).map_err(EngineFailure::from)
+            }),
+        },
+    };
+    let cleanup = mobilebackup2::disconnect_bounded(&mut mb2, label).await;
+    // Late cancellation is caught by run_mb2 before it seals the staging manifest.
+    let primary =
+        merge_transfer_cleanup(transfer, cleanup, &format!("{label}: transport teardown"));
+    if let Err(error) = &primary {
+        tracing::debug!(udid = %udid, error = %error.detail, "mb2: {label} failed");
+    }
+    if restore_apps_staged && primary.is_err() {
+        remove_restore_applications(provider, udid).await;
+    }
+    primary.map(|()| session)
+}
+
+struct TransferRequest {
+    udid: String,
+    source: String,
+    job_id: String,
+    operation_id: String,
+    spec: TransferSpec,
+    callback: BackupCb,
+    callback_id: usize,
+    added_out: *mut u64,
+}
+
+/// Registers the transfer (Busy while one runs for this device), then runs it
+/// on a dedicated current-thread runtime: BackupDelegate's object I/O is
+/// synchronous, so a slow NAS must not starve the shared runtime's workers.
+fn run_transfer_export(engine: &AvEngine, request: TransferRequest, err: *mut *mut c_char) -> i32 {
+    let TransferRequest {
+        udid,
+        source,
+        job_id,
+        operation_id,
+        spec,
+        callback,
+        callback_id,
+        added_out,
+    } = request;
+    let label = spec.label();
+    let lease = match engine
+        .operations
+        .register_transfer(operation_id, udid.clone())
+    {
+        Ok(lease) => lease,
+        Err(RegisterError::DeviceBusy) => {
+            out_str(
+                err,
+                "a backup or restore is already running for this device",
+            );
+            return ErrorKind::Busy.code();
+        }
+        Err(RegisterError::DuplicateOperation) => {
+            out_str(err, "this operation id is already running");
+            return ErrorKind::Busy.code();
+        }
+    };
+    let cancel = lease.cancellation_token();
+    let progress = BackupProgress {
+        callback,
+        id: callback_id,
+    };
+    let span = operation_span(&job_id, label, &udid);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("transfer runtime");
+    runtime.block_on(
+        async {
+            match run_mb2(
+                engine.context(),
+                &udid,
+                &source,
+                spec,
+                progress,
+                cancel.clone(),
+            )
+            .await
+            {
+                Ok(added) => {
+                    if !added_out.is_null() {
+                        unsafe { *added_out = added };
+                    }
+                    0
+                }
+                Err(failure) => {
+                    out_str(err, &failure.detail);
+                    if cancel.is_cancelled() {
+                        ErrorKind::Cancelled.code()
+                    } else {
+                        failure.kind.code()
+                    }
+                }
+            }
+        }
+        .instrument(span),
+    )
+}
+
+/// Runs a backup into a staging whole-file object manifest. An empty base ID
+/// starts the first full snapshot. On rc 0, `added_bytes` (if non-null)
+/// receives the payload bytes this backup added to the object pool.
+#[no_mangle]
+pub extern "C" fn av_snapshot_build(
+    engine: *mut AvEngine,
+    udid: *const c_char,
+    job_id: *const c_char,
+    operation_id: *const c_char,
+    snapshot_id: *const c_char,
+    base_snapshot_id: *const c_char,
+    cb: BackupCb,
+    callback_id: usize,
+    added_bytes: *mut u64,
+    error: *mut AvError,
+) -> i32 {
+    if !added_bytes.is_null() {
+        unsafe { *added_bytes = 0 };
+    }
+    guard_error(error, |err| {
+        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let job_id = unsafe { opt_owned(job_id) };
+        let Some(operation_id) = (unsafe { req_str(operation_id, err, "bad operation id") }) else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let Some(snapshot_id) = (unsafe { req_str(snapshot_id, err, "bad snapshot id") }) else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let base_snapshot_id = unsafe { in_str(base_snapshot_id) }
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        run_transfer_export(
+            engine,
+            TransferRequest {
+                source: udid.clone(),
+                udid,
+                job_id,
+                operation_id,
+                spec: TransferSpec::Backup {
+                    snapshot_id,
+                    base_snapshot_id,
+                },
+                callback: cb,
+                callback_id,
+                added_out: added_bytes,
+            },
+            err,
+        )
+    })
+}
+
+/// Restores one immutable whole-file object snapshot.
+#[no_mangle]
+pub extern "C" fn av_snapshot_restore(
+    engine: *mut AvEngine,
+    udid: *const c_char,
+    job_id: *const c_char,
+    operation_id: *const c_char,
+    source: *const c_char,
+    snapshot_id: *const c_char,
+    password: *const c_char,
+    system_files: i32,
+    reboot: i32,
+    settings_from_backup: i32,
+    remove_items_not_restored: i32,
+    cb: BackupCb,
+    callback_id: usize,
+    error: *mut AvError,
+) -> i32 {
+    guard_error(error, |err| {
+        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let job_id = unsafe { opt_owned(job_id) };
+        let Some(operation_id) = (unsafe { req_str(operation_id, err, "bad operation id") }) else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let Some(source) = (unsafe { req_str(source, err, "bad backup source") }) else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let Some(snapshot_id) = (unsafe { req_str(snapshot_id, err, "bad backup snapshot id") })
+        else {
+            return ErrorKind::InvalidArgument.code();
+        };
+        let password = unsafe { in_str(password) }
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        // Never copy the backup first: it would temporarily double hundreds of
+        // gigabytes on the NAS, and the sealed CAS store already protects history.
+        let mut options = RestoreOptions::new()
+            .with_copy(false)
+            .with_preserve_settings(settings_from_backup == 0)
+            .with_system_files(system_files != 0)
+            .with_reboot(reboot != 0)
+            .with_remove_items_not_restored(remove_items_not_restored != 0);
+        if let Some(password) = password.as_deref() {
+            options = options.with_password(password);
+        }
+        run_transfer_export(
+            engine,
+            TransferRequest {
+                udid,
+                source,
+                job_id,
+                operation_id,
+                spec: TransferSpec::Restore {
+                    snapshot_id,
+                    options,
+                },
+                callback: cb,
+                callback_id,
+                added_out: std::ptr::null_mut(),
+            },
+            err,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_transfer_cleanup, EngineFailure, ErrorKind};
+
+    #[test]
+    fn cleanup_failure_does_not_replace_primary_kind() {
+        let primary = EngineFailure::new(ErrorKind::Protocol, "connection interrupted");
+        let error = merge_transfer_cleanup::<()>(
+            Err(primary),
+            Err("sync unlock failed: broken pipe".into()),
+            "sync session teardown",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Protocol);
+        assert!(error.detail.contains("connection interrupted"));
+        assert!(error.detail.contains("sync unlock failed: broken pipe"));
+    }
+}
