@@ -127,6 +127,7 @@ fn cancellation_discards_an_open_descriptor() {
             let (_, opcode) = request(&mut peer).await;
             assert_eq!(opcode, AfcOpcode::Read);
             server_cancel.cancel();
+            peer
         });
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
         let outcome = cancel_or_timeout(
@@ -136,7 +137,7 @@ fn cancellation_discards_an_open_descriptor() {
         )
         .await;
         assert!(matches!(outcome, Err(Interrupt::Cancelled)));
-        server.await.unwrap();
+        drop(server.await.unwrap());
     });
 }
 
@@ -164,6 +165,7 @@ fn cancellation_interrupts_file_close() {
             let (_, opcode) = request(&mut peer).await;
             assert_eq!(opcode, AfcOpcode::FileClose);
             server_cancel.cancel();
+            peer
         });
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
         let outcome = cancel_or_timeout(
@@ -173,6 +175,6 @@ fn cancellation_interrupts_file_close() {
         )
         .await;
         assert!(matches!(outcome, Err(Interrupt::Cancelled)));
-        server.await.unwrap();
+        drop(server.await.unwrap());
     });
 }
