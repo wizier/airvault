@@ -12,6 +12,23 @@ export AIRVAULT_BACKUP_DIR="${AIRVAULT_BACKUP_DIR:-/backups}"
 
 LOCKDOWN="$AIRVAULT_LOCKDOWN_DIR"
 install -d -m 0700 "$LOCKDOWN"
+
+# With PUID set, the daemon and netmuxd run as PUID:PGID so written files are
+# share-friendly; usbmuxd stays root for raw USB. Unset PUID = everything root.
+# /backups is chowned non-recursively on purpose: it can hold terabytes.
+PUID="${PUID:-}"
+PGID="${PGID:-$PUID}"
+if [[ -n "${UMASK:-}" ]]; then umask "$UMASK"; fi
+
+RUN_AS=()
+SOCKET_DIR=/var/run/airvault
+install -d "$SOCKET_DIR"
+if [[ -n "$PUID" ]]; then
+  RUN_AS=(setpriv --reuid "$PUID" --regid "$PGID" --clear-groups)
+  chown "$PUID:$PGID" "$SOCKET_DIR" "$AIRVAULT_BACKUP_DIR"
+  chown -R "$PUID:$PGID" "$AIRVAULT_CONFIG_DIR" "$LOCKDOWN"
+fi
+
 # usbmuxd reads its record store at /var/lib/lockdown — point it at the shared
 # lockdown dir wherever this install keeps it.
 [ -L /var/lib/lockdown ] || rm -rf /var/lib/lockdown
@@ -44,6 +61,7 @@ run_component usbmuxd usbmuxd "${USBMUXD_ARGS[@]}" &
 USBMUXD=$!
 for _ in $(seq 1 100); do [ -S /var/run/usbmuxd ] && break; sleep 0.1; done
 [ -S /var/run/usbmuxd ] || echo "[entrypoint] usbmuxd socket absent after 10s" >&2
+chmod 0666 /var/run/usbmuxd 2>/dev/null || true
 
 # Wi-Fi (mdns-sd) via netmuxd in shim mode over usbmuxd: it serves usbmuxd's USB
 # devices plus its own network discoveries on a second socket. Passing an
@@ -52,17 +70,17 @@ for _ in $(seq 1 100); do [ -S /var/run/usbmuxd ] && break; sleep 0.1; done
 # netmuxd owns the device's single iOS heartbeat — the Marco/Polo keepalive that
 # stops iOS from reaping service connections. iOS allows one heartbeat per device
 # and AirVault runs none of its own, so netmuxd keeps it (no --disable-heartbeat).
-run_component netmuxd env RUST_LOG="$MUX_LOG_LEVEL" netmuxd \
+run_component netmuxd "${RUN_AS[@]}" env RUST_LOG="$MUX_LOG_LEVEL" netmuxd \
         --upstream-usbmuxd /var/run/usbmuxd \
-        --socket-path /var/run/usbmuxd-net \
+        --socket-path "$SOCKET_DIR/usbmuxd-net" \
         --plist-storage "$LOCKDOWN" &
 NETMUXD=$!
-for _ in $(seq 1 100); do [ -S /var/run/usbmuxd-net ] && break; sleep 0.1; done
-[ -S /var/run/usbmuxd-net ] || echo "[entrypoint] netmuxd socket absent after 10s" >&2
+for _ in $(seq 1 100); do [ -S "$SOCKET_DIR/usbmuxd-net" ] && break; sleep 0.1; done
+[ -S "$SOCKET_DIR/usbmuxd-net" ] || echo "[entrypoint] netmuxd socket absent after 10s" >&2
 
 # The shim connects to netmuxd (no colon -> unix path).
-export USBMUXD_SOCKET_ADDRESS=/var/run/usbmuxd-net
-airvault &
+export USBMUXD_SOCKET_ADDRESS="$SOCKET_DIR/usbmuxd-net"
+"${RUN_AS[@]}" airvault &
 APP=$!
 
 term() { kill -TERM "$APP" "$NETMUXD" "$USBMUXD" 2>/dev/null || true; }

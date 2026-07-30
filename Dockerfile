@@ -58,16 +58,15 @@ LABEL org.opencontainers.image.title="AirVault" \
       org.opencontainers.image.licenses="GPL-3.0" \
       org.opencontainers.image.version="$VERSION"
 
-# usbmuxd: USB transport; netmuxd: Wi-Fi on top
-RUN apt-get update && apt-get install -y --no-install-recommends usbmuxd ca-certificates libssl3 curl \
+# usbmuxd: USB transport; netmuxd: Wi-Fi on top; util-linux: setpriv for PUID/PGID
+RUN apt-get update && apt-get install -y --no-install-recommends usbmuxd ca-certificates libssl3 curl util-linux \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=netmuxd /out/netmuxd /usr/local/bin/netmuxd
 COPY --from=build /out/airvault /usr/local/bin/airvault
 COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY LICENSE /licenses/
 
-# Storage: /config (state, pairing records) + /backups; the entrypoint falls back
-# to the legacy /data/* layout for stale saved templates.
+# Storage: /config (state, pairing records) + /backups.
 EXPOSE 8080
 ENV AIRVAULT_BIND_HOST=0.0.0.0
 

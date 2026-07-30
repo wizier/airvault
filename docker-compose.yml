@@ -13,7 +13,8 @@ services:
       - AIRVAULT_LOG_LEVEL=${AIRVAULT_LOG_LEVEL:-info}
       - AIRVAULT_MUX_LOG_LEVEL=${AIRVAULT_MUX_LOG_LEVEL:-warn}
       - TZ=${TZ:-Etc/UTC}
-      # Advanced (optional): AIRVAULT_LISTEN_ADDR, AIRVAULT_DATABASE_URL.
+      # Advanced (optional): AIRVAULT_LISTEN_ADDR, AIRVAULT_DATABASE_URL,
+      # PUID/PGID/UMASK
 
     # USB pairing: bind the bus
     device_cgroup_rules:

@@ -23,9 +23,15 @@ Nothing else needs to persist.
 | `AIRVAULT_AUTH_TOKEN` | *(generated)* | Web UI password; when unset, the stored one is printed in the log |
 | `AIRVAULT_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `TZ` | `Etc/UTC` | Timezone for log timestamps |
+| `PUID` / `PGID` | *(unset — run as root)* | Backups and settings are written as this uid:gid (`99`/`100` on Unraid; `id` shows yours) |
+| `UMASK` | *(unset)* | Permission mask for files the container creates |
 
 Paths can be overridden with `AIRVAULT_CONFIG_DIR`, `AIRVAULT_BACKUP_DIR` and
 `AIRVAULT_LOCKDOWN_DIR`.
+
+Turning `PUID` on for an install that already ran as root needs a one-time
+`chown -R <uid>:<gid>` of the backups folder; new files are owned correctly
+from then on.
 
 ## Building from source
 
