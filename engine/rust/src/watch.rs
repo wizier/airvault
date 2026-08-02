@@ -183,16 +183,13 @@ async fn watch_once(
             _ = cancel.cancelled() => return Ok(()),
             result = read_mux_message(&mut sock) => result?,
         };
-        match message
+        let message_type = message
             .get("MessageType")
-            .and_then(|value| value.as_string())
+            .and_then(|value| value.as_string());
+        if matches!(message_type, Some("Attached" | "Detached" | "Paired"))
+            && !emit_snapshot(context, sender).await?
         {
-            Some("Attached") | Some("Detached") | Some("Paired") => {
-                if !emit_snapshot(context, sender).await? {
-                    return Ok(());
-                }
-            }
-            _ => {}
+            return Ok(());
         }
     }
 }

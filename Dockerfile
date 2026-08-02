@@ -4,7 +4,7 @@ ARG NETMUXD_TAG=v0.4.3
 ARG NETMUXD_SHA256=85b6598284fc639f2a282584461d05e2090b79bdf3ec949d2a5e5d3dc655dde4
 
 # ── 1. Svelte SPA -> web/dist ──
-FROM node:22-slim AS web
+FROM node:24-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci

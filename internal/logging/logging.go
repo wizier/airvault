@@ -56,7 +56,7 @@ func Setup(level slog.Level) {
 }
 
 func newRoot(out io.Writer, level slog.Level, noColor bool) *slog.Logger {
-	handler := contextHandler{Handler: tint.NewHandler(out, &tint.Options{
+	handler := contextHandler{Handler: tint.NewTextHandler(out, &tint.Options{
 		Level:      level,
 		TimeFormat: timeFormat,
 		NoColor:    noColor,
