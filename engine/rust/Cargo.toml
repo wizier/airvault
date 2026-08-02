@@ -12,8 +12,9 @@ crate-type = ["staticlib"] # -> libairvault_shim.a for cgo
 
 [dependencies]
 # OpenSSL avoids rustls' conservative TLS 1.2 AES-GCM record limit during
-# multi-hundred-gigabyte restores. default-features=false is required or the
-# default aws-lc/rustls backend comes back in alongside it.
+# multi-hundred-gigabyte restores. default-features=false keeps rustls out:
+# idevice gates its openssl paths on `not(feature = "rustls")`, so a rustls
+# that resolved alongside would silently take over.
 idevice = { version = "0.1.65", default-features = false, features = [
     "openssl",
     "usbmuxd",
@@ -44,10 +45,11 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Upstream master + restore-progress patch (queued for an upstream PR); drop
-# after the merge lands in a release and the version above is bumped.
+# Unreleased upstream: AFC file locking (the backup sync session) and
+# mobileactivationd session info (activation before a restore) landed after
+# 0.1.65. Drop this block once a release carries them.
 [patch.crates-io]
-idevice = { git = "https://github.com/wizier/idevice", branch = "mb2-restore-progress" }
+idevice = { git = "https://github.com/jkcoxson/idevice" }
 
 [profile.release]
 lto = true
