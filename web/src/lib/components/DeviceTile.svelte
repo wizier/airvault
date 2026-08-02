@@ -4,11 +4,11 @@
   import { link } from 'svelte-spa-router';
   import type { Device } from '../api/devices';
   import { now } from '../clock';
-  import { backupStatus, connectionUi, modelDisplayName, stageUi } from '../device-ui';
+  import { backupStatus, connectionUi, modelDisplayName, osName, stageUi } from '../device-ui';
   import { errorText } from '../error-text';
   import { liveRun } from '../events.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime, shortUdid } from '../format';
-  import DevicePhoneMockup from './DevicePhoneMockup.svelte';
+  import DeviceFrame from './DeviceFrame.svelte';
   import DeviceBattery from './DeviceBattery.svelte';
   import Icon from './Icon.svelte';
   import Pill from './Pill.svelte';
@@ -30,7 +30,10 @@
   // Discovery fills this metadata asynchronously; the shortened UDID keeps a
   // freshly Wi-Fi-registered device identifiable in the meantime.
   const subtitle = $derived(
-    [modelDisplayName(device.productType), device.iosVersion && `iOS ${device.iosVersion}`]
+    [
+      modelDisplayName(device.productType),
+      device.iosVersion && `${osName(device.productType, device.iosVersion)} ${device.iosVersion}`,
+    ]
       .filter(Boolean)
       .join(' · ') || shortUdid(device.udid),
   );
@@ -68,7 +71,12 @@
       </div>
     </div>
 
-    <DevicePhoneMockup udid={device.udid} connection={device.connection} lockScreen={device.lockScreen} />
+    <DeviceFrame
+      udid={device.udid}
+      productType={device.productType}
+      connection={device.connection}
+      lockScreen={device.lockScreen}
+    />
 
     <figcaption class="w-full text-center">
       <h2 class="card-title justify-center" title={device.name}><span class="min-w-0 truncate">{device.name}</span></h2>

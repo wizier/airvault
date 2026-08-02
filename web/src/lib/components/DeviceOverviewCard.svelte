@@ -4,7 +4,7 @@
   import { errRef } from '../api/client';
   import { powerDevice, type Device, type PowerAction } from '../api/devices';
   import { deviceFileSource } from '../api/files';
-  import { connectionUi, modelDisplayName } from '../device-ui';
+  import { connectionUi, modelDisplayName, osName } from '../device-ui';
   import { liveRun } from '../events.svelte';
   import { errorRefText, type ErrorRef } from '../error-text';
   import { formatDateTime, relativeTime } from '../format';
@@ -15,7 +15,7 @@
   import ConsoleModal from './ConsoleModal.svelte';
   import DeviceActions from './DeviceActions.svelte';
   import DeviceBattery from './DeviceBattery.svelte';
-  import DevicePhoneMockup from './DevicePhoneMockup.svelte';
+  import DeviceFrame from './DeviceFrame.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import FileBrowser from './FileBrowser.svelte';
   import Gallery from './Gallery.svelte';
@@ -92,7 +92,12 @@
   <div class="card-body gap-4 p-5 sm:p-6">
     <div class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 sm:grid-rows-[1fr_auto]">
       <div class="sm:row-span-2">
-        <DevicePhoneMockup udid={device.udid} connection={device.connection} lockScreen={device.lockScreen} />
+        <DeviceFrame
+          udid={device.udid}
+          productType={device.productType}
+          connection={device.connection}
+          lockScreen={device.lockScreen}
+        />
       </div>
         <div class="flex min-w-0 items-start gap-3">
           <div class="min-w-0 flex-1">
@@ -103,7 +108,7 @@
             </div>
             <p class="mt-1.5 flex flex-wrap items-center gap-x-2 text-sm text-base-content/60">
               {#if device.productType}<span title={device.productType}>{modelDisplayName(device.productType)}</span><span class="text-base-content/30">·</span>{/if}
-              {#if device.iosVersion}<span>iOS {device.iosVersion}</span><span class="text-base-content/30">·</span>{/if}
+              {#if device.iosVersion}<span>{osName(device.productType, device.iosVersion)} {device.iosVersion}</span><span class="text-base-content/30">·</span>{/if}
               <span class="select-all break-all font-mono text-xs" title="UDID">{device.udid}</span>
             </p>
             <div class="mt-1.5">

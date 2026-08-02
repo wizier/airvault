@@ -86,25 +86,79 @@
     "Liberation Mono", monospace;
 }
 
-/* mockup-phone has no size modifier: render it at its own natural 462px width
-   so the fixed border, camera and superellipse corners keep the real iPhone
-   proportions, then scale the whole component down to the preview size. Driving
-   it at a smaller pre-scale width would exaggerate the corner radius. overflow
-   clips the large pre-scale box so it never widens the page. */
+/* Device preview frame (see DeviceFrame.svelte). One height for every device so
+   tiles line up; the model's aspect gives the width, and everything else is a
+   fraction of it. Phone numbers are daisyUI's mockup-phone, which this replaces. */
 @layer utilities {
-  .device-phone-preview {
-    position: relative;
-    width: 5rem;
-    aspect-ratio: 462 / 978;
+  .device-frame {
+    --frame-height: 10.6rem; /* a 5rem-wide phone — the long-standing preview size */
+    --frame-ratio: 0.472; /* portrait screen aspect; every model overrides it */
+    --frame-width: calc(var(--frame-height) * var(--frame-ratio));
+    --frame-rim: calc(var(--frame-width) * 0.011);
+    --frame-bezel: calc(var(--frame-width) * 0.013);
+    --frame-radius: calc(var(--frame-width) * 0.141);
+    --frame-screen-radius: calc(var(--frame-width) * 0.117);
+
+    display: grid;
+    justify-items: center;
+    width: var(--frame-width);
+    height: var(--frame-height);
     flex: none;
+    padding: var(--frame-bezel);
+    border: var(--frame-rim) solid #6b6b6b;
+    border-radius: var(--frame-radius);
+    background-color: #000;
     overflow: hidden;
   }
 
-  .device-phone-preview > .mockup-phone {
-    position: absolute;
-    inset: 0 auto auto 0;
-    width: 28.875rem; /* 462px — the component's own max-width */
-    transform: scale(calc(5 / 28.875)); /* down to the 5rem preview */
-    transform-origin: top left;
+  /* Uniform bezel (the iPad Air/Pro 5.8% of body width) and near-square corners. */
+  .device-frame[data-form='tablet'] {
+    --frame-bezel: calc(var(--frame-width) * 0.047);
+    --frame-radius: calc(var(--frame-width) * 0.053);
+    --frame-screen-radius: calc(var(--frame-width) * 0.02);
+  }
+
+  .device-frame-screen {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    border-radius: var(--frame-screen-radius);
+    overflow: hidden;
+  }
+
+  .device-frame-screen > img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* Sits on the screen, so phones only: a tablet's pinhole is in the bezel. */
+  .device-frame-island {
+    grid-area: 1 / 1;
+    z-index: 1;
+    width: calc(var(--frame-width) * 0.28);
+    height: calc(var(--frame-width) * 0.078);
+    margin-top: calc(var(--frame-width) * 0.03);
+    border-radius: calc(var(--frame-width) * 0.037);
+    background-color: #000;
+  }
+
+  /* Squircles where the browser draws them; radii grow because a superellipse
+     corner reads smaller at an equal radius (daisyUI's ratio). */
+  @supports (corner-shape: superellipse(1.45)) {
+    .device-frame {
+      corner-shape: superellipse(1.45);
+      --frame-radius: calc(var(--frame-width) * 0.195);
+      --frame-screen-radius: calc(var(--frame-width) * 0.219);
+    }
+
+    .device-frame[data-form='tablet'] {
+      --frame-radius: calc(var(--frame-width) * 0.073);
+      --frame-screen-radius: calc(var(--frame-width) * 0.037);
+    }
+
+    .device-frame-screen {
+      corner-shape: superellipse(1.87);
+    }
   }
 }

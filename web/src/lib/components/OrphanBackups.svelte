@@ -9,7 +9,7 @@
   import type { ErrorRef } from '../error-text';
   import { devicesStore, restoreSourcesStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
-  import { modelDisplayName } from '../device-ui';
+  import { deviceIcon, modelDisplayName } from '../device-ui';
   import { now } from '../clock';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
@@ -68,7 +68,7 @@
             title="Open the stored backups of this phone"
           >
             <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-box bg-base-200 text-base-content/60">
-              <Icon name="phone" size={17} />
+              <Icon name={deviceIcon(orphan.productType)} size={17} />
             </span>
             <span class="min-w-0">
               {#if named}

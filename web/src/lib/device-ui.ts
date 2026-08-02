@@ -64,6 +64,20 @@ export function batteryUi(
   };
 }
 
+/** How a model's body is drawn in the preview — a tablet is not a big phone. */
+export interface DeviceScreen {
+  form: 'phone' | 'tablet';
+  /** Screen aspect in portrait (width / height); the frame's proportions. */
+  ratio: number;
+}
+
+const PHONE: DeviceScreen = { form: 'phone', ratio: 462 / 978 };
+// 4:3 — every iPad through the 10.2", plus the whole 12.9"/13" line.
+const TABLET_43: DeviceScreen = { form: 'tablet', ratio: 3 / 4 };
+// 10.9"/11" edge-to-edge; the Pro's 1668×2388 is within a percent of this.
+const TABLET_11: DeviceScreen = { form: 'tablet', ratio: 1640 / 2360 };
+const TABLET_MINI: DeviceScreen = { form: 'tablet', ratio: 1488 / 2266 };
+
 // Lockdown ProductType → marketing name, iPhone1,1 … iPhone18,5 (iPhone 17e).
 const IPHONE_MODELS: Record<string, string> = {
   'iPhone1,1': 'iPhone',
@@ -131,10 +145,152 @@ const IPHONE_MODELS: Record<string, string> = {
   'iPhone18,5': 'iPhone 17e',
 };
 
+// iPads, split by the body the preview draws. Wi-Fi, cellular and China
+// variants of one model share a name because they share that body.
+const IPAD_43_MODELS: Record<string, string> = {
+  'iPad1,1': 'iPad',
+  'iPad2,1': 'iPad 2',
+  'iPad2,2': 'iPad 2',
+  'iPad2,3': 'iPad 2',
+  'iPad2,4': 'iPad 2',
+  'iPad2,5': 'iPad mini',
+  'iPad2,6': 'iPad mini',
+  'iPad2,7': 'iPad mini',
+  'iPad3,1': 'iPad (3rd gen)',
+  'iPad3,2': 'iPad (3rd gen)',
+  'iPad3,3': 'iPad (3rd gen)',
+  'iPad3,4': 'iPad (4th gen)',
+  'iPad3,5': 'iPad (4th gen)',
+  'iPad3,6': 'iPad (4th gen)',
+  'iPad4,1': 'iPad Air',
+  'iPad4,2': 'iPad Air',
+  'iPad4,3': 'iPad Air',
+  'iPad4,4': 'iPad mini 2',
+  'iPad4,5': 'iPad mini 2',
+  'iPad4,6': 'iPad mini 2',
+  'iPad4,7': 'iPad mini 3',
+  'iPad4,8': 'iPad mini 3',
+  'iPad4,9': 'iPad mini 3',
+  'iPad5,1': 'iPad mini 4',
+  'iPad5,2': 'iPad mini 4',
+  'iPad5,3': 'iPad Air 2',
+  'iPad5,4': 'iPad Air 2',
+  'iPad6,3': 'iPad Pro 9.7″',
+  'iPad6,4': 'iPad Pro 9.7″',
+  'iPad6,7': 'iPad Pro 12.9″',
+  'iPad6,8': 'iPad Pro 12.9″',
+  'iPad6,11': 'iPad (5th gen)',
+  'iPad6,12': 'iPad (5th gen)',
+  'iPad7,1': 'iPad Pro 12.9″ (2nd gen)',
+  'iPad7,2': 'iPad Pro 12.9″ (2nd gen)',
+  'iPad7,3': 'iPad Pro 10.5″',
+  'iPad7,4': 'iPad Pro 10.5″',
+  'iPad7,5': 'iPad (6th gen)',
+  'iPad7,6': 'iPad (6th gen)',
+  'iPad7,11': 'iPad (7th gen)',
+  'iPad7,12': 'iPad (7th gen)',
+  'iPad8,5': 'iPad Pro 12.9″ (3rd gen)',
+  'iPad8,6': 'iPad Pro 12.9″ (3rd gen)',
+  'iPad8,7': 'iPad Pro 12.9″ (3rd gen)',
+  'iPad8,8': 'iPad Pro 12.9″ (3rd gen)',
+  'iPad8,11': 'iPad Pro 12.9″ (4th gen)',
+  'iPad8,12': 'iPad Pro 12.9″ (4th gen)',
+  'iPad11,1': 'iPad mini (5th gen)',
+  'iPad11,2': 'iPad mini (5th gen)',
+  'iPad11,3': 'iPad Air (3rd gen)',
+  'iPad11,4': 'iPad Air (3rd gen)',
+  'iPad11,6': 'iPad (8th gen)',
+  'iPad11,7': 'iPad (8th gen)',
+  'iPad12,1': 'iPad (9th gen)',
+  'iPad12,2': 'iPad (9th gen)',
+  'iPad13,8': 'iPad Pro 12.9″ (5th gen)',
+  'iPad13,9': 'iPad Pro 12.9″ (5th gen)',
+  'iPad13,10': 'iPad Pro 12.9″ (5th gen)',
+  'iPad13,11': 'iPad Pro 12.9″ (5th gen)',
+  'iPad14,5': 'iPad Pro 12.9″ (6th gen)',
+  'iPad14,6': 'iPad Pro 12.9″ (6th gen)',
+  'iPad14,10': 'iPad Air 13″ (M2)',
+  'iPad14,11': 'iPad Air 13″ (M2)',
+  'iPad15,5': 'iPad Air 13″ (M3)',
+  'iPad15,6': 'iPad Air 13″ (M3)',
+  'iPad16,5': 'iPad Pro 13″ (M4)',
+  'iPad16,6': 'iPad Pro 13″ (M4)',
+};
+
+const IPAD_11_MODELS: Record<string, string> = {
+  'iPad8,1': 'iPad Pro 11″',
+  'iPad8,2': 'iPad Pro 11″',
+  'iPad8,3': 'iPad Pro 11″',
+  'iPad8,4': 'iPad Pro 11″',
+  'iPad8,9': 'iPad Pro 11″ (2nd gen)',
+  'iPad8,10': 'iPad Pro 11″ (2nd gen)',
+  'iPad13,1': 'iPad Air (4th gen)',
+  'iPad13,2': 'iPad Air (4th gen)',
+  'iPad13,4': 'iPad Pro 11″ (3rd gen)',
+  'iPad13,5': 'iPad Pro 11″ (3rd gen)',
+  'iPad13,6': 'iPad Pro 11″ (3rd gen)',
+  'iPad13,7': 'iPad Pro 11″ (3rd gen)',
+  'iPad13,16': 'iPad Air (5th gen)',
+  'iPad13,17': 'iPad Air (5th gen)',
+  'iPad13,18': 'iPad (10th gen)',
+  'iPad13,19': 'iPad (10th gen)',
+  'iPad14,3': 'iPad Pro 11″ (4th gen)',
+  'iPad14,4': 'iPad Pro 11″ (4th gen)',
+  'iPad14,8': 'iPad Air 11″ (M2)',
+  'iPad14,9': 'iPad Air 11″ (M2)',
+  'iPad15,3': 'iPad Air 11″ (M3)',
+  'iPad15,4': 'iPad Air 11″ (M3)',
+  'iPad15,7': 'iPad (A16)',
+  'iPad15,8': 'iPad (A16)',
+  'iPad16,3': 'iPad Pro 11″ (M4)',
+  'iPad16,4': 'iPad Pro 11″ (M4)',
+};
+
+const IPAD_MINI_MODELS: Record<string, string> = {
+  'iPad14,1': 'iPad mini (6th gen)',
+  'iPad14,2': 'iPad mini (6th gen)',
+  'iPad16,1': 'iPad mini (A17 Pro)',
+  'iPad16,2': 'iPad mini (A17 Pro)',
+};
+
+/** One lookup over every table above: name for the label, screen for the frame. */
+const MODELS = new Map<string, { name: string; screen: DeviceScreen }>(
+  (
+    [
+      [PHONE, IPHONE_MODELS],
+      [TABLET_43, IPAD_43_MODELS],
+      [TABLET_11, IPAD_11_MODELS],
+      [TABLET_MINI, IPAD_MINI_MODELS],
+    ] as const
+  ).flatMap(([screen, models]) =>
+    Object.entries(models).map(([productType, name]) => [productType, { name, screen }] as const),
+  ),
+);
+
 /** Human-readable model for a lockdown ProductType ("iPhone16,2" → "iPhone 15
- *  Pro Max"); unknown or non-iPhone identifiers pass through unchanged. */
+ *  Pro Max"); unknown or non-Apple identifiers pass through unchanged. */
 export function modelDisplayName(productType?: string): string | undefined {
-  return productType ? (IPHONE_MODELS[productType] ?? productType) : undefined;
+  return productType ? (MODELS.get(productType)?.name ?? productType) : undefined;
+}
+
+/** Body the preview draws; a model newer than this build falls back by family. */
+export function deviceScreen(productType?: string): DeviceScreen {
+  const known = productType ? MODELS.get(productType) : undefined;
+  if (known) return known.screen;
+  return isTablet(productType) ? TABLET_11 : PHONE;
+}
+
+export function deviceIcon(productType?: string): IconName {
+  return isTablet(productType) ? 'tablet' : 'phone';
+}
+
+/** iPadOS only split from iOS in 13 — older iPads still report plain iOS. */
+export function osName(productType?: string, version?: string): string {
+  return isTablet(productType) && Number.parseInt(version ?? '', 10) >= 13 ? 'iPadOS' : 'iOS';
+}
+
+function isTablet(productType?: string): boolean {
+  return productType?.startsWith('iPad') ?? false;
 }
 
 /** An ellipsis marks a phase the progress bar cannot measure. Record, not a

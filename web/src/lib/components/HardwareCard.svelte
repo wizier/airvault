@@ -47,7 +47,7 @@
     push('Model', hw.modelNumber, true);
     push('Board', hw.hardwareModel, true);
     push('Region', hw.region, true);
-    push('iOS build', hw.buildVersion, true);
+    push('OS build', hw.buildVersion, true);
     push('Serial', hw.serial, true, true);
     push('Phone number', hw.phoneNumber, true, true);
     push('Time zone', hw.timeZone);
