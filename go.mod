@@ -1,6 +1,6 @@
 module github.com/wizier/airvault
 
-go 1.26.2
+go 1.26.5
 
 require (
 	github.com/gen2brain/heic v0.7.1
