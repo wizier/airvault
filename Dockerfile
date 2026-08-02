@@ -1,4 +1,7 @@
+# netmuxd ships a prebuilt binary; the digest pins this exact tag. The image is
+# built for linux/amd64 only, so no other release is fetched.
 ARG NETMUXD_TAG=v0.4.3
+ARG NETMUXD_SHA256=85b6598284fc639f2a282584461d05e2090b79bdf3ec949d2a5e5d3dc655dde4
 
 # ── 1. Svelte SPA -> web/dist ──
 FROM node:22-slim AS web
@@ -12,7 +15,7 @@ ARG VERSION=dev
 RUN VITE_APP_VERSION=$VERSION npm run build
 
 # ── 2. Rust idevice shim -> static lib for cgo ──
-FROM rust:1.92.0-bookworm AS shim
+FROM rust:1.92.0-trixie AS shim
 RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -20,20 +23,8 @@ COPY engine/rust/ ./
 RUN cargo build --release --locked \
  && mkdir -p /out && cp target/release/libairvault_shim.a /out/
 
-# ── 3. netmuxd: Wi-Fi devices on top of usbmuxd ──
-# From source: release binaries need glibc 2.39, too new for bookworm-slim.
-# cmake is for its aws-lc-sys dep.
-FROM rust:1.92.0-bookworm AS netmuxd
-ARG NETMUXD_TAG
-RUN apt-get update && apt-get install -y --no-install-recommends cmake git \
-    && rm -rf /var/lib/apt/lists/*
-RUN git clone --depth 1 --branch "$NETMUXD_TAG" https://github.com/jkcoxson/netmuxd /src
-WORKDIR /src
-RUN cargo build --release --locked \
- && mkdir -p /out && cp target/release/netmuxd /out/
-
-# ── 4. Go daemon (cgo, links the shim) ──
-FROM golang:1.26-bookworm AS build
+# ── 3. Go daemon (cgo, links the shim) ──
+FROM golang:1.26-trixie AS build
 # .git is dockerignored; the release version comes in as an ARG.
 ARG VERSION=dev
 RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev \
@@ -49,8 +40,8 @@ COPY --from=shim /out/libairvault_shim.a ./engine/rust/target/link/libairvault_s
 RUN make build COMPONENTS= VERSION=${VERSION} GOTAGS=timetzdata DAEMON_BINARY=/out/airvault
 RUN strip /out/airvault
 
-# ── 5. Runtime ──
-FROM debian:bookworm-slim AS runtime
+# ── 4. Runtime ──
+FROM debian:trixie-slim AS runtime
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="AirVault" \
       org.opencontainers.image.description="Self-hosted iPhone backup server " \
@@ -59,9 +50,17 @@ LABEL org.opencontainers.image.title="AirVault" \
       org.opencontainers.image.version="$VERSION"
 
 # usbmuxd: USB transport; netmuxd: Wi-Fi on top; util-linux: setpriv for PUID/PGID
-RUN apt-get update && apt-get install -y --no-install-recommends usbmuxd ca-certificates libssl3 curl util-linux \
+RUN apt-get update && apt-get install -y --no-install-recommends usbmuxd ca-certificates libssl3t64 curl util-linux \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=netmuxd /out/netmuxd /usr/local/bin/netmuxd
+
+ARG NETMUXD_TAG
+ARG NETMUXD_SHA256
+RUN set -eux; \
+    curl -fsSL -o /tmp/netmuxd.tar.gz \
+      "https://github.com/jkcoxson/netmuxd/releases/download/$NETMUXD_TAG/netmuxd-x86_64-unknown-linux-gnu.tar.gz"; \
+    echo "$NETMUXD_SHA256  /tmp/netmuxd.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/netmuxd.tar.gz -C /usr/local/bin netmuxd; \
+    rm /tmp/netmuxd.tar.gz
 COPY --from=build /out/airvault /usr/local/bin/airvault
 COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY LICENSE /licenses/
