@@ -170,12 +170,16 @@ fn tracing_level(level: &tracing::Level) -> i32 {
     }
 }
 
+// RUST_LOG wins: dependency logs are only useful one module at a time, since
+// idevice dumps AFC packets and whole plists at debug.
 fn tracing_filter() -> tracing_subscriber::EnvFilter {
-    if let Some(filter) = LOG_FILTER.get() {
-        return tracing_subscriber::EnvFilter::new(filter);
+    if let Ok(filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
+        return filter;
     }
-    tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"))
+    match LOG_FILTER.get() {
+        Some(filter) => tracing_subscriber::EnvFilter::new(filter),
+        None => tracing_subscriber::EnvFilter::new("warn"),
+    }
 }
 
 fn init_tracing() -> bool {

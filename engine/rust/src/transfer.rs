@@ -165,7 +165,7 @@ async fn run_mb2(
     let cleanup = sync.finish().await;
     let session = merge_transfer_cleanup(transfer, cleanup, "sync session teardown")?;
     if is_backup {
-        progress.emit(BACKUP_PHASE_FINALIZING, -1.0, 0, 0);
+        progress.emit(BACKUP_PHASE_FINALIZING, -1.0, 0);
         // Expose cancellable local finalization. If cancellation raced the
         // callback, stop before starting the manifest pass.
         if cancel.is_cancelled() {

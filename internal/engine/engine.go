@@ -50,8 +50,8 @@ const (
 	ProgressPhaseSealing
 )
 
-// Progress is transport progress only. Non-zero BytesDone values are monotonic
-// for the operation.
+// Progress is transport progress only. BytesDone is the operation's running
+// total and never decreases.
 type Progress struct {
 	Phase     ProgressPhase
 	Percent   int

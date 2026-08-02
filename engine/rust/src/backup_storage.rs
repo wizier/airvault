@@ -5,8 +5,8 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
 
 use idevice::services::mobilebackup2::{BackupDelegate, DirEntryInfo};
 use std::io::{Read, Write};
@@ -14,10 +14,10 @@ use std::io::{Read, Write};
 use crate::object_store::ObjectSession;
 use crate::path_sandbox::PathSandbox;
 
-/// Progress callback into Go: (opaque operation id, phase, percent, done, total).
-/// Phase is BACKUP_PHASE_*; percent < 0, done == 0, total == 0 each mean "not
-/// reported this call". `done` is cumulative; `total` is the current batch size.
-pub(crate) type BackupCb = extern "C" fn(usize, i32, f64, u64, u64);
+/// Progress callback into Go: (opaque operation id, phase, percent, bytes).
+/// Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
+/// `bytes` counts this call alone — the host owns the running sum.
+pub(crate) type BackupCb = extern "C" fn(usize, i32, f64, u64);
 pub(crate) const BACKUP_PHASE_TRANSFER: i32 = 0;
 pub(crate) const BACKUP_PHASE_FINALIZING: i32 = 1;
 
@@ -28,52 +28,63 @@ pub(crate) struct BackupProgress {
 }
 
 impl BackupProgress {
-    pub(crate) fn emit(self, phase: i32, percent: f64, done: u64, total: u64) {
-        (self.callback)(self.id, phase, percent, done, total);
+    pub(crate) fn emit(self, phase: i32, percent: f64, bytes: u64) {
+        (self.callback)(self.id, phase, percent, bytes);
     }
 }
 
-/// Monotonic run-total fed by both byte sources: cumulative per-batch upload
-/// snapshots (backup) and CountingReader increments (restore). Atomics only
-/// for Send + 'static readers — the DL loop itself is sequential.
-#[derive(Default)]
-pub(crate) struct TransferBytes {
-    total: AtomicU64,
-    batch: AtomicU64,
-}
+/// Payload reported per frame. Device blocks are far smaller, and the host
+/// coalesces regardless, so batching keeps a fast link from spending thousands
+/// of callbacks a second.
+const METER_FRAME_BYTES: u64 = 1 << 20;
 
-impl TransferBytes {
-    pub(crate) fn begin_batch(&self) {
-        self.batch.store(0, Ordering::Relaxed);
-    }
-
-    /// Upload path: fold the crate's cumulative per-batch value into the total.
-    pub(crate) fn set_batch(&self, current: u64) -> u64 {
-        let last = self.batch.swap(current, Ordering::Relaxed);
-        self.add(current.saturating_sub(last))
-    }
-
-    fn add(&self, delta: u64) -> u64 {
-        self.total.fetch_add(delta, Ordering::Relaxed) + delta
-    }
-}
-
-/// Meters restore reads: the crate streams open_file_read to the device in
-/// 32 KiB chunks. Every chunk reports; the host coalesces (latest-wins channel
-/// plus a 200 ms emit window), so throttling here would only lose precision.
-struct CountingReader {
-    inner: Box<dyn Read + Send>,
-    bytes: Arc<TransferBytes>,
+/// Meters one payload stream: object writes while backing up, object reads
+/// while restoring. The crate's own byte reporting lands once per completed
+/// file, too coarse to show a multi-gigabyte one moving.
+struct Metered<T> {
+    inner: T,
     progress: BackupProgress,
+    pending: u64,
 }
 
-impl Read for CountingReader {
+impl<T> Metered<T> {
+    fn record(&mut self, count: usize) {
+        self.pending += count as u64;
+        if self.pending >= METER_FRAME_BYTES {
+            self.progress
+                .emit(BACKUP_PHASE_TRANSFER, -1.0, self.pending);
+            self.pending = 0;
+        }
+    }
+}
+
+/// Most files never reach a full frame, so the tail carries their whole size.
+impl<T> Drop for Metered<T> {
+    fn drop(&mut self) {
+        if self.pending > 0 {
+            self.progress
+                .emit(BACKUP_PHASE_TRANSFER, -1.0, self.pending);
+        }
+    }
+}
+
+impl Read for Metered<Box<dyn Read + Send>> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        // Percent -1 (not reported) keeps the device-reported value intact.
-        self.progress
-            .emit(BACKUP_PHASE_TRANSFER, -1.0, self.bytes.add(n as u64), 0);
+        self.record(n);
         Ok(n)
+    }
+}
+
+impl Write for Metered<Box<dyn Write + Send>> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.record(n);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -85,29 +96,27 @@ pub(crate) struct BackupStorage {
     sandbox: PathSandbox,
     violation: StdMutex<Option<String>>,
     progress: BackupProgress,
-    bytes: Arc<TransferBytes>,
-    count_reads: bool,
+    restore: bool,
     tracking: AtomicBool,
     started: AtomicBool,
 }
 
 impl BackupStorage {
-    /// `count_reads` (restore): meter open_file_read streams into progress.
-    /// Never set for backup — the device downloads Status.plist/Manifest.db
-    /// there, and those reads must not inflate the stored transferred total.
+    /// `restore` selects the metered direction: reads streamed to the device on
+    /// a restore, writes coming off it on a backup. The other direction carries
+    /// mb2 protocol files, which must not inflate the transferred total.
     pub(crate) fn new(
         session: ObjectSession,
         sandbox: PathSandbox,
         progress: BackupProgress,
-        count_reads: bool,
+        restore: bool,
     ) -> Self {
         Self {
             session,
             sandbox,
             violation: StdMutex::new(None),
             progress,
-            bytes: Arc::new(TransferBytes::default()),
-            count_reads,
+            restore,
             tracking: AtomicBool::new(false),
             started: AtomicBool::new(false),
         }
@@ -117,16 +126,16 @@ impl BackupStorage {
         &self.sandbox
     }
 
-    fn emit(&self, percent: f64, done: u64, total: u64) {
-        self.progress
-            .emit(BACKUP_PHASE_TRANSFER, percent, done, total);
+    /// Percentage-only frame; bytes travel on the metered stream.
+    fn emit(&self, percent: f64) {
+        self.progress.emit(BACKUP_PHASE_TRANSFER, percent, 0);
     }
 
     /// Ignore local preparation; the first storage op after the device request
     /// means its passcode gate has cleared and the DeviceLink loop has begun.
     fn touch(&self) {
         if self.tracking.load(Ordering::Relaxed) && !self.started.swap(true, Ordering::Relaxed) {
-            self.emit(-1.0, 0, 0);
+            self.emit(-1.0);
         }
     }
 
@@ -171,13 +180,13 @@ impl BackupDelegate for BackupStorage {
         Box::pin(async move {
             let key = self.resolve_key(path)?;
             let reader = self.session.open_file_read(&key)?;
-            if !self.count_reads || !self.tracking.load(Ordering::Relaxed) {
+            if !self.restore || !self.tracking.load(Ordering::Relaxed) {
                 return Ok(reader);
             }
-            Ok(Box::new(CountingReader {
+            Ok(Box::new(Metered {
                 inner: reader,
-                bytes: self.bytes.clone(),
                 progress: self.progress,
+                pending: 0,
             }) as Box<dyn Read + Send>)
         })
     }
@@ -188,7 +197,15 @@ impl BackupDelegate for BackupStorage {
         self.touch();
         Box::pin(async move {
             let key = self.resolve_key(path)?;
-            self.session.create_file_write(&key)
+            let writer = self.session.create_file_write(&key)?;
+            if self.restore || !self.tracking.load(Ordering::Relaxed) {
+                return Ok(writer);
+            }
+            Ok(Box::new(Metered {
+                inner: writer,
+                progress: self.progress,
+                pending: 0,
+            }) as Box<dyn Write + Send>)
         })
     }
     fn create_dir_all<'a>(
@@ -260,62 +277,80 @@ impl BackupDelegate for BackupStorage {
             self.session.list_dir(&key)
         })
     }
-    fn on_progress(&self, bytes_done: u64, bytes_total: u64, overall_progress: f64) {
+    // The metered stream counted these bytes; only the percentage is news.
+    fn on_progress(&self, _bytes_done: u64, _bytes_total: u64, overall_progress: f64) {
         self.started.store(true, Ordering::Relaxed); // real frame follows anyway
-        let done = self.bytes.set_batch(bytes_done);
-        self.emit(overall_progress, done, bytes_total);
-    }
-    fn on_file_received(&self, _path: &str, file_count: u32) {
-        if file_count == 1 {
-            self.bytes.begin_batch();
-        }
+        self.emit(overall_progress);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BackupProgress, CountingReader, TransferBytes};
-    use std::io::Read;
+    use super::{BackupProgress, Metered, METER_FRAME_BYTES};
+    use std::io::{Read, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
-    #[test]
-    fn transfer_bytes_fold_batches_and_increments() {
-        let bytes = TransferBytes::default();
-        bytes.begin_batch();
-        assert_eq!(bytes.set_batch(100), 100);
-        assert_eq!(bytes.set_batch(250), 250); // same batch grows by its delta
-        bytes.begin_batch();
-        assert_eq!(bytes.set_batch(200), 450);
-        assert_eq!(bytes.set_batch(0), 450); // progress-only frame between batches
-        assert_eq!(bytes.add(50), 500);
+    // Sums frames the way the host does, so the assertions cover the delta
+    // contract and not just this side's arithmetic.
+    #[derive(Default)]
+    struct Recorder {
+        bytes: AtomicU64,
+        frames: AtomicU64,
     }
 
-    extern "C" fn record_done(id: usize, _phase: i32, _percent: f64, done: u64, _total: u64) {
-        unsafe { &*(id as *const AtomicU64) }.store(done, Ordering::Relaxed);
+    extern "C" fn record(id: usize, _phase: i32, _percent: f64, bytes: u64) {
+        let recorder = unsafe { &*(id as *const Recorder) };
+        recorder.bytes.fetch_add(bytes, Ordering::Relaxed);
+        recorder.frames.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Reads accumulate across files and every chunk reports, so the last frame
-    // of the transfer already carries the exact total.
+    fn progress(recorder: &Recorder) -> BackupProgress {
+        BackupProgress {
+            callback: record,
+            id: recorder as *const Recorder as usize,
+        }
+    }
+
+    // Restore direction, and most of a backup: a file below one frame reports
+    // its whole size when the stream closes.
     #[test]
-    fn counting_readers_report_the_running_total_across_files() {
-        let last_done = Box::new(AtomicU64::new(0));
-        let bytes = Arc::new(TransferBytes::default());
-        let progress = BackupProgress {
-            callback: record_done,
-            id: &*last_done as *const AtomicU64 as usize,
-        };
+    fn metered_reads_sum_across_files() {
+        let recorder = Recorder::default();
         for size in [4096, 9] {
-            let mut reader = CountingReader {
-                inner: Box::new(std::io::repeat(7).take(size)),
-                bytes: bytes.clone(),
-                progress,
+            let mut reader = Metered {
+                inner: Box::new(std::io::repeat(7).take(size)) as Box<dyn Read + Send>,
+                progress: progress(&recorder),
+                pending: 0,
             };
             assert_eq!(
                 std::io::copy(&mut reader, &mut std::io::sink()).unwrap(),
                 size
             );
         }
-        assert_eq!(last_done.load(Ordering::Relaxed), 4105);
+        assert_eq!(recorder.bytes.load(Ordering::Relaxed), 4105);
+    }
+
+    // Backup direction: a file past one frame reports mid-write, and the tail
+    // below the next frame still lands.
+    #[test]
+    fn metered_writes_report_within_a_single_file() {
+        let recorder = Recorder::default();
+        let chunk = [7u8; 64 << 10];
+        let written = 20 * chunk.len() as u64; // 1.25 frames
+        {
+            let mut writer = Metered {
+                inner: Box::new(std::io::sink()) as Box<dyn Write + Send>,
+                progress: progress(&recorder),
+                pending: 0,
+            };
+            for _ in 0..20 {
+                writer.write_all(&chunk).unwrap();
+            }
+            assert_eq!(recorder.bytes.load(Ordering::Relaxed), METER_FRAME_BYTES);
+            assert_eq!(recorder.frames.load(Ordering::Relaxed), 1);
+        }
+
+        assert_eq!(recorder.bytes.load(Ordering::Relaxed), written);
+        assert_eq!(recorder.frames.load(Ordering::Relaxed), 2);
     }
 }

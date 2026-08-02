@@ -13,34 +13,33 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// progressSink builds the engine-progress callback for backup/restore. Bus
-// emits coalesce to ~5/s and Speed uses a rolling one-second window.
-func (s *Service) progressSink(run *runReservation, activeStage string) func(engine.Progress) {
-	const emitEvery = 200 * time.Millisecond
-	const speedWindow = time.Second
+// progressSink builds the engine-progress callback for backup/restore. Speed is
+// the average over the interval each emit covers. `total` makes the percentage
+// an exact byte ratio; a backup passes 0, knowing no total until the phone sends.
+func (s *Service) progressSink(run *runReservation, activeStage string, total int64) func(engine.Progress) {
+	const emitEvery = 5 * time.Second
 	var (
 		lastEmit    time.Time
-		accumBytes  int64
+		emitted     int64
 		transferred int64
 		speed       int64
-		windowStart = time.Now()
 	)
 	return func(p engine.Progress) {
 		finalizing := p.Phase == engine.ProgressPhaseSealing
-		progress := RunProgress{RunID: run.id, UDID: run.udid,
-			Restore: run.kind == runKindRestore, Percent: p.Percent}
 		if p.BytesDone > transferred {
-			accumBytes += p.BytesDone - transferred
 			transferred = p.BytesDone
 		}
-		if elapsed := time.Since(windowStart); elapsed >= speedWindow {
-			speed = int64(float64(accumBytes) / elapsed.Seconds())
-			accumBytes = 0
-			windowStart = time.Now()
+		percent := p.Percent
+		if total > 0 {
+			percent = min(int(transferred*100/total), 100)
 		}
-		progress.Transferred = transferred
-		progress.Speed = speed
+		progress := RunProgress{RunID: run.id, UDID: run.udid,
+			Restore: run.kind == runKindRestore, Percent: percent, Transferred: transferred}
 		emit := finalizing || time.Since(lastEmit) >= emitEvery
+		if emit && !lastEmit.IsZero() {
+			speed = int64(float64(transferred-emitted) / time.Since(lastEmit).Seconds())
+		}
+		progress.Speed = speed
 		s.runMu.Lock()
 		active := s.runs[run.udid]
 		if finalizing && active.phase == runPhaseActive {
@@ -57,7 +56,7 @@ func (s *Service) progressSink(run *runReservation, activeStage string) func(eng
 		active.progress = progress
 		// Keep progress ordered with cancellation and terminal removal.
 		if emit {
-			lastEmit = time.Now()
+			emitted, lastEmit = transferred, time.Now()
 			s.bus.Emit(events.BackupProgress, progress)
 		}
 		s.runMu.Unlock()

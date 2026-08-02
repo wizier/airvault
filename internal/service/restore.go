@@ -79,7 +79,7 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 		},
 		Password: opts.Password, SystemFiles: opts.SystemFiles, Reboot: opts.Reboot,
 		SettingsFromBackup: opts.SettingsFromBackup, RemoveItemsNotRestored: opts.RemoveItemsNotRestored,
-	}, s.progressSink(run, StageRestoring))
+	}, s.progressSink(run, StageRestoring, plan.snapshot.SizeBytes))
 	// A restore the engine reports as done is already applied and irreversible,
 	// so a late cancel can't turn it into a cancellation. beginCommit still
 	// latches the commit phase so CancelRun stops offering a dead cancel.

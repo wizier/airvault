@@ -122,7 +122,7 @@ func TestCancelWinsRefusesCommit(t *testing.T) {
 func TestProgressSinkPhaseTransitions(t *testing.T) {
 	s := newTestService()
 	run := registerRun(s)
-	sink := s.progressSink(run, StageBackingUp)
+	sink := s.progressSink(run, StageBackingUp, 0)
 
 	sink(engine.Progress{BytesDone: 123})
 	if got := s.runs[run.udid]; got.phase != runPhaseActive || got.progress.Stage != StageBackingUp {
@@ -144,6 +144,24 @@ func TestProgressSinkPhaseTransitions(t *testing.T) {
 	if got := s.runs[run.udid]; got.phase != runPhaseCancelling ||
 		got.progress.Stage != StageCancellingBackup {
 		t.Fatalf("finalizing after cancel: phase=%d stage=%q", got.phase, got.progress.Stage)
+	}
+}
+
+// A known total makes the percentage an exact byte ratio; the clamp covers
+// restore options that leave part of a snapshot unsent.
+func TestProgressSinkDerivesPercentFromAKnownTotal(t *testing.T) {
+	s := newTestService()
+	run := registerRun(s)
+	sink := s.progressSink(run, StageRestoring, 400)
+
+	sink(engine.Progress{BytesDone: 100, Percent: 77})
+	if got := s.runs[run.udid].progress; got.Percent != 25 || got.Transferred != 100 {
+		t.Fatalf("quarter sent: pct=%d transferred=%d", got.Percent, got.Transferred)
+	}
+
+	sink(engine.Progress{BytesDone: 900, Percent: 77})
+	if got := s.runs[run.udid].progress.Percent; got != 100 {
+		t.Fatalf("overshoot must clamp: pct=%d", got)
 	}
 }
 

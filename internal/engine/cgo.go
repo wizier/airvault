@@ -11,9 +11,9 @@ package engine
 #include <stdlib.h>
 #include "airvault.h"
 
-// Backup/restore progress push: the shim calls back per progress/file event
-// for the duration of the run. Trampolines are defined in cgo_watch.go.
-void av_backup_trampoline(size_t callback_id, int32_t phase, double percent, uint64_t done, uint64_t total);
+// Backup/restore progress push: the shim calls back per payload chunk and per
+// device progress frame. Trampolines are defined in cgo_watch.go.
+void av_backup_trampoline(size_t callback_id, int32_t phase, double percent, uint64_t bytes);
 void av_install_trampoline(size_t callback_id, int32_t phase, uint64_t percent);
 
 */
@@ -458,10 +458,8 @@ func watchOperationCancellation(ctx context.Context, native *C.AvEngine, operati
 }
 
 //export goBackupCallback
-func goBackupCallback(callbackID C.size_t, phase C.int32_t, percent C.double, done, total C.uint64_t) {
-	cgo.Handle(callbackID).Value().(*backupCallback).submit(
-		int32(phase), float64(percent), uint64(done), uint64(total),
-	)
+func goBackupCallback(callbackID C.size_t, phase C.int32_t, percent C.double, bytes C.uint64_t) {
+	cgo.Handle(callbackID).Value().(*backupCallback).submit(int32(phase), float64(percent), uint64(bytes))
 }
 
 // BuildSnapshot blocks for the whole transfer — the documented exception to the

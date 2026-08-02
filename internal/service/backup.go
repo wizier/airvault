@@ -100,7 +100,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 		SnapshotID:     engine.SnapshotID(snapshot.ID),
 		BaseSnapshotID: engine.SnapshotID(baseSnapshotID),
 	}
-	addedBytes, engineErr := s.engine.BuildSnapshot(ctx, request, s.progressSink(run, StageBackingUp))
+	addedBytes, engineErr := s.engine.BuildSnapshot(ctx, request, s.progressSink(run, StageBackingUp, 0))
 	var sizeBytes int64
 	var projection model.Backup
 	var transferredBytes int64

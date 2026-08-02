@@ -264,7 +264,7 @@ class EventsClient {
       }));
       refreshStatus();
     });
-    // Mutate in place only, never refetch. (The service coalesces these to ~5/s.)
+    // Mutate in place only, never refetch — the service already throttles these.
     on<RunningProgress>(es, 'backup.progress', (d) => {
       statusStore.mutate((s) => ({
         ...s,

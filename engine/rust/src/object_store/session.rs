@@ -372,10 +372,13 @@ impl ObjectSession {
         if key.is_empty() {
             return Err(internal_error("cannot remove the object root"));
         }
-        // Recursive by contract: the delegate's remove is documented to take a
-        // directory with its subtree, matching the reference remove_dir_all.
+        // Recursive by contract: the delegate's remove takes a directory with
+        // its subtree, matching the reference remove_dir_all. A missing path is
+        // ordinary — the crate clears every destination before it writes.
         if self.inner.state().tree.remove(key).is_none() {
-            return Err(self.refuse("remove", format!("object path {key:?} does not exist")));
+            return Err(internal_error(format!(
+                "object path {key:?} does not exist"
+            )));
         }
         Ok(())
     }

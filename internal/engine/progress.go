@@ -14,7 +14,9 @@ func newBackupCallback(fn func(Progress)) *backupCallback {
 	return &backupCallback{sink: newLatestDispatcher("backup progress", fn)}
 }
 
-func (c *backupCallback) submit(phase int32, percent float64, done, total uint64) {
+// Native frames carry only what they moved, so the run total is accumulated
+// here — ahead of the dispatcher, whose coalescing would otherwise drop bytes.
+func (c *backupCallback) submit(phase int32, percent float64, bytes uint64) {
 	c.mu.Lock()
 	p := c.last
 	if phase == 1 {
@@ -25,9 +27,7 @@ func (c *backupCallback) submit(phase int32, percent float64, done, total uint64
 	if percent >= 0 {
 		p.Percent = int(percent)
 	}
-	if done > 0 || total > 0 {
-		p.BytesDone = int64(done)
-	}
+	p.BytesDone += int64(bytes)
 	c.last = p
 	c.sink.submit(p)
 	c.mu.Unlock()

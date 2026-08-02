@@ -103,11 +103,11 @@ typedef struct {
 typedef void (*av_install_cb)(size_t, int32_t, uint64_t);
 
 /**
- * Progress callback into Go: (opaque operation id, phase, percent, done, total).
- * Phase is BACKUP_PHASE_*; percent < 0, done == 0, total == 0 each mean "not
- * reported this call". `done` is cumulative; `total` is the current batch size.
+ * Progress callback into Go: (opaque operation id, phase, percent, bytes).
+ * Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
+ * `bytes` counts this call alone — the host owns the running sum.
  */
-typedef void (*av_backup_cb)(size_t, int32_t, double, uint64_t, uint64_t);
+typedef void (*av_backup_cb)(size_t, int32_t, double, uint64_t);
 
 #ifdef __cplusplus
 extern "C" {
