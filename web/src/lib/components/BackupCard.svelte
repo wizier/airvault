@@ -159,15 +159,15 @@
             {#if speed}<span class="shrink-0">{speed}</span>{/if}
           </div>
         {/if}
-        {#if live?.stage === 'Waiting for device' && !isRestore}
+        {#if live?.stage === 'waiting_for_device' && !isRestore}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
             Wake the phone or connect it by USB — the backup starts as soon as it appears.
           </p>
-        {:else if live?.stage === 'Preparing' && !isRestore}
+        {:else if live?.stage === 'preparing' && !isRestore}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
-            Enter the iPhone passcode on the phone to continue — current iOS versions require it before every backup.
+            Enter the iPhone passcode on the phone to continue
           </p>
         {/if}
       </div>

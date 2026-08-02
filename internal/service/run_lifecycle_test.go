@@ -122,7 +122,7 @@ func TestCancelWinsRefusesCommit(t *testing.T) {
 func TestProgressSinkPhaseTransitions(t *testing.T) {
 	s := newTestService()
 	run := registerRun(s)
-	sink := s.progressSink(run, StageBackingUp, 0)
+	sink := s.progressSink(run, "", StageBackingUp, 0)
 
 	sink(engine.Progress{BytesDone: 123})
 	if got := s.runs[run.udid]; got.phase != runPhaseActive || got.progress.Stage != StageBackingUp {
@@ -147,12 +147,43 @@ func TestProgressSinkPhaseTransitions(t *testing.T) {
 	}
 }
 
+// The idle stage holds until the first payload byte, which is the whole window
+// where the phone diffs against the previous backup and sends nothing.
+func TestProgressSinkNamesTheWaitBeforeTheFirstByte(t *testing.T) {
+	s := newTestService()
+	run := registerRun(s)
+	sink := s.progressSink(run, StageCalculating, StageBackingUp, 0)
+
+	sink(engine.Progress{})
+	if got := s.runs[run.udid].progress.Stage; got != StageCalculating {
+		t.Fatalf("before any byte: stage=%q", got)
+	}
+
+	sink(engine.Progress{BytesDone: 1})
+	if got := s.runs[run.udid].progress.Stage; got != StageBackingUp {
+		t.Fatalf("after the first byte: stage=%q", got)
+	}
+}
+
+// A percentage can reach the host before the bytes of the file that earned it,
+// and it means the phone is sending just the same.
+func TestProgressSinkLeavesTheIdleStageOnAPercentAlone(t *testing.T) {
+	s := newTestService()
+	run := registerRun(s)
+	sink := s.progressSink(run, StageCalculating, StageBackingUp, 0)
+
+	sink(engine.Progress{Percent: 1})
+	if got := s.runs[run.udid].progress.Stage; got != StageBackingUp {
+		t.Fatalf("percent without bytes: stage=%q", got)
+	}
+}
+
 // A known total makes the percentage an exact byte ratio; the clamp covers
 // restore options that leave part of a snapshot unsent.
 func TestProgressSinkDerivesPercentFromAKnownTotal(t *testing.T) {
 	s := newTestService()
 	run := registerRun(s)
-	sink := s.progressSink(run, StageRestoring, 400)
+	sink := s.progressSink(run, "", StageRestoring, 400)
 
 	sink(engine.Progress{BytesDone: 100, Percent: 77})
 	if got := s.runs[run.udid].progress; got.Percent != 25 || got.Transferred != 100 {

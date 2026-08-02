@@ -14,9 +14,9 @@ import (
 )
 
 // progressSink builds the engine-progress callback for backup/restore. Speed is
-// the average over the interval each emit covers. `total` makes the percentage
-// an exact byte ratio; a backup passes 0, knowing no total until the phone sends.
-func (s *Service) progressSink(run *runReservation, activeStage string, total int64) func(engine.Progress) {
+// the average over the interval each emit covers, `total` makes the percentage an
+// exact byte ratio, and `idleStage` names the wait before the first payload byte.
+func (s *Service) progressSink(run *runReservation, idleStage, activeStage RunStage, total int64) func(engine.Progress) {
 	const emitEvery = 5 * time.Second
 	var (
 		lastEmit    time.Time
@@ -52,6 +52,9 @@ func (s *Service) progressSink(run *runReservation, activeStage string, total in
 			progress.Stage, progress.Cancelling, progress.Speed = active.progress.Stage, true, 0
 		default:
 			progress.Stage = activeStage
+			if transferred == 0 && percent == 0 && idleStage != "" {
+				progress.Stage = idleStage
+			}
 		}
 		active.progress = progress
 		// Keep progress ordered with cancellation and terminal removal.
@@ -72,20 +75,24 @@ func (s *Service) transferredBytes(run *runReservation) int64 {
 	return 0
 }
 
+// RunStage is the machine name of a run's phase; the UI owns its label.
+type RunStage string
+
 const (
-	StageWaiting           = "Waiting for device"
-	StagePreparing         = "Preparing"
-	StageActivating        = "Activating"
-	StageBackingUp         = "Backing up"
-	StageFinalizing        = "Finalizing"
-	StageRestoring         = "Restoring"
-	StageCancellingBackup  = "Cancelling backup"
-	StageCancellingRestore = "Cancelling restore"
+	StageWaiting           RunStage = "waiting_for_device"
+	StagePreparing         RunStage = "preparing"
+	StageActivating        RunStage = "activating"
+	StageBackingUp         RunStage = "backing_up"
+	StageCalculating       RunStage = "calculating_changes"
+	StageFinalizing        RunStage = "finalizing"
+	StageRestoring         RunStage = "restoring"
+	StageCancellingBackup  RunStage = "cancelling_backup"
+	StageCancellingRestore RunStage = "cancelling_restore"
 )
 
 // setRunStage publishes a coarse Go-side stage (e.g. activation) before the
 // engine's own progress stream takes over.
-func (s *Service) setRunStage(run *runReservation, stage string) {
+func (s *Service) setRunStage(run *runReservation, stage RunStage) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	active := s.runs[run.udid]

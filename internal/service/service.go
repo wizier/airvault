@@ -37,14 +37,14 @@ type activeRun struct {
 }
 
 type RunProgress struct {
-	RunID       string `json:"runId"`
-	UDID        string `json:"udid"`
-	Percent     int    `json:"progress"`
-	Stage       string `json:"stage"`
-	Restore     bool   `json:"restore,omitempty"`
-	Cancelling  bool   `json:"cancelling,omitempty"`
-	Transferred int64  `json:"transferred"`
-	Speed       int64  `json:"speed"`
+	RunID       string   `json:"runId"`
+	UDID        string   `json:"udid"`
+	Percent     int      `json:"progress"`
+	Stage       RunStage `json:"stage"`
+	Restore     bool     `json:"restore,omitempty"`
+	Cancelling  bool     `json:"cancelling,omitempty"`
+	Transferred int64    `json:"transferred"`
+	Speed       int64    `json:"speed"`
 }
 
 // Service is the backup/device orchestrator.

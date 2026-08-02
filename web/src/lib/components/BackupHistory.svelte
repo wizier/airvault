@@ -288,9 +288,9 @@
       {#if reclaiming}
         <span class="text-base-content/60">Calculating space freed…</span>
       {:else if reclaimable !== null}
-        <span>Frees about <span class="font-medium tabular-nums">{formatBytes(reclaimable)}</span> on disk.</span>
+        <span>Frees about <span class="font-medium tabular-nums">{formatBytes(reclaimable)}</span> on disk</span>
       {:else if reclaimError}
-        <span class="text-base-content/60">Space could not be calculated. The restore points can still be deleted safely.</span>
+        <span class="text-base-content/60">Space could not be calculated right now</span>
       {:else}
         <span class="text-base-content/60">No reclaim estimate is available.</span>
       {/if}

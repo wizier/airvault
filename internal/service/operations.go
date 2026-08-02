@@ -82,7 +82,7 @@ func (s *Service) discardRun(run *runReservation) {
 
 // announceRun publishes the reserved run. From here it is visible to Running(),
 // progress and cancellation, and it must reach a terminal event via completeRun.
-func (s *Service) announceRun(run *runReservation, stage string) error {
+func (s *Service) announceRun(run *runReservation, stage RunStage) error {
 	s.runMu.Lock()
 	if _, busy := s.runs[run.udid]; busy {
 		s.runMu.Unlock()

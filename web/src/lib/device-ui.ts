@@ -1,7 +1,7 @@
 // Shared mappings from backend enums to display tone/label/icon so the device
 // tile and the device page stay visually consistent.
 
-import type { RunningProgress } from './api/backups';
+import type { RunningProgress, RunStage } from './api/backups';
 import type { BatteryState, Connection, Device } from './api/devices';
 import type { IconName } from './components/icons';
 
@@ -137,26 +137,21 @@ export function modelDisplayName(productType?: string): string | undefined {
   return productType ? (IPHONE_MODELS[productType] ?? productType) : undefined;
 }
 
-/** Display label for a run's stage. The server sends terse phase constants
- *  (see service.Stage*); the passcode hint keys off the raw 'Preparing'. */
-export function stageUi(stage: string | undefined, restore?: boolean): string {
-  switch (stage) {
-    case 'Waiting for device':
-      return 'Waiting for the phone to come online…';
-    case 'Preparing':
-      return 'Preparing on the phone…';
-    case 'Activating':
-      return 'Activating the phone…';
-    case 'Backing up':
-      return 'Backing up';
-    case 'Finalizing':
-      return 'Finalizing the backup locally…';
-    case 'Restoring':
-      return 'Restoring';
-    case 'Cancelling backup':
-    case 'Cancelling restore':
-      return 'Cancelling…';
-    default:
-      return restore ? 'Restoring…' : 'Backing up…';
-  }
+/** An ellipsis marks a phase the progress bar cannot measure. Record, not a
+ *  switch: a stage added to RunStage without a label stops compiling. */
+const STAGE_LABELS: Record<RunStage, string> = {
+  waiting_for_device: 'Waiting for the phone to come online…',
+  preparing: 'Preparing on the phone…',
+  activating: 'Activating the phone…',
+  calculating_changes: 'Calculating changes on the phone…',
+  backing_up: 'Backing up',
+  finalizing: 'Finalizing the backup locally…',
+  restoring: 'Restoring',
+  cancelling_backup: 'Cancelling…',
+  cancelling_restore: 'Cancelling…',
+};
+
+/** A server ahead of this client can name a stage it has no label for. */
+export function stageUi(stage: RunStage | undefined, restore?: boolean): string {
+  return (stage && STAGE_LABELS[stage]) || (restore ? 'Restoring…' : 'Backing up…');
 }

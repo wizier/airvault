@@ -100,7 +100,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 		SnapshotID:     engine.SnapshotID(snapshot.ID),
 		BaseSnapshotID: engine.SnapshotID(baseSnapshotID),
 	}
-	addedBytes, engineErr := s.engine.BuildSnapshot(ctx, request, s.progressSink(run, StageBackingUp, 0))
+	addedBytes, engineErr := s.engine.BuildSnapshot(ctx, request, s.progressSink(run, incrementalStage(baseSnapshotID), StageBackingUp, 0))
 	var sizeBytes int64
 	var projection model.Backup
 	var transferredBytes int64
@@ -171,6 +171,15 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	}
 	slog.DebugContext(finalCtx, "backup: done", "device", device.Name, "size_bytes", sizeBytes)
 	return runOutcome{sizeBytes: sizeBytes}, nil
+}
+
+// Only an incremental backup pauses on the phone long enough to name: it pulls
+// the previous manifest and diffs against it before the first file crosses.
+func incrementalStage(baseSnapshotID string) RunStage {
+	if baseSnapshotID == "" {
+		return ""
+	}
+	return StageCalculating
 }
 
 func (s *Service) finalizeCancelledBackup(

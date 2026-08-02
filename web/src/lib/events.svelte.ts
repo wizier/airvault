@@ -255,7 +255,7 @@ class EventsClient {
             runId: d.runId,
             udid: d.udid,
             progress: 0,
-            stage: d.restore ? 'Restoring' : 'Waiting for device',
+            stage: d.restore ? 'restoring' : 'waiting_for_device',
             restore: d.restore,
             transferred: 0,
             speed: 0,

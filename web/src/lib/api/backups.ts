@@ -1,12 +1,24 @@
 import { request } from './client';
 import type { AcceptedRun } from './runs';
 
+/** Phase of a run, as the server names it (see Go service.Stage*). Labels for
+ *  these live in the UI layer; the wire never carries display text. */
+export type RunStage =
+  | 'waiting_for_device'
+  | 'preparing'
+  | 'activating'
+  | 'calculating_changes'
+  | 'backing_up'
+  | 'finalizing'
+  | 'restoring'
+  | 'cancelling_backup'
+  | 'cancelling_restore';
+
 export interface RunningProgress {
   runId: string;
   udid: string;
   progress: number;
-  /** Display-only phase constant (see Go service.Stage*). */
-  stage: string;
+  stage: RunStage;
   /** The run applies a snapshot onto the device instead of backing it up. */
   restore?: boolean;
   /** A cancel was accepted; the run is winding down. */
