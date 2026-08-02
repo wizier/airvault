@@ -15,7 +15,7 @@ ARG VERSION=dev
 RUN VITE_APP_VERSION=$VERSION npm run build
 
 # ── 2. Rust idevice shim -> static lib for cgo ──
-FROM rust:1.92.0-trixie AS shim
+FROM rust:1.97.1-trixie AS shim
 RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
