@@ -41,9 +41,8 @@ func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresen
 			pairable[udid] = true
 		}
 	}
-	s.live.applyPresence(presence)
-	wantRefresh = s.publishConnections(ctx, presence, pairable) || wantRefresh
-	return wantRefresh
+	transitions := s.live.applyPresence(presence)
+	return s.publishConnections(ctx, transitions, pairable) || wantRefresh
 }
 
 // screenLockSignal resolves SpringBoard's paired notifications into an
@@ -59,9 +58,9 @@ func (s *Service) screenLockSignal(udid string, signal engine.ScreenLockSignal) 
 
 // publishConnections translates pure runtime transitions into persistence and
 // domain events. The runtime store itself knows nothing about either concern.
-func (s *Service) publishConnections(ctx context.Context, connections map[string]string, pairable map[string]bool) bool {
+func (s *Service) publishConnections(ctx context.Context, transitions []connectionTransition, pairable map[string]bool) bool {
 	wantRefresh := false
-	for _, transition := range s.live.publish(connections) {
+	for _, transition := range transitions {
 		udid, previous, current := transition.udid, transition.from, transition.to
 		switch {
 		case previous == "" && current != "":

@@ -98,7 +98,7 @@ func hardwareInfo(report engine.HardwareReport) HardwareInfo {
 		BatteryHealthPct:      batteryHealthPercent(b),
 		BatteryCycles:         uint64(max(b.CycleCount, 0)),
 		BatteryDesignCapacity: uint64(max(b.DesignCapacity, 0)),
-		BatteryMaxCapacity:    uint64(max(fullChargeCapacity(b), 0)),
+		BatteryMaxCapacity:    uint64(fullChargeCapacity(b)),
 		BatteryVoltageMv:      uint64(max(b.Voltage, 0)),
 		BatteryAmperageMa:     b.InstantAmperage,
 		BatteryTemperature:    b.Temperature,

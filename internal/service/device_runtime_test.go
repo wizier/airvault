@@ -17,14 +17,17 @@ func TestPresenceFollowsMuxerList(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			live := newDeviceRuntimeStore()
 			presence := map[string]string{"phone": transport}
-			live.applyPresence(presence)
-			live.publish(presence)
+			if transitions := live.applyPresence(presence); len(transitions) != 1 || transitions[0].to != transport {
+				t.Fatalf("attach transitions = %#v, want offline→%s", transitions, transport)
+			}
+			if transitions := live.applyPresence(presence); transitions != nil {
+				t.Fatalf("an unchanged muxer list reported transitions %#v", transitions)
+			}
 			if got := live.connection("phone"); got != transport {
 				t.Fatalf("a listed %s phone is online, got %q", transport, got)
 			}
 			// The muxer delisting it (netmuxd's heartbeat gave up) folds into offline.
-			live.applyPresence(nil)
-			transitions := live.publish(nil)
+			transitions := live.applyPresence(nil)
 			if len(transitions) != 1 || transitions[0].from != transport || transitions[0].to != "" {
 				t.Fatalf("detach transitions = %#v, want %s→offline", transitions, transport)
 			}
@@ -39,7 +42,6 @@ func TestScreenLockDoesNotGateConnection(t *testing.T) {
 	live := newDeviceRuntimeStore()
 	presence := map[string]string{"phone": "wifi"}
 	live.applyPresence(presence)
-	live.publish(presence)
 	changed, locked, applied := live.applyScreenLock("phone", engine.ScreenLockComplete, time.Now(), screenLockPairWindow)
 	if !applied || !locked || !changed {
 		t.Fatalf("lock signal not applied: applied=%v locked=%v changed=%v", applied, locked, changed)

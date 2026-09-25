@@ -8,25 +8,15 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// restoreRequest mirrors service.RestoreOptions field for field. Seeded with
-// the defaults before binding, an omitted field keeps the standard behavior and
-// an explicit false stays an override.
-type restoreRequest struct {
-	SnapshotID             string `json:"snapshotId"`
-	Password               string `json:"password"`
-	SystemFiles            bool   `json:"systemFiles"`
-	Reboot                 bool   `json:"reboot"`
-	SettingsFromBackup     bool   `json:"settingsFromBackup"`
-	RemoveItemsNotRestored bool   `json:"removeItemsNotRestored"`
-}
-
 // [POST] /api/devices/:udid/restore
+// Binding over the defaults keeps them for omitted fields, while an explicit
+// false stays an override.
 func (h *Handler) startRestore(c *echo.Context) error {
-	request := restoreRequest(service.DefaultRestoreOptions())
-	if err := echo.BindBody(c, &request); err != nil {
+	opts := service.DefaultRestoreOptions()
+	if err := echo.BindBody(c, &opts); err != nil {
 		return err
 	}
-	runID, err := h.svc.StartRestore(c.Request().Context(), c.Param("udid"), service.RestoreOptions(request))
+	runID, err := h.svc.StartRestore(c.Request().Context(), c.Param("udid"), opts)
 	if err != nil {
 		return err
 	}

@@ -72,15 +72,6 @@ func (m *Manager) acquire(ctx context.Context, udid string) (func(), error) {
 	return sync.OnceFunc(func() { gate.Release(1) }), nil
 }
 
-// Forget drops a device's AFC gate after it is unregistered. Unpair holds the
-// exclusive device lease, so no session is using the gate here; a later pairing
-// recreates it lazily.
-func (m *Manager) Forget(udid string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.gates, udid)
-}
-
 type Session struct {
 	native  engine.AFCSession
 	root    Root

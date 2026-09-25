@@ -74,11 +74,11 @@ func manifestFileBytes(t *testing.T, store *Store, source string, snapshotIDs ..
 	t.Helper()
 	var total int64
 	for _, snapshotID := range snapshotIDs {
-		info, err := os.Stat(filepath.Join(store.root, source, "snapshots", snapshotID+".json"))
+		size, err := store.SnapshotManifestBytes(source, snapshotID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		total += info.Size()
+		total += size
 	}
 	return total
 }

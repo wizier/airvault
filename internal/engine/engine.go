@@ -35,12 +35,6 @@ func (e *Error) Error() string {
 	return "device engine operation failed"
 }
 
-// Is lets errors.Is(err, ErrDeviceUnreachable) match the stable unreachable
-// classification without callers parsing diagnostic text.
-func (e *Error) Is(target error) bool {
-	return target == ErrDeviceUnreachable && e.Kind == ErrorDeviceUnavailable
-}
-
 type ProgressPhase uint8
 
 const (
@@ -66,8 +60,8 @@ const (
 
 // InstallProgress is phase-local progress reported by the device engine.
 type InstallProgress struct {
-	Phase   InstallPhase
-	Percent int
+	Phase   InstallPhase `json:"phase"`
+	Percent int          `json:"percent"`
 }
 
 // BackupPasswordResult carries the encryption flag observed around
@@ -245,11 +239,6 @@ const (
 	TrustWiFiAuthorizationFailed PairingOutcome = "wifi_authorization_failed" // USB trust saved, mandatory Wi-Fi setup failed
 	TrustError                   PairingOutcome = "error"
 )
-
-// ErrDeviceUnreachable is matched (via Error.Is) by any engine error of kind
-// ErrorDeviceUnavailable: no session could be established, as opposed to a
-// logical read failure. Presence itself still follows the muxer's device list.
-var ErrDeviceUnreachable = errors.New("device unreachable")
 
 type ScreenLockSignal uint8
 

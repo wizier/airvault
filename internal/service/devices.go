@@ -158,7 +158,6 @@ func (s *Service) forgetDevice(ctx context.Context, udid string) error {
 	s.live.removeLocal(udid)
 	s.clearLastRunErrors(udid)
 	s.gallery.remove(udid)
-	s.files.Forget(udid)
 	if err := s.store.Device.Delete(ctx, udid); err != nil {
 		return err
 	}

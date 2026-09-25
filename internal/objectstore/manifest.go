@@ -324,9 +324,9 @@ func (seal *manifestEntriesSeal) checksum() string {
 	return fmt.Sprintf("%x", seal.digest.Sum(nil))
 }
 
-// validLogicalPath accepts only a non-empty, already-clean relative path.
+// validLogicalPath accepts only a non-empty, already-clean relative path:
+// fs.ValidPath rejects "", a rooted path and empty, "." or ".." elements.
 func validLogicalPath(value string) bool {
-	return value != "" && len(value) <= 4096 && !strings.HasPrefix(value, "/") &&
-		!strings.ContainsAny(value, "\\\x00\u2028\u2029") &&
-		path.Clean(value) == value && value != "." && value != ".." && !strings.HasPrefix(value, "../")
+	return fs.ValidPath(value) && value != "." && len(value) <= 4096 &&
+		!strings.ContainsAny(value, "\\\x00\u2028\u2029")
 }

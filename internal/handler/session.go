@@ -21,7 +21,7 @@ func (h *Handler) createSession(c *echo.Context) error {
 		return err
 	}
 	if !h.auth.Valid(auth.Username, strings.TrimSpace(req.Token)) {
-		return &publicError{http.StatusUnauthorized, "authentication_required"}
+		return echo.ErrUnauthorized
 	}
 	value, expires := h.auth.IssueSession()
 	c.SetCookie(sessionCookie(value, expires))

@@ -26,9 +26,7 @@ func (s *Service) progressSink(run *runReservation, idleStage, activeStage RunSt
 	)
 	return func(p engine.Progress) {
 		finalizing := p.Phase == engine.ProgressPhaseSealing
-		if p.BytesDone > transferred {
-			transferred = p.BytesDone
-		}
+		transferred = p.BytesDone // the engine keeps it monotonic
 		percent := p.Percent
 		if total > 0 {
 			percent = min(int(transferred*100/total), 100)

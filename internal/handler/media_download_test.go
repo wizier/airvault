@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +28,7 @@ func (testDownload) Close()             {}
 func serveTestDownload(request *http.Request, download deviceDownload) (*httptest.ResponseRecorder, error) {
 	recorder := httptest.NewRecorder()
 	c := echo.New().NewContext(request, recorder)
-	err := serveDownload(c, func(string) (deviceDownload, error) { return download, nil })
+	err := serveDownload(c, download, path.Base(c.QueryParam("path")))
 	return recorder, err
 }
 

@@ -140,7 +140,7 @@ func (s *Service) enumerateCameraRoll(ctx context.Context, udid string) ([]Galle
 	if err != nil {
 		return nil, err
 	}
-	var assets []GalleryAsset
+	assets := []GalleryAsset{} // never nil, so an empty camera roll serializes as []
 	for _, album := range albums {
 		entry, statErr := session.Stat(album)
 		if statErr != nil {

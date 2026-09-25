@@ -21,12 +21,6 @@ func actionErrorCode(err error, fallback string) string {
 	return fallback
 }
 
-// USBDevice is a device reachable over USB, offered by the pairing wizard.
-type USBDevice struct {
-	UDID string `json:"udid"`
-	Name string `json:"name"`
-}
-
 // ListPairableUSB lists USB devices that are candidates for pairing: already-paired
 // ones are filtered out (the wizard only offers new phones), but a registered
 // device whose pairing broke still shows so it can be re-paired.
@@ -46,7 +40,7 @@ func (s *Service) ListPairableUSB(ctx context.Context) ([]USBDevice, error) {
 		if err == nil && dev.Paired {
 			continue
 		}
-		out = append(out, USBDevice{UDID: udid, Name: d.Name})
+		out = append(out, d)
 	}
 	return out, nil
 }
@@ -90,7 +84,7 @@ func (s *Service) StartTrustFlow(ctx context.Context, udid string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if !slices.ContainsFunc(usb, func(device USBDevice) bool { return device.UDID == udid }) {
+	if !slices.ContainsFunc(usb, func(device USBDevice) bool { return string(device.DeviceID) == udid }) {
 		return "", domain.ErrDeviceOffline
 	}
 	return s.launchCommand(s.app, runKindPairing, udid,

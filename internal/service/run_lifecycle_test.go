@@ -124,7 +124,7 @@ func TestProgressSinkPhaseTransitions(t *testing.T) {
 		t.Fatalf("normal frame: phase=%d stage=%q", got.phase, got.progress.Stage)
 	}
 
-	sink(engine.Progress{Phase: engine.ProgressPhaseSealing})
+	sink(engine.Progress{Phase: engine.ProgressPhaseSealing, BytesDone: 123})
 	if got := s.runs[run.udid]; got.phase != runPhaseFinalizing ||
 		got.progress.Stage != StageFinalizing || got.progress.Percent != 100 ||
 		got.progress.Transferred != 123 || got.progress.Speed != 0 {

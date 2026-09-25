@@ -19,15 +19,6 @@ type errorBody struct {
 	Code string `json:"code"`
 }
 
-// publicError is a handler-authored failure with a stable client-facing code;
-// the frontend owns presentation text.
-type publicError struct {
-	status int
-	code   string
-}
-
-func (e *publicError) Error() string { return e.code }
-
 // errorHandler renders all HTTP/API failures through the same envelope. Echo
 // framework failures (routing, method, body size) are mapped as well as domain
 // errors returned by services.
@@ -45,20 +36,24 @@ func (h *Handler) errorHandler(c *echo.Context, err error) {
 			"error", err, "path", c.Request().URL.Path, "status", resp.Status)
 		return
 	}
+	status, body := mapAndLogAPIError(c, err)
+	_ = c.JSON(status, errorResponse{Error: body})
+}
+
+// mapAndLogAPIError maps err to its wire status and code and logs server faults.
+// Streams that already sent their headers deliver the code in-band.
+func mapAndLogAPIError(c *echo.Context, err error) (int, errorBody) {
 	status, body := mapAPIError(err)
 	if status >= http.StatusInternalServerError {
 		slog.Error("request failed", "error", err, "path", c.Request().URL.Path, "status", status, "code", body.Code)
 	}
-	_ = c.JSON(status, errorResponse{Error: body})
+	return status, body
 }
 
 func mapAPIError(err error) (int, errorBody) {
-	var public *publicError
 	var validation *domain.ValidationError
 	var action *domain.ActionError
 	switch {
-	case errors.As(err, &public):
-		return public.status, errorBody{Code: public.code}
 	case errors.As(err, &validation):
 		return http.StatusUnprocessableEntity, errorBody{Code: validation.Code}
 	case errors.As(err, &action):
@@ -85,13 +80,15 @@ func mapAPIError(err error) (int, errorBody) {
 	return http.StatusInternalServerError, errorBody{Code: "internal_error"}
 }
 
-// statusCodeName names the statuses only the framework produces: bind failures
-// (400), CSRF (403), the router (404/405) and the body limit (413). Handler-
-// authored errors carry their own code as domain.* or publicError instead.
+// statusCodeName names the plain HTTP statuses: those of the framework (bind,
+// CSRF, router, body limit) and the echo sentinels handlers return for auth
+// (401) and previews (413/415). Domain errors carry their own code instead.
 func statusCodeName(status int) string {
 	switch status {
 	case http.StatusBadRequest:
 		return "bad_request"
+	case http.StatusUnauthorized:
+		return "authentication_required"
 	case http.StatusForbidden:
 		return "forbidden"
 	case http.StatusNotFound:
@@ -100,6 +97,8 @@ func statusCodeName(status int) string {
 		return "method_not_allowed"
 	case http.StatusRequestEntityTooLarge:
 		return "payload_too_large"
+	case http.StatusUnsupportedMediaType:
+		return "unsupported_media_type"
 	default:
 		if status >= 500 {
 			return "internal_error"

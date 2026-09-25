@@ -13,9 +13,7 @@ func TestAwaitReachableWakesOnPresence(t *testing.T) {
 		s := &Service{live: newDeviceRuntimeStore()}
 		go func() {
 			time.Sleep(10 * time.Millisecond)
-			presence := map[string]string{"phone": "wifi"}
-			s.live.applyPresence(presence)
-			s.live.publish(presence)
+			s.live.applyPresence(map[string]string{"phone": "wifi"})
 		}()
 		if !s.awaitReachable(context.Background(), "phone") {
 			t.Fatal("awaitReachable missed the phone coming online")

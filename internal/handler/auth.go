@@ -17,7 +17,7 @@ func apiAuthMiddleware(credentials *auth.Credentials) echo.MiddlewareFunc {
 			if authenticated(c, credentials) {
 				return next(c)
 			}
-			return &publicError{http.StatusUnauthorized, "authentication_required"}
+			return echo.ErrUnauthorized
 		}
 	}
 }

@@ -58,7 +58,7 @@ func (f *fakeFile) Read(buffer []byte) (int, error) {
 
 func (f *fakeFile) SeekTo(offset int64) error {
 	f.seeks++
-	_, err := f.Reader.Seek(offset, io.SeekStart)
+	_, err := f.Seek(offset, io.SeekStart)
 	return err
 }
 

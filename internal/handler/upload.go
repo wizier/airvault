@@ -4,12 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
-	"net/http"
 	"strings"
 
 	"github.com/wizier/airvault/internal/domain"
-	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/service"
 
 	"github.com/labstack/echo/v5"
 )
@@ -39,15 +37,10 @@ func (h *Handler) installApp(c *echo.Context) error {
 		if !strings.HasSuffix(strings.ToLower(part.FileName()), ".ipa") {
 			return &domain.ValidationError{Code: "invalid_ipa", Message: "the file must be an .ipa"}
 		}
-		return streamInstall(c, func(onProgress func(engine.InstallProgress)) error {
+		return streamInstall(c, func(onProgress func(service.InstallProgress)) error {
 			return h.svc.InstallApp(c.Request().Context(), udid, part, onProgress)
 		})
 	}
-}
-
-type installProgressLine struct {
-	Phase   engine.InstallPhase `json:"phase"`
-	Percent int                 `json:"percent"`
 }
 
 type installResultLine struct {
@@ -58,30 +51,25 @@ type installResultLine struct {
 // streamInstall runs install and answers with NDJSON once it reports progress:
 // one {"phase","percent"} line per update, then {"done":true} or
 // {"error":{"code"}}. A failure before any progress stays a plain JSON error.
-func streamInstall(c *echo.Context, install func(onProgress func(engine.InstallProgress)) error) error {
-	var controller *http.ResponseController
+func streamInstall(c *echo.Context, install func(onProgress func(service.InstallProgress)) error) error {
+	var stream *responseStream
 	var writeErr error
 	writeLine := func(line any) {
-		if controller == nil {
-			controller = startStream(c, "application/x-ndjson")
+		if stream == nil {
+			stream = startStream(c, "application/x-ndjson")
 		}
 		if writeErr != nil {
 			return // the client stopped reading; the install still runs to its end
 		}
 		data, _ := json.Marshal(line) // fixed shapes of strings, ints and bools
-		writeErr = writeStreamFrame(controller, c.Response(), string(data)+"\n")
+		writeErr = stream.write(string(data) + "\n")
 	}
-	err := install(func(progress engine.InstallProgress) {
-		writeLine(installProgressLine{Phase: progress.Phase, Percent: progress.Percent})
-	})
+	err := install(func(progress service.InstallProgress) { writeLine(progress) })
 	switch {
-	case err != nil && controller == nil:
+	case err != nil && stream == nil:
 		return err
 	case err != nil:
-		status, body := mapAPIError(err)
-		if status >= http.StatusInternalServerError {
-			slog.Error("install failed after streaming began", "error", err, "code", body.Code)
-		}
+		_, body := mapAndLogAPIError(c, err)
 		writeLine(installResultLine{Error: &body})
 	default:
 		writeLine(installResultLine{Done: true})

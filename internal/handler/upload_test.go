@@ -8,20 +8,20 @@ import (
 	"testing"
 
 	"github.com/wizier/airvault/internal/domain"
-	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/service"
 
 	"github.com/labstack/echo/v5"
 )
 
 func TestStreamInstallFraming(t *testing.T) {
-	progress := []engine.InstallProgress{
-		{Phase: engine.InstallPhaseStaging, Percent: 40},
-		{Phase: engine.InstallPhaseInstalling, Percent: 100},
+	progress := []service.InstallProgress{
+		{Phase: "staging", Percent: 40},
+		{Phase: "installing", Percent: 100},
 	}
 	progressLines := `{"phase":"staging","percent":40}` + "\n" + `{"phase":"installing","percent":100}` + "\n"
 	for _, tc := range []struct {
 		name        string
-		progress    []engine.InstallProgress
+		progress    []service.InstallProgress
 		result      error
 		status      int
 		contentType string
@@ -46,7 +46,7 @@ func TestStreamInstallFraming(t *testing.T) {
 			e := echo.New()
 			e.HTTPErrorHandler = (&Handler{}).errorHandler
 			e.POST("/install", func(c *echo.Context) error {
-				return streamInstall(c, func(onProgress func(engine.InstallProgress)) error {
+				return streamInstall(c, func(onProgress func(service.InstallProgress)) error {
 					for _, p := range tc.progress {
 						onProgress(p)
 					}

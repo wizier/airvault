@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"sync"
 
 	"github.com/wizier/airvault/internal/devicefs"
 	"github.com/wizier/airvault/internal/domain"
@@ -36,11 +35,8 @@ func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devi
 		return nil, newEngineActionError("download_failed", err)
 	}
 	return &DeviceDownload{
-		File: file,
-		cleanup: sync.OnceFunc(func() {
-			_ = file.Close()
-			release()
-		}),
+		File:    file,
+		cleanup: func() { _ = file.Close(); release() }, // both are idempotent
 	}, nil
 }
 

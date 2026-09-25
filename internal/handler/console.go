@@ -14,8 +14,7 @@ import (
 // [GET] /api/devices/:udid/console
 func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	udid := c.Param("udid")
-	rc := startStream(c, "text/event-stream")
-	res := c.Response()
+	stream := startStream(c, "text/event-stream")
 
 	// The device can go quiet for long stretches, so pings keep the stream
 	// alive. Writes come from two goroutines (records + pings), so they
@@ -24,7 +23,7 @@ func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	write := func(payload string) error {
 		wmu.Lock()
 		defer wmu.Unlock()
-		return writeStreamFrame(rc, res, payload)
+		return stream.write(payload)
 	}
 	if err := write(": connected\n\n"); err != nil {
 		return nil
@@ -63,7 +62,7 @@ func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	if err != nil && ctx.Err() == nil {
 		// Headers are committed — deliver the failure in-band; the console UI
 		// listens for this event and stops reconnecting.
-		_, body := mapAPIError(err)
+		_, body := mapAndLogAPIError(c, err)
 		data, _ := json.Marshal(body)
 		_ = write("event: error\ndata: " + string(data) + "\n\n")
 	}

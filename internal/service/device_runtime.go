@@ -2,7 +2,6 @@ package service
 
 import (
 	"cmp"
-	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -34,34 +33,36 @@ type connectionTransition struct {
 	to   string
 }
 
-// deviceRuntimeStore owns only live device evidence and its published
-// connection projection. Keeping this mutex separate from Service.runMu stops
-// presence callbacks from sharing a lock with backup business state.
+// deviceRuntimeStore owns only live device evidence. Keeping this mutex
+// separate from Service.runMu stops presence callbacks from sharing a lock with
+// backup business state. changed is closed and renewed on every connection change.
 type deviceRuntimeStore struct {
-	mu          sync.RWMutex
-	devices     map[string]*deviceRuntime
-	connections map[string]string
-	changed     chan struct{}
+	mu      sync.RWMutex
+	devices map[string]*deviceRuntime
+	changed chan struct{}
 }
 
 func newDeviceRuntimeStore() *deviceRuntimeStore {
 	return &deviceRuntimeStore{
-		devices:     map[string]*deviceRuntime{},
-		connections: map[string]string{},
-		changed:     make(chan struct{}),
+		devices: map[string]*deviceRuntime{},
+		changed: make(chan struct{}),
 	}
 }
 
 func (s *deviceRuntimeStore) connection(udid string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.connections[udid]
+	if r := s.devices[udid]; r != nil {
+		return r.presence
+	}
+	return ""
 }
 
 func (s *deviceRuntimeStore) connectionWait(udid string) (bool, <-chan struct{}) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.connections[udid] != "", s.changed
+	r := s.devices[udid]
+	return r != nil && r.presence != "", s.changed
 }
 
 func (s *deviceRuntimeStore) snapshot() map[string]deviceRuntime {
@@ -74,14 +75,19 @@ func (s *deviceRuntimeStore) snapshot() map[string]deviceRuntime {
 	return out
 }
 
-// applyPresence replaces raw muxer evidence. Pairing/registration policy is
-// intentionally absent.
-func (s *deviceRuntimeStore) applyPresence(presence map[string]string) {
+// applyPresence replaces raw muxer evidence and returns the connection
+// transitions. The Service layer decides which logs, database writes and domain
+// events follow; pairing/registration policy is intentionally absent.
+func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connectionTransition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for udid := range s.devices {
+	var transitions []connectionTransition
+	for udid, r := range s.devices {
 		if _, still := presence[udid]; !still {
 			delete(s.devices, udid)
+			if r.presence != "" {
+				transitions = append(transitions, connectionTransition{udid: udid, from: r.presence})
+			}
 		}
 	}
 	for udid, transport := range presence {
@@ -90,8 +96,20 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) {
 			r = &deviceRuntime{}
 			s.devices[udid] = r
 		}
-		r.presence = transport
+		if r.presence != transport {
+			transitions = append(transitions, connectionTransition{udid: udid, from: r.presence, to: transport})
+			r.presence = transport
+		}
 	}
+	if len(transitions) == 0 {
+		return nil
+	}
+	close(s.changed)
+	s.changed = make(chan struct{})
+	slices.SortFunc(transitions, func(a, b connectionTransition) int {
+		return cmp.Or(cmp.Compare(a.udid, b.udid), cmp.Compare(a.to, b.to))
+	})
+	return transitions
 }
 
 func (s *deviceRuntimeStore) applyScreenLock(
@@ -138,47 +156,13 @@ func (s *deviceRuntimeStore) applyActivation(udid, state string) bool {
 	return true
 }
 
-// publish commits a validated projection and returns pure transitions. The
-// Service layer decides which logs, database writes and domain events follow.
-func (s *deviceRuntimeStore) publish(next map[string]string) []connectionTransition {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	old := s.connections
-	if maps.Equal(old, next) {
-		return nil
-	}
-	s.connections = maps.Clone(next)
-	close(s.changed)
-	s.changed = make(chan struct{})
-
-	transitions := make([]connectionTransition, 0)
-	for udid, connection := range next {
-		if old[udid] != connection {
-			transitions = append(transitions, connectionTransition{udid: udid, from: old[udid], to: connection})
-		}
-	}
-	for udid, connection := range old {
-		if next[udid] == "" {
-			transitions = append(transitions, connectionTransition{udid: udid, from: connection})
-			if r := s.devices[udid]; r != nil {
-				r.screen, r.lockedAt = screenLockUnknown, time.Time{}
-			}
-		}
-	}
-	slices.SortFunc(transitions, func(a, b connectionTransition) int {
-		return cmp.Or(cmp.Compare(a.udid, b.udid), cmp.Compare(a.to, b.to))
-	})
-	return transitions
-}
-
 // removeLocal is used after an explicit registry removal. It intentionally
 // emits no online/offline transition; the caller publishes device.removed.
 func (s *deviceRuntimeStore) removeLocal(udid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.devices, udid)
-	if _, ok := s.connections[udid]; ok {
-		delete(s.connections, udid)
+	if _, ok := s.devices[udid]; ok {
+		delete(s.devices, udid)
 		close(s.changed)
 		s.changed = make(chan struct{})
 	}

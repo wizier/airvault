@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +13,7 @@ import (
 
 // [GET] /api/events
 func (h *Handler) streamEvents(c *echo.Context) error {
-	rc := startStream(c, "text/event-stream")
-	res := c.Response()
+	stream := startStream(c, "text/event-stream")
 	// IDs are "<epoch>-<seq>"; a Last-Event-ID from another process (epoch
 	// mismatch) has no replayable history here and must trigger a resync.
 	lastEventID := c.Request().Header.Get("Last-Event-ID")
@@ -34,11 +32,11 @@ func (h *Handler) streamEvents(c *echo.Context) error {
 	if !complete || staleEpoch {
 		initial += "event: " + events.StreamReset + "\ndata: {}\n\n"
 	}
-	if err := writeStreamFrame(rc, res, initial); err != nil {
+	if err := stream.write(initial); err != nil {
 		return nil
 	}
 	for _, event := range replay {
-		if err := writeEvent(rc, res, h.bus.Epoch(), event); err != nil {
+		if err := writeEvent(stream, h.bus.Epoch(), event); err != nil {
 			return nil
 		}
 	}
@@ -52,25 +50,25 @@ func (h *Handler) streamEvents(c *echo.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ping.C:
-			if err := writeStreamFrame(rc, res, ": ping\n\n"); err != nil {
+			if err := stream.write(": ping\n\n"); err != nil {
 				return nil
 			}
 		case event, ok := <-ch:
 			if !ok {
 				return nil
 			}
-			if err := writeEvent(rc, res, h.bus.Epoch(), event); err != nil {
+			if err := writeEvent(stream, h.bus.Epoch(), event); err != nil {
 				return nil
 			}
 		}
 	}
 }
 
-func writeEvent(controller *http.ResponseController, res http.ResponseWriter, epoch string, event events.Event) error {
+func writeEvent(stream *responseStream, epoch string, event events.Event) error {
 	data, err := json.Marshal(event.Data)
 	if err != nil {
 		data = []byte("null")
 	}
 	frame := fmt.Sprintf("id: %s-%d\nevent: %s\ndata: %s\n\n", epoch, event.ID, event.Type, data)
-	return writeStreamFrame(controller, res, frame)
+	return stream.write(frame)
 }

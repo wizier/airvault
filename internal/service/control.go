@@ -44,30 +44,26 @@ func (s *Service) Power(ctx context.Context, udid, action string) error {
 	return err
 }
 
+// Engine records whose JSON shape is already the API's are served as they are.
+type (
+	App             = engine.App
+	Battery         = engine.Battery
+	ConsoleLine     = engine.ConsoleLine
+	InstallProgress = engine.InstallProgress
+	USBDevice       = engine.USBDevice
+)
+
 // LiveBattery is passive telemetry: an on-demand charge read that never wakes
 // the phone and never drives presence. Unreachable surfaces as device-offline.
-func (s *Service) LiveBattery(ctx context.Context, udid string) (engine.Battery, error) {
+func (s *Service) LiveBattery(ctx context.Context, udid string) (Battery, error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
-		return engine.Battery{}, err
+		return Battery{}, err
 	}
 	battery, err := s.engine.Battery(ctx, engine.DeviceID(udid))
 	if err != nil {
-		if errors.Is(err, engine.ErrDeviceUnreachable) {
-			return engine.Battery{}, domain.ErrDeviceOffline
-		}
-		return engine.Battery{}, newEngineActionError("battery_query_failed", err)
+		return Battery{}, newEngineActionError("battery_query_failed", err)
 	}
 	return battery, nil
-}
-
-// App is one installed application. FileSharing is true when the app exposes
-// its Documents over house_arrest (drives the "Files" action). iOS does not
-// report per-app disk size over installation_proxy.
-type App struct {
-	BundleID    string `json:"bundleId"`
-	Name        string `json:"name"`
-	Version     string `json:"version,omitempty"`
-	FileSharing bool   `json:"fileSharing,omitempty"`
 }
 
 // Apps lists the device's installed user applications.
@@ -80,14 +76,14 @@ func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
 		slog.WarnContext(ctx, "apps: engine", "udid", udid, "error", err)
 		return nil, newEngineActionError("app_list_failed", err)
 	}
-	out := make([]App, len(apps))
-	for i, app := range apps {
-		out[i] = App(app)
+	if apps == nil {
+		apps = []App{} // serializes as [], not null
 	}
-	return out, nil
+	return apps, nil
 }
 
-// maxAppIconBatch matches the engine's per-call cap.
+// maxAppIconBatch bounds one icon request; the API policy lives here, not in
+// the engine.
 const maxAppIconBatch = 100
 
 // AppIcons reads a batch of home-screen icons (PNG bytes by bundle id) over
@@ -127,7 +123,7 @@ func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) (
 
 // InstallApp persists an uploaded .ipa, then serializes its device installation.
 // onProgress receives each distinct phase/percent while the device works.
-func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, onProgress func(engine.InstallProgress)) error {
+func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, onProgress func(InstallProgress)) error {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
 	}
@@ -145,8 +141,8 @@ func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, on
 	}
 	ipaPath := tmp.Name()
 	err = s.runCommand(ctx, runKindInstall, udid, func(ctx context.Context) error {
-		last := engine.InstallProgress{Percent: -1}
-		reportChange := func(progress engine.InstallProgress) {
+		last := InstallProgress{Percent: -1}
+		reportChange := func(progress InstallProgress) {
 			if progress == last {
 				return
 			}
@@ -279,9 +275,6 @@ func (s *Service) deviceFileList(
 
 // AppFileDelete removes one file from an app's Documents container.
 func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath string) error {
-	if bundleID == "" || devicePath == "" {
-		return &domain.ValidationError{Code: "app_file_selection_required", Message: "bundle id and path are required"}
-	}
 	root, err := appDocumentsRoot(bundleID)
 	if err != nil {
 		return err
@@ -308,17 +301,6 @@ func (s *Service) MediaList(ctx context.Context, udid, rawPath string) ([]FileEn
 	return s.deviceFileList(ctx, udid, devicefs.Media(), rawPath, "media_list_failed")
 }
 
-// ConsoleLine is one structured record from the device's os_trace stream.
-type ConsoleLine struct {
-	Timestamp string `json:"ts"`
-	Level     string `json:"level"` // notice | info | debug | error | fault
-	Pid       uint32 `json:"pid"`
-	Image     string `json:"image"`
-	Message   string `json:"message"`
-	Subsystem string `json:"subsystem,omitempty"`
-	Category  string `json:"category,omitempty"`
-}
-
 // Console streams the device's structured system log to onLine until ctx
 // ends. The caller (the SSE handler) owns the transport; this only guards.
 func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleLine)) error {
@@ -333,13 +315,13 @@ func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleL
 	for ctx.Err() == nil {
 		line, err := stream.Next()
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || ctx.Err() != nil {
+			if errors.Is(err, io.ErrClosedPipe) || ctx.Err() != nil {
 				return nil
 			}
 			slog.WarnContext(ctx, "console: engine", "udid", udid, "error", err)
 			return newEngineActionError("console_stream_failed", err)
 		}
-		onLine(ConsoleLine(line))
+		onLine(line)
 	}
 	return nil
 }

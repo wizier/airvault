@@ -16,27 +16,33 @@ const (
 	streamPingInterval = 25 * time.Second
 )
 
-// startStream sets the headers of an unbuffered streaming response (SSE or
-// NDJSON) and returns the controller that flushes each frame.
-func startStream(c *echo.Context, contentType string) *http.ResponseController {
+// responseStream is an unbuffered streaming response (SSE or NDJSON).
+type responseStream struct {
+	controller *http.ResponseController
+	writer     io.Writer
+}
+
+// startStream sets the headers of an unbuffered streaming response.
+func startStream(c *echo.Context, contentType string) *responseStream {
 	res := c.Response()
 	res.Header().Set(echo.HeaderContentType, contentType)
 	res.Header().Set("Cache-Control", "no-cache")
 	res.Header().Set("X-Accel-Buffering", "no")
-	return http.NewResponseController(res)
+	return &responseStream{controller: http.NewResponseController(res), writer: res}
 }
 
-func writeStreamFrame(controller *http.ResponseController, writer io.Writer, frame string) (err error) {
-	if err := controller.SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
+// write sends and flushes one frame within streamWriteTimeout.
+func (s *responseStream) write(frame string) (err error) {
+	if err := s.controller.SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
 		return err
 	}
 	defer func() {
-		if resetErr := controller.SetWriteDeadline(time.Time{}); err == nil {
+		if resetErr := s.controller.SetWriteDeadline(time.Time{}); err == nil {
 			err = resetErr
 		}
 	}()
-	if _, err := io.WriteString(writer, frame); err != nil {
+	if _, err := io.WriteString(s.writer, frame); err != nil {
 		return err
 	}
-	return controller.Flush()
+	return s.controller.Flush()
 }

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"path"
 
 	"github.com/wizier/airvault/internal/service"
 
@@ -78,27 +79,29 @@ func (h *Handler) appFileStat(c *echo.Context) error {
 // [GET] /api/devices/:udid/apps/:bundle/files/download?path=
 // Serves one file from the app's Documents to the browser as an attachment.
 func (h *Handler) downloadAppFile(c *echo.Context) error {
-	return serveDownload(c, func(devPath string) (deviceDownload, error) {
-		return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
-	})
+	devPath := c.QueryParam("path")
+	download, err := h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
+	if err != nil {
+		return err
+	}
+	return serveDownload(c, download, path.Base(devPath))
 }
 
 // [GET] /api/devices/:udid/apps/:bundle/files/preview?path=
 // Inline image preview for app Documents — same native/HEIC path as media.
 func (h *Handler) previewAppFile(c *echo.Context) error {
-	return servePreview(c, func(devPath string) (deviceDownload, error) {
-		return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
-	})
+	devPath := c.QueryParam("path")
+	download, err := h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
+	if err != nil {
+		return err
+	}
+	return streamImagePreview(c, download, path.Base(devPath))
 }
 
 // [DELETE] /api/devices/:udid/apps/:bundle/files?path=
 func (h *Handler) deleteAppFile(c *echo.Context) error {
-	devPath, err := requiredPathParam(c)
+	err := h.svc.AppFileDelete(c.Request().Context(), c.Param("udid"), c.Param("bundle"), c.QueryParam("path"))
 	if err != nil {
-		return err
-	}
-	if err := h.svc.AppFileDelete(c.Request().Context(),
-		c.Param("udid"), c.Param("bundle"), devPath); err != nil {
 		return err
 	}
 	return c.NoContent(http.StatusNoContent)

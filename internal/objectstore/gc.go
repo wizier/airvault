@@ -48,7 +48,7 @@ func (s *Store) CollectLive(source string, live *LiveSet) error {
 	if err != nil {
 		return err
 	}
-	paths, seen, err := s.collectableObjects(objectsRoot, live)
+	paths, seen, err := collectableObjects(source, objectsRoot, live)
 	if err != nil {
 		return err
 	}
@@ -143,10 +143,7 @@ func (s *Store) SnapshotManifestBytes(source, snapshotID string) (int64, error) 
 	return info.Size(), nil
 }
 
-func (s *Store) collectableObjects(
-	objectsRoot string,
-	live *LiveSet,
-) ([]string, map[string]struct{}, error) {
+func collectableObjects(source, objectsRoot string, live *LiveSet) ([]string, map[string]struct{}, error) {
 	prefixes, err := readDirIfExists(objectsRoot)
 	if err != nil {
 		return nil, nil, err
@@ -183,8 +180,7 @@ func (s *Store) collectableObjects(
 			}
 			if expectedSize, exists := live.objects[objectRef]; exists {
 				if info.Size() != expectedSize {
-					slog.Warn("collect: live object damaged",
-						"source", filepath.Base(filepath.Dir(objectsRoot)), "object", objectRef)
+					slog.Warn("collect: live object damaged", "source", source, "object", objectRef)
 				}
 				seen[objectRef] = struct{}{}
 				continue
