@@ -15,10 +15,9 @@ crate-type = ["staticlib"] # -> libairvault_shim.a for cgo
 # multi-hundred-gigabyte restores. default-features=false keeps rustls out:
 # idevice gates its openssl paths on `not(feature = "rustls")`, so a rustls
 # that resolved alongside would silently take over.
-idevice = { version = "0.1.65", default-features = false, features = [
+idevice = { version = "0.1.68", default-features = false, features = [
     "openssl",
     "usbmuxd",
-    "tcp",
     "pair",
     "mobilebackup2",
     "diagnostics_relay",     # av_power (restart/shutdown/sleep) + battery health
@@ -44,12 +43,6 @@ uuid = { version = "1", features = ["v4"] }
 # Shim + idevice diagnostics; the Go host supplies the filter and output sink.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# 0.1.66 has what we need past 0.1.65 — AFC file locking, mobileactivationd
-# session info, mid-file mb2 progress — but it was tagged, never published to
-# crates.io. Pin the tag, not the branch; drop this block if it ever lands.
-[patch.crates-io]
-idevice = { git = "https://github.com/jkcoxson/idevice", tag = "v0.1.66" }
 
 [profile.release]
 lto = true

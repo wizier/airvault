@@ -2,79 +2,62 @@
 //! connection. Go owns the lifecycle and runs it only while the device is active.
 
 use std::ffi::c_char;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::Arc;
 
 use idevice::services::notification_proxy::NotificationProxyClient;
 use idevice::IdeviceService;
-use tokio_util::sync::CancellationToken;
 
-use crate::bounded::{cancel_or_timeout, Interrupt};
-use crate::engine_error::ErrorKind;
-use crate::ffi::{
-    engine_udid, guard_error, AvEngine, AvError, AV_STREAM_CLOSED, AV_STREAM_CONTINUE,
-};
+use crate::engine_error::{EngineFailure, ErrorKind};
+use crate::ffi::{engine_udid, guard_error, AvEngine, AvError, AV_STREAM_CLOSED};
+use crate::pull_stream::{ItemSender, PullStream};
+use crate::timeouts;
 use crate::{guard, out_str, provider_for, EngineContext};
 
-const SETUP_TIMEOUT: Duration = crate::timeouts::CONNECT;
-
 pub struct AvLockStream {
-    receiver: Mutex<Receiver<Result<i32, String>>>,
-    cancel: CancellationToken,
-    task: Option<tokio::task::JoinHandle<()>>,
+    stream: PullStream<i32>,
 }
 
-async fn run(
-    context: &EngineContext,
-    udid: &str,
-    cancel: CancellationToken,
-    sender: Sender<Result<i32, String>>,
-) -> Result<(), String> {
+async fn observe_lock_state(
+    context: Arc<EngineContext>,
+    udid: String,
+    sender: ItemSender<i32>,
+) -> Result<(), EngineFailure> {
     const LOCK_CHANGED: &str = "com.apple.springboard.lockstate";
     const LOCKED: &str = "com.apple.springboard.lockcomplete";
 
     let setup = async {
-        let provider = provider_for(context, udid).await.map_err(|error| {
-            format!("lock observer provider lookup failed: {error} [{error:?}]")
-        })?;
-        let mut notifications = NotificationProxyClient::connect(&provider)
-            .await
-            .map_err(|error| format!("lock observer connect failed: {error} [{error:?}]"))?;
+        let provider = provider_for(&context, &udid).await?;
+        let mut notifications = NotificationProxyClient::connect(&provider).await?;
         notifications
             .observe_notifications(&[LOCK_CHANGED, LOCKED])
-            .await
-            .map_err(|error| format!("lock observer subscribe failed: {error} [{error:?}]"))?;
-        Ok::<_, String>(notifications)
+            .await?;
+        Ok(notifications)
     };
-
-    let mut notifications = match cancel_or_timeout(&cancel, SETUP_TIMEOUT, setup).await {
-        Ok(result) => result?,
-        Err(Interrupt::Cancelled) => return Ok(()),
-        Err(Interrupt::TimedOut) => {
-            return Err(format!(
-                "lock observer setup timed out after {}s",
-                SETUP_TIMEOUT.as_secs()
+    let mut notifications = match tokio::time::timeout(timeouts::CONNECT, setup).await {
+        Ok(result) => result
+            .map_err(|error| EngineFailure::from_request("lock observer setup failed", error))?,
+        Err(_) => {
+            return Err(EngineFailure::new(
+                ErrorKind::Timeout,
+                format!(
+                    "lock observer setup timed out after {}s",
+                    timeouts::CONNECT.as_secs()
+                ),
             ))
         }
     };
 
     loop {
-        let name = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Ok(()),
-            result = notifications.receive_notification() => {
-                result.map_err(|error| {
-                    format!("lock observer stream ended: {error} [{error:?}]")
-                })?
-            }
-        };
+        let name = notifications
+            .receive_notification()
+            .await
+            .map_err(|error| EngineFailure::from_request("lock observer stream ended", error))?;
         let event = match name.as_str() {
             LOCK_CHANGED => 1,
             LOCKED => 2,
             _ => continue,
         };
-        if sender.send(Ok(event)).is_err() {
+        if sender.send(Ok(event)).await.is_err() {
             return Ok(());
         }
     }
@@ -96,21 +79,8 @@ pub extern "C" fn av_lock_observer_open(
             out_str(err, "missing lock observer output");
             return ErrorKind::InvalidArgument.code();
         }
-        let (sender, receiver) = channel();
-        let cancel = CancellationToken::new();
-        let worker_cancel = cancel.clone();
-        let terminal = sender.clone();
-        let task = crate::spawn(async move {
-            if let Err(message) = run(&context, &udid, worker_cancel, sender).await {
-                let _ = terminal.send(Err(message));
-            }
-        });
-        let stream = Box::new(AvLockStream {
-            receiver: Mutex::new(receiver),
-            cancel,
-            task: Some(task),
-        });
-        unsafe { *out = Box::into_raw(stream) };
+        let stream = PullStream::spawn(|sender| observe_lock_state(context, udid, sender));
+        unsafe { *out = Box::into_raw(Box::new(AvLockStream { stream })) };
         0
     })
 }
@@ -122,7 +92,7 @@ pub extern "C" fn av_lock_observer_next(
     err: *mut *mut c_char,
 ) -> i32 {
     guard(err, || {
-        let Some(stream) = (unsafe { stream.as_ref() }) else {
+        let Some(observer) = (unsafe { stream.as_ref() }) else {
             out_str(err, "lock observer is closed");
             return AV_STREAM_CLOSED;
         };
@@ -130,36 +100,26 @@ pub extern "C" fn av_lock_observer_next(
             out_str(err, "missing lock event output");
             return ErrorKind::InvalidArgument.code();
         }
-        match crate::lock(&stream.receiver).recv_timeout(crate::timeouts::STREAM_TICK) {
-            Ok(Ok(event)) => {
+        match observer.stream.next(err) {
+            Ok(event) => {
                 unsafe { *out_event = event };
                 0
             }
-            Ok(Err(message)) => {
-                out_str(err, &message);
-                ErrorKind::Internal.code()
-            }
-            Err(RecvTimeoutError::Timeout) => AV_STREAM_CONTINUE,
-            Err(RecvTimeoutError::Disconnected) => AV_STREAM_CLOSED,
+            Err(rc) => rc,
         }
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn av_lock_observer_close(stream: *mut AvLockStream) {
-    if stream.is_null() {
-        return;
-    }
-    let mut stream = unsafe { Box::from_raw(stream) };
-    stream.cancel.cancel();
-    if let Some(task) = stream.task.take() {
-        let _ = crate::block(task);
+    if !stream.is_null() {
+        unsafe { Box::from_raw(stream) }.stream.close();
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn av_lock_observer_cancel(stream: *mut AvLockStream) {
-    if let Some(stream) = unsafe { stream.as_ref() } {
-        stream.cancel.cancel();
+    if let Some(observer) = unsafe { stream.as_ref() } {
+        observer.stream.cancel();
     }
 }

@@ -2,21 +2,18 @@
 //! through open / next / close.
 
 use std::ffi::c_char;
-use std::sync::Mutex as StdMutex;
 
 use idevice::services::os_trace_relay::{LogLevel, OsTraceRelayClient, OsTraceRelayReceiver};
 use idevice::IdeviceService;
-use tokio_util::sync::CancellationToken;
 
-use crate::engine_error::ErrorKind;
-use crate::ffi::{
-    engine_udid, guard_error, AvEngine, AvError, AV_STREAM_CLOSED, AV_STREAM_CONTINUE,
-};
-use crate::{block, guard, out_str, provider_for, to_json, write_err};
+use crate::engine_error::{EngineFailure, ErrorKind};
+use crate::ffi::{engine_udid, guard_error, AvEngine, AvError, AV_STREAM_CLOSED};
+use crate::pull_stream::{ItemSender, PullStream};
+use crate::timeouts;
+use crate::{block_bounded, guard, out_str, provider_for, to_json};
 
 pub struct AvConsoleStream {
-    receiver: StdMutex<Option<OsTraceRelayReceiver>>,
-    cancel: CancellationToken,
+    stream: PullStream<String>,
 }
 
 fn level_str(l: &LogLevel) -> &'static str {
@@ -40,6 +37,33 @@ struct ConsoleRecord<'a> {
     category: &'a str,
 }
 
+/// Forwards every os_trace record as its JSON line until the reader goes away.
+async fn forward_records(
+    mut receiver: OsTraceRelayReceiver,
+    sender: ItemSender<String>,
+) -> Result<(), EngineFailure> {
+    loop {
+        let log = receiver.next().await?;
+        let (subsystem, category) = log
+            .label
+            .as_ref()
+            .map(|l| (l.subsystem.as_str(), l.category.as_str()))
+            .unwrap_or(("", ""));
+        let record = to_json(&ConsoleRecord {
+            ts: log.timestamp.format("%H:%M:%S%.3f").to_string(),
+            level: level_str(&log.level),
+            pid: log.pid,
+            image: &log.image_name,
+            message: &log.message,
+            subsystem,
+            category,
+        });
+        if sender.send(Ok(record)).await.is_err() {
+            return Ok(());
+        }
+    }
+}
+
 /// Opens a structured console stream; the session handle lands in out_stream.
 /// Records flow immediately — pull them with av_console_next.
 #[no_mangle]
@@ -59,29 +83,21 @@ pub extern "C" fn av_console_open(
             return ErrorKind::InvalidArgument.code();
         }
         unsafe { *out_stream = std::ptr::null_mut() };
-        block(async {
-            let fut = async {
+        block_bounded(
+            err,
+            timeouts::UI_CALL,
+            "console connect timed out",
+            async {
                 let provider = provider_for(context, &udid).await?;
                 let client = OsTraceRelayClient::connect(&provider).await?;
                 client.start_trace(None).await
-            };
-            match tokio::time::timeout(crate::timeouts::UI_CALL, fut).await {
-                Ok(Ok(receiver)) => {
-                    unsafe {
-                        *out_stream = Box::into_raw(Box::new(AvConsoleStream {
-                            receiver: StdMutex::new(Some(receiver)),
-                            cancel: CancellationToken::new(),
-                        }));
-                    }
-                    0
-                }
-                Ok(Err(e)) => write_err(err, &e),
-                Err(_) => {
-                    out_str(err, "console connect timed out");
-                    ErrorKind::Internal.code()
-                }
-            }
-        })
+            },
+            |receiver| {
+                let stream = PullStream::spawn(|sender| forward_records(receiver, sender));
+                unsafe { *out_stream = Box::into_raw(Box::new(AvConsoleStream { stream })) };
+                0
+            },
+        )
     })
 }
 
@@ -94,55 +110,23 @@ pub extern "C" fn av_console_next(
     err: *mut *mut c_char,
 ) -> i32 {
     guard(err, || {
-        let Some(stream) = (unsafe { stream.as_ref() }) else {
+        let Some(console) = (unsafe { stream.as_ref() }) else {
             return AV_STREAM_CLOSED;
         };
-        let Some(mut rx) = crate::lock(&stream.receiver).take() else {
-            return AV_STREAM_CLOSED;
-        };
-        let res = block(async {
-            tokio::select! {
-                biased;
-                _ = stream.cancel.cancelled() => None,
-                result = tokio::time::timeout(crate::timeouts::STREAM_TICK, rx.next()) => Some(result),
-            }
-        });
-        match res {
-            None => AV_STREAM_CLOSED,
-            Some(Err(_)) => {
-                *crate::lock(&stream.receiver) = Some(rx);
-                AV_STREAM_CONTINUE // quiet window — cancel-check point for the caller
-            }
-            Some(Ok(Ok(log))) => {
-                *crate::lock(&stream.receiver) = Some(rx);
-                let (subsystem, category) = log
-                    .label
-                    .as_ref()
-                    .map(|l| (l.subsystem.as_str(), l.category.as_str()))
-                    .unwrap_or(("", ""));
-                out_str(
-                    out_json,
-                    &to_json(&ConsoleRecord {
-                        ts: log.timestamp.format("%H:%M:%S%.3f").to_string(),
-                        level: level_str(&log.level),
-                        pid: log.pid,
-                        image: &log.image_name,
-                        message: &log.message,
-                        subsystem,
-                        category,
-                    }),
-                );
+        match console.stream.next(err) {
+            Ok(record) => {
+                out_str(out_json, &record);
                 0
             }
-            Some(Ok(Err(e))) => write_err(err, &e), // receiver dropped: session dead
+            Err(rc) => rc,
         }
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn av_console_cancel(stream: *mut AvConsoleStream) {
-    if let Some(stream) = unsafe { stream.as_ref() } {
-        stream.cancel.cancel();
+    if let Some(console) = unsafe { stream.as_ref() } {
+        console.stream.cancel();
     }
 }
 
@@ -150,6 +134,6 @@ pub unsafe extern "C" fn av_console_cancel(stream: *mut AvConsoleStream) {
 #[no_mangle]
 pub unsafe extern "C" fn av_console_close(stream: *mut AvConsoleStream) {
     if !stream.is_null() {
-        drop(unsafe { Box::from_raw(stream) });
+        unsafe { Box::from_raw(stream) }.stream.close();
     }
 }

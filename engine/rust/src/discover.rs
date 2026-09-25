@@ -2,6 +2,7 @@
 //! snapshot shared with the watcher, battery and the USB list.
 
 use std::ffi::c_char;
+use std::time::Duration;
 
 use idevice::provider::IdeviceProvider;
 use idevice::services::lockdown::LockdownClient;
@@ -9,12 +10,17 @@ use idevice::usbmuxd::Connection;
 use idevice::IdeviceService;
 use plist::Value;
 
-use crate::engine_error::ErrorKind;
+use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{engine_ref, engine_udid, guard_error, AvEngine, AvError};
+use crate::timeouts;
 use crate::{
-    block, block_probe, conn_str, devices_deduped, getv_str, out_str, provider_for, to_json,
-    write_err, EngineContext, ProbeError,
+    block, block_bounded_out, conn_str, devices_deduped, getv_str, out_str, provider_for, to_json,
+    write_failure, EngineContext,
 };
+
+/// Discovery answers the device list: probe every phone and fail fast, because
+/// one unreachable device must not stall the refresh worker.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(serde::Serialize)]
 struct SnapshotItem {
@@ -79,7 +85,7 @@ impl DeviceMeta {
 /// Enrich a device over lockdown, time-bounded. Failure produces an explicit
 /// unknown result instead of removing a mux-reachable device from the response.
 async fn device_meta(context: &EngineContext, udid: &str) -> DeviceMeta {
-    let deadline = tokio::time::Instant::now() + crate::timeouts::DISCOVERY;
+    let deadline = tokio::time::Instant::now() + DISCOVERY_TIMEOUT;
     let provider = match tokio::time::timeout_at(deadline, provider_for(context, udid)).await {
         Ok(Ok(provider)) => provider,
         Ok(Err(_)) | Err(_) => return DeviceMeta::unknown(),
@@ -217,7 +223,7 @@ pub extern "C" fn av_devices_inspect(
         block(async {
             let devices = match devices_deduped(context).await {
                 Ok(d) => d,
-                Err(e) => return write_err(err, &e),
+                Err(e) => return write_failure(err, e.into()),
             };
 
             let mut items: Vec<DiscoverItem> = Vec::with_capacity(devices.len());
@@ -265,43 +271,32 @@ pub extern "C" fn av_devices_list(
                     out_str(out_json, &j);
                     0
                 }
-                Err(e) => write_err(err, &e),
+                Err(e) => write_failure(err, e.into()),
             }
         })
     })
 }
 
-/// Reads the device battery state: (charging, level 0-100) over a lockdown
-/// session. A failure to establish the session (the phone is gone) is
-/// Unreachable; a session that answers with no usable capacity is Logical.
-async fn battery_inner(context: &EngineContext, udid: &str) -> Result<(bool, i32), ProbeError> {
-    let provider = provider_for(context, udid)
-        .await
-        .map_err(|e| ProbeError::Unreachable(format!("{e:?}")))?;
-    let mut lc = crate::authed_lockdown(&provider)
-        .await
-        .map_err(|e| ProbeError::Unreachable(format!("{e:?}")))?;
-    let value = lc
-        .get_value(None, Some("com.apple.mobile.battery"))
-        .await
-        .map_err(|e| ProbeError::Unreachable(format!("{e:?}")))?;
+/// Reads the device battery state over a lockdown session.
+async fn battery_inner(context: &EngineContext, udid: &str) -> Result<String, EngineFailure> {
+    let provider = provider_for(context, udid).await?;
+    let mut lc = crate::authed_lockdown(&provider).await?;
+    let value = lc.get_value(None, Some("com.apple.mobile.battery")).await?;
     let Value::Dictionary(d) = value else {
-        return Err(ProbeError::Logical(
-            "battery domain did not return a dictionary".into(),
-        ));
+        let detail = "battery domain did not return a dictionary";
+        return Err(EngineFailure::new(ErrorKind::Internal, detail));
     };
-    // A missing capacity means the phone answered oddly, not that it is gone.
     let level = d
         .get("BatteryCurrentCapacity")
         .and_then(|v| v.as_unsigned_integer())
-        .ok_or_else(|| ProbeError::Logical("battery capacity is unavailable".into()))?
+        .ok_or_else(|| EngineFailure::new(ErrorKind::Internal, "battery capacity is unavailable"))?
         as i32;
     let charging = d
         .get("ExternalConnected")
         .and_then(|v| v.as_boolean())
         .or_else(|| d.get("BatteryIsCharging").and_then(|v| v.as_boolean()))
         .unwrap_or(false);
-    Ok((charging, level))
+    Ok(to_json(&BatteryOut { charging, level }))
 }
 
 #[derive(serde::Serialize)]
@@ -311,8 +306,7 @@ struct BatteryOut {
 }
 
 /// Reads battery into `out_json`: {"charging":bool,"level":int}. Bounded — a
-/// Wi-Fi lockdown session can hang. A session-establish failure or the timeout
-/// returns AV_ERROR_DEVICE_UNAVAILABLE so the caller can drive presence.
+/// Wi-Fi lockdown session can hang.
 #[no_mangle]
 pub extern "C" fn av_device_battery(
     engine: *mut AvEngine,
@@ -325,19 +319,12 @@ pub extern "C" fn av_device_battery(
             return ErrorKind::InvalidArgument.code();
         };
         let context = engine.context();
-        block_probe(
+        block_bounded_out(
+            out_json,
             err,
-            crate::timeouts::PROBE,
+            timeouts::PROBE,
             "battery read timed out",
-            async move {
-                battery_inner(context, &udid)
-                    .await
-                    .map(|(charging, level)| to_json(&BatteryOut { charging, level }))
-            },
-            |payload| {
-                out_str(out_json, &payload);
-                0
-            },
+            battery_inner(context, &udid),
         )
     })
 }
@@ -360,12 +347,7 @@ async fn usb_list_inner(context: &EngineContext) -> Result<String, idevice::Idev
         if !matches!(d.connection_type, Connection::Usb) {
             continue;
         }
-        let name = match tokio::time::timeout(
-            crate::timeouts::DISCOVERY,
-            usb_name(context, &d.udid),
-        )
-        .await
-        {
+        let name = match tokio::time::timeout(DISCOVERY_TIMEOUT, usb_name(context, &d.udid)).await {
             Ok(n) if !n.is_empty() => n,
             _ => d.udid.clone(),
         };
@@ -404,7 +386,7 @@ pub extern "C" fn av_usb_devices_list(
                     out_str(out_json, &j);
                     0
                 }
-                Err(e) => write_err(err, &e),
+                Err(e) => write_failure(err, e.into()),
             }
         })
     })

@@ -46,9 +46,10 @@ pub const AV_ERROR_FIND_MY_ENABLED: i32 = 16;
 
 // Pull-stream rc microprotocol for av_*_next: CONTINUE = quiet window (call
 // again), CLOSED = stream over; any other non-zero rc is a stream error with
-// `err` set. Mirrored by pullStream in internal/engine/cgo.go.
-pub const AV_STREAM_CONTINUE: i32 = 3;
-pub const AV_STREAM_CLOSED: i32 = 4;
+// `err` set. Mirrored by pullStream in internal/engine/cgo.go. Kept apart from
+// the AV_ERROR_* values so a typed stream error never reads as a status.
+pub const AV_STREAM_CONTINUE: i32 = 100;
+pub const AV_STREAM_CLOSED: i32 = 101;
 
 /// av_operation_cancel: no operation is registered under this id yet, so the
 /// caller may retry until registration lands or the operation returns.

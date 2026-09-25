@@ -1,7 +1,5 @@
 //! Shared mobilebackup2 connection, cancellation and verdict handling.
 
-use std::time::Duration;
-
 use idevice::provider::IdeviceProvider;
 use idevice::services::lockdown::LockdownClient;
 use idevice::services::mobilebackup2::MobileBackup2Client;
@@ -12,9 +10,8 @@ use tracing::Instrument;
 
 use crate::bounded;
 use crate::engine_error::{EngineFailure, ErrorKind};
+use crate::timeouts;
 use crate::AirvaultProvider;
-
-const DISCONNECT_TIMEOUT: Duration = crate::timeouts::TEARDOWN;
 
 /// Connect with the pairing record's escrow bag so backupd can read protected
 /// keychain items while the phone is locked.
@@ -60,7 +57,7 @@ pub(crate) async fn disconnect_bounded(
     operation: &str,
 ) -> Result<(), String> {
     bounded::step(
-        DISCONNECT_TIMEOUT,
+        timeouts::TEARDOWN,
         &format!("{operation} mobilebackup2 disconnect"),
         client.disconnect(),
     )

@@ -6,26 +6,28 @@ use std::time::Duration;
 
 use idevice::services::afc::{
     errors::AfcError,
-    file::OwnedFileDescriptor,
     opcode::{AfcFopenMode, AfcLockOp},
     AfcClient,
 };
 use idevice::services::notification_proxy::NotificationProxyClient;
 use idevice::IdeviceService;
 
+use crate::afc::FileGuard;
 use crate::bounded;
 use crate::engine_error::EngineFailure;
 use crate::timeouts;
 use crate::AirvaultProvider;
 
 const LOCK_SYNC: &str = "/com.apple.itunes.lock_sync";
-const START_STEP_TIMEOUT: Duration = timeouts::PROBE;
-const LOCK_WAIT_TIMEOUT: Duration = timeouts::SYNC_LOCK_WAIT;
-const CLEANUP_STEP_TIMEOUT: Duration = timeouts::TEARDOWN;
+/// Another host (Finder, iTunes) may hold the sync lock; wait briefly, then
+/// report the conflict rather than queueing behind it.
+const SYNC_LOCK_WAIT: Duration = Duration::from_secs(10);
+/// Retry cadence while polling for that lock.
+const SYNC_LOCK_RETRY: Duration = Duration::from_millis(200);
 
 pub(super) struct SyncSession {
     notifications: NotificationProxyClient,
-    file: OwnedFileDescriptor,
+    file: FileGuard,
 }
 
 impl SyncSession {
@@ -131,7 +133,7 @@ impl SyncSession {
 async fn start_step<T>(
     future: impl Future<Output = Result<T, idevice::IdeviceError>>,
 ) -> Result<T, idevice::IdeviceError> {
-    tokio::time::timeout(START_STEP_TIMEOUT, future)
+    tokio::time::timeout(timeouts::PROBE, future)
         .await
         .unwrap_or(Err(idevice::IdeviceError::Timeout))
 }
@@ -140,10 +142,10 @@ async fn cleanup_step<T>(
     stage: &str,
     future: impl Future<Output = Result<T, idevice::IdeviceError>>,
 ) -> Result<(), String> {
-    bounded::step(CLEANUP_STEP_TIMEOUT, stage, future).await
+    bounded::step(timeouts::TEARDOWN, stage, future).await
 }
 
-async fn cleanup_sync_file(mut file: OwnedFileDescriptor) -> Result<(), String> {
+async fn cleanup_sync_file(mut file: FileGuard) -> Result<(), String> {
     let mut errors = Vec::new();
     if let Err(error) = cleanup_step("sync unlock", file.lock(AfcLockOp::Unlock)).await {
         errors.push(error);
@@ -161,16 +163,16 @@ async fn cleanup_sync_file(mut file: OwnedFileDescriptor) -> Result<(), String> 
 async fn acquire(
     provider: &AirvaultProvider,
     notifications: &mut NotificationProxyClient,
-) -> Result<OwnedFileDescriptor, idevice::IdeviceError> {
+) -> Result<FileGuard, idevice::IdeviceError> {
     let afc = start_step(AfcClient::connect(provider)).await?;
-    let mut file = start_step(afc.open_owned(LOCK_SYNC, AfcFopenMode::Rw)).await?;
+    let mut file = FileGuard::new(start_step(afc.open_owned(LOCK_SYNC, AfcFopenMode::Rw)).await?);
     if let Err(error) =
         start_step(notifications.post_notification("com.apple.itunes-mobdev.syncLockRequest")).await
     {
         return Err(preserve_acquire_error(file, error).await);
     }
 
-    let deadline = tokio::time::Instant::now() + LOCK_WAIT_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + SYNC_LOCK_WAIT;
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Err(preserve_acquire_error(
@@ -182,7 +184,7 @@ async fn acquire(
         match tokio::time::timeout_at(deadline, file.lock(AfcLockOp::ExclusiveLock)).await {
             Ok(Ok(())) => return Ok(file),
             Ok(Err(idevice::IdeviceError::Afc(AfcError::OpWouldBlock))) => {
-                tokio::time::sleep(timeouts::SYNC_LOCK_RETRY).await;
+                tokio::time::sleep(SYNC_LOCK_RETRY).await;
             }
             Ok(Err(error)) => return Err(preserve_acquire_error(file, error).await),
             Err(_) => {
@@ -193,7 +195,7 @@ async fn acquire(
 }
 
 async fn preserve_acquire_error(
-    file: OwnedFileDescriptor,
+    file: FileGuard,
     primary: idevice::IdeviceError,
 ) -> idevice::IdeviceError {
     if let Err(cleanup_error) = cleanup_sync_file(file).await {

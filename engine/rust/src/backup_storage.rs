@@ -5,12 +5,10 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
-use idevice::services::mobilebackup2::{
-    BackupDelegate, BackupProgress as Mb2Progress, DirEntryInfo,
-};
+use idevice::services::mobilebackup2::{BackupDelegate, BackupProgress, DirEntryInfo};
 use std::io::{Read, Write};
 
 use crate::object_store::ObjectSession;
@@ -18,33 +16,21 @@ use crate::path_sandbox::PathSandbox;
 
 /// Progress callback into Go: (opaque operation id, phase, percent, bytes).
 /// Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
-/// `bytes` counts this call alone — the host owns the running sum.
+/// `bytes` is the session's cumulative total (0 = not reported this call).
 pub(crate) type BackupCb = extern "C" fn(usize, i32, f64, u64);
 pub(crate) const BACKUP_PHASE_TRANSFER: i32 = 0;
 pub(crate) const BACKUP_PHASE_FINALIZING: i32 = 1;
 
+/// Where progress frames go: the Go callback plus its operation id.
 #[derive(Clone, Copy)]
-pub(crate) struct BackupProgress {
+pub(crate) struct ProgressSink {
     pub(crate) callback: BackupCb,
     pub(crate) id: usize,
 }
 
-impl BackupProgress {
+impl ProgressSink {
     pub(crate) fn emit(self, phase: i32, percent: f64, bytes: u64) {
         (self.callback)(self.id, phase, percent, bytes);
-    }
-}
-
-/// The crate reports session-wide totals; the host contract wants what one
-/// frame alone moved. `fetch_max` keeps a high-water mark, so a frame that
-/// repeats or regresses contributes zero instead of double-counting later.
-#[derive(Default)]
-struct DeltaMeter(AtomicU64);
-
-impl DeltaMeter {
-    fn advance(&self, session_bytes_done: u64) -> u64 {
-        let previous = self.0.fetch_max(session_bytes_done, Ordering::Relaxed);
-        session_bytes_done.saturating_sub(previous)
     }
 }
 
@@ -55,17 +41,16 @@ pub(crate) struct BackupStorage {
     session: ObjectSession,
     sandbox: PathSandbox,
     violation: StdMutex<Option<String>>,
-    progress: BackupProgress,
+    progress: ProgressSink,
     tracking: AtomicBool,
     started: AtomicBool,
-    meter: DeltaMeter,
 }
 
 impl BackupStorage {
     pub(crate) fn new(
         session: ObjectSession,
         sandbox: PathSandbox,
-        progress: BackupProgress,
+        progress: ProgressSink,
     ) -> Self {
         Self {
             session,
@@ -74,7 +59,6 @@ impl BackupStorage {
             progress,
             tracking: AtomicBool::new(false),
             started: AtomicBool::new(false),
-            meter: DeltaMeter::default(),
         }
     }
 
@@ -215,38 +199,12 @@ impl BackupDelegate for BackupStorage {
     }
     // Both payload directions, at least once per 256 KiB and mid-file, so this
     // is the whole byte account as well as the percentage.
-    fn on_progress(&self, progress: Mb2Progress) {
+    fn on_progress(&self, progress: BackupProgress) {
         self.started.store(true, Ordering::Relaxed); // real frame follows anyway
         self.progress.emit(
             BACKUP_PHASE_TRANSFER,
             progress.overall_progress,
-            self.meter.advance(progress.session_bytes_done),
+            progress.session_bytes_done,
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DeltaMeter;
-
-    // The host sums frames, so every byte the crate counts must be handed over
-    // exactly once across the whole session.
-    #[test]
-    fn frames_carry_each_byte_once() {
-        let meter = DeltaMeter::default();
-        let session = [0, 4096, 4096 + (1 << 20), 3 << 20];
-        let total: u64 = session.iter().map(|done| meter.advance(*done)).sum();
-        assert_eq!(total, 3 << 20);
-    }
-
-    // A batch boundary re-reports the same session total, and a stale frame can
-    // trail a newer one; neither may inflate the host's sum.
-    #[test]
-    fn repeated_and_stale_frames_contribute_nothing() {
-        let meter = DeltaMeter::default();
-        assert_eq!(meter.advance(4096), 4096);
-        assert_eq!(meter.advance(4096), 0);
-        assert_eq!(meter.advance(1024), 0);
-        assert_eq!(meter.advance(8192), 4096);
     }
 }

@@ -14,17 +14,20 @@ use tracing::Instrument;
 use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{engine_udid, guard_error, AvEngine, AvError};
 use crate::mobilebackup2;
+use crate::timeouts;
 use crate::{
-    block, operation_span, opt_owned, out_str, provider_for, timeouts, write_err, EngineContext,
+    block, block_bounded, operation_span, opt_owned, out_str, provider_for, write_failure,
+    EngineContext,
 };
 use crate::{PairingIdentity, PairingStoreError};
 
 const MAX_PASSWORD_DL_FRAME_BYTES: usize = 8 * 1024 * 1024;
-const BACKUP_PASSWORD_CONNECT_TIMEOUT: Duration = timeouts::CONNECT;
-// The device raises its passcode prompt here: budget for a person, not a wire.
-const BACKUP_PASSWORD_OPERATION_TIMEOUT: Duration = timeouts::PROMPT;
-const BACKUP_PASSWORD_STATE_PROBE_TIMEOUT: Duration = timeouts::PROBE;
-const BACKUP_PASSWORD_STATE_POLL_INTERVAL: Duration = timeouts::POLL_INTERVAL;
+/// ChangePassword waits on the passcode prompt iOS raises: a person at the
+/// phone. iOS never expires the prompt, so this budget alone decides their time.
+const PASSWORD_PROMPT_TIMEOUT: Duration = Duration::from_secs(180);
+/// Pairing covers certificate generation, which is slow in debug shim builds.
+/// Not a prompt budget: an unanswered trust dialog returns `trust_pending`.
+const PAIRING_ADVANCE_TIMEOUT: Duration = Duration::from_secs(45);
 
 fn outcome_unknown(detail: impl Into<String>) -> EngineFailure {
     EngineFailure::new(ErrorKind::OutcomeUnknown, detail)
@@ -81,8 +84,6 @@ async fn receive_capped_dl_message(
     Ok((tag.to_owned(), value))
 }
 
-const UNPAIR_DEVICE_TIMEOUT: Duration = timeouts::CONNECT;
-
 /// Tells the phone to forget this host, best effort: `Unpair` is device-side
 /// only, the host record goes either way, so the outcome is logged not returned.
 /// InvalidHostID means it had already forgotten us.
@@ -94,7 +95,7 @@ async fn device_unpair(context: &EngineContext, udid: &str, pf: &PairingFile) {
         let _ = lc.start_session(pf).await;
         lc.unpair(pf.host_id.clone()).await
     };
-    match tokio::time::timeout(UNPAIR_DEVICE_TIMEOUT, attempt).await {
+    match tokio::time::timeout(timeouts::CONNECT, attempt).await {
         Ok(Ok(())) | Ok(Err(idevice::IdeviceError::InvalidHostID)) => {
             tracing::info!(udid = %udid, "unpair: device forgot this host")
         }
@@ -259,8 +260,7 @@ async fn pair_trust_inner(
 }
 
 /// Triggers/advances pairing. out_status: "paired" | "trust_pending" |
-/// "denied" | "locked" | "wifi_authorization_failed". The generous timeout
-/// covers certificate generation, which is slow in debug shim builds.
+/// "denied" | "locked" | "wifi_authorization_failed".
 #[no_mangle]
 pub extern "C" fn av_pairing_advance(
     engine: *mut AvEngine,
@@ -276,26 +276,15 @@ pub extern "C" fn av_pairing_advance(
         let context = engine.context();
         let job_id = unsafe { opt_owned(job_id) };
         let span = operation_span(&job_id, "pairing", &udid);
-        block(
-            async {
-                match tokio::time::timeout(
-                    timeouts::PAIRING_ADVANCE,
-                    pair_trust_inner(context, &udid),
-                )
-                .await
-                {
-                    Ok(Ok(status)) => {
-                        out_str(out_status, status);
-                        0
-                    }
-                    Ok(Err(e)) => write_err(err, &e),
-                    Err(_) => {
-                        out_str(err, "pairing timed out");
-                        ErrorKind::Internal.code()
-                    }
-                }
-            }
-            .instrument(span),
+        block_bounded(
+            err,
+            PAIRING_ADVANCE_TIMEOUT,
+            "pairing timed out",
+            pair_trust_inner(context, &udid).instrument(span),
+            |status| {
+                out_str(out_status, status);
+                0
+            },
         )
     })
 }
@@ -397,35 +386,31 @@ async fn backup_password_run(
     let baseline = probe_backup_encryption(&provider).await;
     tracing::debug!(encrypted = ?baseline, "backup password: captured encryption baseline");
     // ChangePassword is standalone: unlike backup/restore, it takes no AFC sync lock.
-    let mut mb2 = match tokio::time::timeout(
-        BACKUP_PASSWORD_CONNECT_TIMEOUT,
-        mobilebackup2::connect(&provider),
-    )
-    .await
-    {
-        Ok(Ok(client)) => client,
-        Ok(Err(error)) => {
-            return PasswordRunResult {
-                encrypted: baseline,
-                result: Err(EngineFailure::from_idevice(
-                    "backup password mobilebackup2 connect failed",
-                    error,
-                )),
+    let mut mb2 =
+        match tokio::time::timeout(timeouts::CONNECT, mobilebackup2::connect(&provider)).await {
+            Ok(Ok(client)) => client,
+            Ok(Err(error)) => {
+                return PasswordRunResult {
+                    encrypted: baseline,
+                    result: Err(EngineFailure::from_idevice(
+                        "backup password mobilebackup2 connect failed",
+                        error,
+                    )),
+                }
             }
-        }
-        Err(_) => {
-            return PasswordRunResult {
-                encrypted: baseline,
-                result: Err(EngineFailure::new(
-                    ErrorKind::Timeout,
-                    format!(
-                        "backup password mobilebackup2 connect timed out after {}s",
-                        BACKUP_PASSWORD_CONNECT_TIMEOUT.as_secs()
-                    ),
-                )),
+            Err(_) => {
+                return PasswordRunResult {
+                    encrypted: baseline,
+                    result: Err(EngineFailure::new(
+                        ErrorKind::Timeout,
+                        format!(
+                            "backup password mobilebackup2 connect timed out after {}s",
+                            timeouts::CONNECT.as_secs()
+                        ),
+                    )),
+                }
             }
-        }
-    };
+        };
 
     // Last point with no device-side effect: past here a cancel can only be
     // reported as an indeterminate outcome.
@@ -462,10 +447,10 @@ async fn backup_password_run(
                 tracing::debug!(encrypted, "backup password: encryption postcondition changed");
                 PasswordProtocolOutcome::Committed
             }
-            _ = tokio::time::sleep(BACKUP_PASSWORD_OPERATION_TIMEOUT) => {
+            _ = tokio::time::sleep(PASSWORD_PROMPT_TIMEOUT) => {
                 PasswordProtocolOutcome::Indeterminate(outcome_unknown(format!(
                     "backup password request outcome is unknown after {}s",
-                    BACKUP_PASSWORD_OPERATION_TIMEOUT.as_secs()
+                    PASSWORD_PROMPT_TIMEOUT.as_secs()
                 )))
             }
             _ = cancel.cancelled() => {
@@ -608,12 +593,7 @@ async fn read_backup_encryption(
 /// None = the flag could not be read. Failures are expected while the phone is
 /// busy applying the change, so they stay at debug.
 async fn probe_backup_encryption(provider: &crate::AirvaultProvider) -> Option<bool> {
-    match tokio::time::timeout(
-        BACKUP_PASSWORD_STATE_PROBE_TIMEOUT,
-        read_backup_encryption(provider),
-    )
-    .await
-    {
+    match tokio::time::timeout(timeouts::PROBE, read_backup_encryption(provider)).await {
         Ok(Ok(encrypted)) => Some(encrypted),
         Ok(Err(error)) => {
             tracing::debug!(%error, ?error, "backup password encryption-state probe failed");
@@ -638,7 +618,7 @@ async fn wait_backup_encryption_transition(
         if probe_backup_encryption(provider).await == Some(expected) {
             return expected;
         }
-        tokio::time::sleep(BACKUP_PASSWORD_STATE_POLL_INTERVAL).await;
+        tokio::time::sleep(timeouts::POLL_INTERVAL).await;
     }
 }
 
@@ -718,10 +698,7 @@ pub extern "C" fn av_backup_password_change(
                 }
                 match outcome.result {
                     Ok(()) => 0,
-                    Err(failure) => {
-                        out_str(err, &failure.detail);
-                        failure.kind.code()
-                    }
+                    Err(failure) => write_failure(err, failure),
                 }
             }
             .instrument(span),

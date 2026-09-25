@@ -30,7 +30,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
 
-use crate::engine_error::ErrorKind;
+use crate::engine_error::{EngineFailure, ErrorKind};
 
 mod activation;
 mod afc;
@@ -48,6 +48,7 @@ mod operation_registry;
 mod pairing;
 mod path_sandbox;
 mod power_assertion;
+mod pull_stream;
 mod timeouts;
 mod transfer;
 mod watch;
@@ -323,11 +324,16 @@ impl EngineContext {
 /// One crate-wide UDID length cap (matches the Go/store source limit).
 pub(crate) const MAX_UDID_BYTES: usize = 64;
 
-/// Run a muxer conversation under `timeouts::MUX`, flattening elapsed into an error.
+/// A muxer conversation (connect + query). Its failure decides the outcome, but
+/// a usbmuxd socket that accepts and then hangs must never block the daemon's
+/// single refresh worker.
+const MUX_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run a muxer conversation under MUX_TIMEOUT, flattening elapsed into an error.
 pub(crate) async fn mux_bound<T>(
     f: impl Future<Output = Result<T, idevice::IdeviceError>>,
 ) -> Result<T, idevice::IdeviceError> {
-    tokio::time::timeout(timeouts::MUX, f)
+    tokio::time::timeout(MUX_TIMEOUT, f)
         .await
         .unwrap_or(Err(idevice::IdeviceError::Timeout))
 }
@@ -384,9 +390,10 @@ pub(crate) fn guard<F: FnOnce() -> i32>(err: *mut *mut c_char, f: F) -> i32 {
     }
 }
 
-pub(crate) fn write_err(err: *mut *mut c_char, e: &idevice::IdeviceError) -> i32 {
-    out_str(err, &format!("{e:?}"));
-    ErrorKind::Internal.code()
+/// The one path from a failure to the ABI: detail into `err`, kind as the rc.
+pub(crate) fn write_failure(err: *mut *mut c_char, failure: EngineFailure) -> i32 {
+    out_str(err, &failure.detail);
+    failure.kind.code()
 }
 
 /// JSON-encode a response payload. The exported caller's guard contains the
@@ -401,38 +408,32 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Await `producer` under `limit`: its error or an elapsed `timeout_msg` go to
-/// `err` as AV_ERROR_INTERNAL; its success value passes through `on_ok`, which
-/// returns the success rc. Inner errors are Debug-formatted Strings, like write_err.
-pub(crate) fn block_bounded<T>(
+/// Await `producer` under `limit`: its failure, or an elapsed `timeout_msg` as
+/// AV_ERROR_TIMEOUT, goes to `err`; its success value passes through `on_ok`,
+/// which returns the success rc.
+pub(crate) fn block_bounded<T, E: Into<EngineFailure>>(
     err: *mut *mut c_char,
     limit: Duration,
     timeout_msg: &str,
-    producer: impl Future<Output = Result<T, String>>,
+    producer: impl Future<Output = Result<T, E>>,
     on_ok: impl FnOnce(T) -> i32,
 ) -> i32 {
     block(async {
         match tokio::time::timeout(limit, producer).await {
             Ok(Ok(value)) => on_ok(value),
-            Ok(Err(msg)) => {
-                out_str(err, &msg);
-                ErrorKind::Internal.code()
-            }
-            Err(_) => {
-                out_str(err, timeout_msg);
-                ErrorKind::Internal.code()
-            }
+            Ok(Err(error)) => write_failure(err, error.into()),
+            Err(_) => write_failure(err, EngineFailure::new(ErrorKind::Timeout, timeout_msg)),
         }
     })
 }
 
 /// Bounded read that writes its Ok string to `out` (rc 0).
-pub(crate) fn block_bounded_out(
+pub(crate) fn block_bounded_out<E: Into<EngineFailure>>(
     out: *mut *mut c_char,
     err: *mut *mut c_char,
     limit: Duration,
     timeout_msg: &str,
-    producer: impl Future<Output = Result<String, String>>,
+    producer: impl Future<Output = Result<String, E>>,
 ) -> i32 {
     block_bounded(err, limit, timeout_msg, producer, move |payload| {
         out_str(out, &payload);
@@ -441,47 +442,13 @@ pub(crate) fn block_bounded_out(
 }
 
 /// block_bounded_out without an output payload: rc 0 on success.
-pub(crate) fn block_bounded_unit(
+pub(crate) fn block_bounded_unit<E: Into<EngineFailure>>(
     err: *mut *mut c_char,
     limit: Duration,
     timeout_msg: &str,
-    producer: impl Future<Output = Result<(), String>>,
+    producer: impl Future<Output = Result<(), E>>,
 ) -> i32 {
     block_bounded(err, limit, timeout_msg, producer, |()| 0)
-}
-
-/// A passive read's failure, split so Go can drive Wi-Fi presence off the read:
-/// Unreachable = no session could be established (the phone is gone), Logical =
-/// it answered with unusable data. block_probe maps them to distinct AV_ERROR_*.
-pub(crate) enum ProbeError {
-    Unreachable(String),
-    Logical(String),
-}
-
-pub(crate) fn block_probe<T>(
-    err: *mut *mut c_char,
-    limit: Duration,
-    timeout_msg: &str,
-    producer: impl Future<Output = Result<T, ProbeError>>,
-    on_ok: impl FnOnce(T) -> i32,
-) -> i32 {
-    block(async {
-        match tokio::time::timeout(limit, producer).await {
-            Ok(Ok(value)) => on_ok(value),
-            Ok(Err(ProbeError::Logical(msg))) => {
-                out_str(err, &msg);
-                ErrorKind::Internal.code()
-            }
-            Ok(Err(ProbeError::Unreachable(msg))) => {
-                out_str(err, &msg);
-                ErrorKind::DeviceUnavailable.code()
-            }
-            Err(_) => {
-                out_str(err, timeout_msg);
-                ErrorKind::DeviceUnavailable.code()
-            }
-        }
-    })
 }
 
 /// Read a C string in-param.

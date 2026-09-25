@@ -5,9 +5,10 @@ use idevice::Idevice;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use super::{read_small_file, AFC_OPERATION_TIMEOUT};
+use super::read_small_file;
 use crate::block;
 use crate::bounded::{cancel_or_timeout, Interrupt};
+use crate::timeouts;
 
 async fn request(stream: &mut DuplexStream) -> (u64, AfcOpcode) {
     let mut header = [0_u8; AfcPacketHeader::LEN as usize];
@@ -103,7 +104,7 @@ fn reuses_only_a_cleanly_closed_session() {
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
         let outcome = cancel_or_timeout(
             &CancellationToken::new(),
-            AFC_OPERATION_TIMEOUT,
+            timeouts::DEVICE_WORK,
             read_small_file(client, "/thumb", 4),
         )
         .await;
@@ -112,6 +113,31 @@ fn reuses_only_a_cleanly_closed_session() {
             _ => panic!("small read did not return a reusable session"),
         }
         server.await.unwrap();
+    });
+}
+
+#[test]
+fn a_missing_file_keeps_the_session() {
+    block(async {
+        let (device, mut peer) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let (packet_num, opcode) = request(&mut peer).await;
+            assert_eq!(opcode, AfcOpcode::GetFileInfo);
+            let object_not_found = 8_u64.to_le_bytes().to_vec();
+            reply(
+                &mut peer,
+                packet_num,
+                AfcOpcode::Status,
+                object_not_found,
+                Vec::new(),
+            )
+            .await;
+            peer
+        });
+        let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
+        let outcome = read_small_file(client, "/missing", 4).await;
+        assert!(matches!(outcome, Err((Some(_), _))));
+        drop(server.await.unwrap());
     });
 }
 
@@ -132,7 +158,7 @@ fn cancellation_discards_an_open_descriptor() {
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
         let outcome = cancel_or_timeout(
             &cancel,
-            AFC_OPERATION_TIMEOUT,
+            timeouts::DEVICE_WORK,
             read_small_file(client, "/thumb", 4),
         )
         .await;
@@ -170,7 +196,7 @@ fn cancellation_interrupts_file_close() {
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
         let outcome = cancel_or_timeout(
             &cancel,
-            AFC_OPERATION_TIMEOUT,
+            timeouts::DEVICE_WORK,
             read_small_file(client, "/thumb", 4),
         )
         .await;

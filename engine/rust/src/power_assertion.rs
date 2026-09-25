@@ -7,6 +7,7 @@ use std::time::Duration;
 use idevice::{Idevice, IdeviceError};
 use plist::Value;
 
+use crate::timeouts;
 use crate::AirvaultProvider;
 
 const ASSERTION_SERVICE: &str = "com.apple.mobile.assertion_agent";
@@ -15,8 +16,9 @@ const WIRELESS_SYNC_TYPE: &str = "AMDPowerAssertionTypeWirelessSync";
 // 1200 s maximum AMDevicePowerAssertionCreate accepts, re-create over a fresh
 // connection every 600 s, releasing the previous assertion after.
 const ASSERTION_BACKSTOP_SECS: f64 = 1200.0;
-const ASSERTION_RENEW: Duration = crate::timeouts::ASSERTION_RENEW;
-const ASSERTION_RETRY: Duration = crate::timeouts::ASSERTION_RETRY;
+const ASSERTION_RENEW: Duration = Duration::from_secs(600);
+/// Retry cadence when a renewal fails mid-transfer.
+const ASSERTION_RETRY: Duration = Duration::from_secs(60);
 const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 /// The device holds the assertion while this connection stays open; dropping
@@ -80,7 +82,9 @@ pub(crate) async fn keep_device_awake(provider: &AirvaultProvider, udid: &str, l
     let mut held: Option<PowerAssertion> = None;
     let mut warned = false;
     loop {
-        match hold_wireless_sync(provider, &name).await {
+        // Bounded, or a half-open socket would stall every later renewal.
+        let attempt = tokio::time::timeout(timeouts::CONNECT, hold_wireless_sync(provider, &name));
+        match attempt.await.unwrap_or(Err(IdeviceError::Timeout)) {
             Ok(assertion) => {
                 if held.is_none() {
                     tracing::info!(udid = %udid, "wireless-sync power assertion held");

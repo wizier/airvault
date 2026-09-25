@@ -73,10 +73,29 @@ impl EngineFailure {
         Self::new(kind, format!("{context}: {error} [{error:?}]"))
     }
 
+    /// A single request/response call. Protocol, Integrity and StorageFull
+    /// describe a DeviceLink transfer or the backup store; for one request they
+    /// would mislead, so Go reports the operation's own failure instead.
+    pub(crate) fn from_request(context: &str, error: IdeviceError) -> Self {
+        let kind = match classify_idevice_error(&error) {
+            ErrorKind::Protocol | ErrorKind::Integrity | ErrorKind::StorageFull => {
+                ErrorKind::Internal
+            }
+            kind => kind,
+        };
+        Self::new(kind, format!("{context}: {error} [{error:?}]"))
+    }
+
     pub(crate) fn with_cleanup(mut self, cleanup: String) -> Self {
         self.detail.push_str("; cleanup also failed: ");
         self.detail.push_str(&cleanup);
         self
+    }
+}
+
+impl From<IdeviceError> for EngineFailure {
+    fn from(error: IdeviceError) -> Self {
+        Self::from_request("device request failed", error)
     }
 }
 
@@ -179,9 +198,10 @@ mod tests {
         for (kind, expected) in cases {
             assert_eq!(kind.code(), expected, "{kind:?}");
         }
-        // The stream/status rc values must stay outside the error space.
+        // Success and the pull-stream rc values must stay outside the error space.
+        let reserved = [0, ffi::AV_STREAM_CONTINUE, ffi::AV_STREAM_CLOSED];
         for (kind, _) in cases {
-            assert_ne!(kind.code(), 0, "{kind:?}");
+            assert!(!reserved.contains(&kind.code()), "{kind:?}");
         }
     }
 
@@ -209,6 +229,26 @@ mod tests {
                 EngineFailure::from_idevice("operation", error).kind,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn requests_keep_device_states_but_not_transfer_kinds() {
+        let cases = [
+            (IdeviceError::DeviceLocked, ErrorKind::DeviceLocked),
+            (IdeviceError::InvalidHostID, ErrorKind::TrustRequired),
+            (IdeviceError::Timeout, ErrorKind::Timeout),
+            (
+                IdeviceError::Afc(AfcError::ObjectNotFound),
+                ErrorKind::Internal,
+            ),
+            (
+                IdeviceError::UnexpectedResponse("refused".into()),
+                ErrorKind::Internal,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(EngineFailure::from(error).kind, expected);
         }
     }
 

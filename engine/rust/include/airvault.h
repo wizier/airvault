@@ -49,9 +49,9 @@
  */
 #define AV_ERROR_FIND_MY_ENABLED 16
 
-#define AV_STREAM_CONTINUE 3
+#define AV_STREAM_CONTINUE 100
 
-#define AV_STREAM_CLOSED 4
+#define AV_STREAM_CLOSED 101
 
 /**
  * av_operation_cancel: no operation is registered under this id yet, so the
@@ -105,7 +105,7 @@ typedef void (*av_install_cb)(size_t, int32_t, uint64_t);
 /**
  * Progress callback into Go: (opaque operation id, phase, percent, bytes).
  * Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
- * `bytes` counts this call alone — the host owns the running sum.
+ * `bytes` is the session's cumulative total (0 = not reported this call).
  */
 typedef void (*av_backup_cb)(size_t, int32_t, double, uint64_t);
 
@@ -300,8 +300,7 @@ int32_t av_devices_list(AvEngine *engine, char **out_json, AvError *error);
 
 /**
  * Reads battery into `out_json`: {"charging":bool,"level":int}. Bounded — a
- * Wi-Fi lockdown session can hang. A session-establish failure or the timeout
- * returns AV_ERROR_DEVICE_UNAVAILABLE so the caller can drive presence.
+ * Wi-Fi lockdown session can hang.
  */
 int32_t av_device_battery(AvEngine *engine, const char *udid, char **out_json, AvError *error);
 
@@ -423,8 +422,7 @@ int32_t av_pairing_unpair(AvEngine *engine, const char *udid, AvError *error);
 
 /**
  * Triggers/advances pairing. out_status: "paired" | "trust_pending" |
- * "denied" | "locked" | "wifi_authorization_failed". The generous timeout
- * covers certificate generation, which is slow in debug shim builds.
+ * "denied" | "locked" | "wifi_authorization_failed".
  */
 int32_t av_pairing_advance(AvEngine *engine,
                            const char *udid,
@@ -485,7 +483,7 @@ int32_t av_snapshot_restore(AvEngine *engine,
 int32_t av_device_watch_open(AvEngine *engine, AvPresenceWatch **out, AvError *error);
 
 /**
- * Pulls the latest complete versioned state JSON via the AV_STREAM_* pull protocol.
+ * Pulls the next complete versioned state JSON via the AV_STREAM_* pull protocol.
  */
 int32_t av_device_watch_next(AvPresenceWatch *watcher, char **out_json, char **err);
 

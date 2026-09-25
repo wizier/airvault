@@ -4,7 +4,6 @@
 //! crate exposes only the parameterless ones. TODO(upstream): contribute them.
 
 use std::ffi::c_char;
-use std::time::Duration;
 
 use idevice::services::mobileactivationd::MobileActivationdClient;
 use idevice::{Idevice, IdeviceError};
@@ -13,13 +12,13 @@ use tracing::Instrument;
 
 use crate::engine_error::ErrorKind;
 use crate::ffi::{engine_udid, guard_error, AvEngine, AvError};
+use crate::timeouts;
 use crate::{
     block_bounded_out, block_bounded_unit, operation_span, opt_owned, out_str, provider_for,
     AirvaultProvider,
 };
 
 const ACTIVATION_SERVICE: &str = "com.apple.mobileactivationd";
-const ACTIVATION_STEP_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
 // Activation payloads carry certificate chains; cap generously.
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -157,14 +156,11 @@ pub extern "C" fn av_activation_state(
         block_bounded_out(
             out_state,
             err,
-            ACTIVATION_STEP_TIMEOUT,
+            timeouts::DEVICE_WORK,
             "activation state read timed out",
             async move {
-                let fut = async {
-                    let provider = provider_for(context, &udid).await?;
-                    MobileActivationdClient::new(&provider).state().await
-                };
-                fut.await.map_err(|e| format!("{e:?}"))
+                let provider = provider_for(context, &udid).await?;
+                MobileActivationdClient::new(&provider).state().await
             }
             .instrument(span),
         )
@@ -190,14 +186,11 @@ pub extern "C" fn av_activation_session_info(
         block_bounded_out(
             out_xml,
             err,
-            ACTIVATION_STEP_TIMEOUT,
+            timeouts::DEVICE_WORK,
             "activation session info timed out",
             async move {
-                let fut = async {
-                    let provider = provider_for(context, &udid).await?;
-                    session_info_xml(&provider).await
-                };
-                fut.await.map_err(|e| format!("{e:?}"))
+                let provider = provider_for(context, &udid).await?;
+                session_info_xml(&provider).await
             }
             .instrument(span),
         )
@@ -230,14 +223,11 @@ pub extern "C" fn av_activation_info(
         block_bounded_out(
             out_xml,
             err,
-            ACTIVATION_STEP_TIMEOUT,
+            timeouts::DEVICE_WORK,
             "activation info timed out",
             async move {
-                let fut = async {
-                    let provider = provider_for(context, &udid).await?;
-                    activation_info_xml(&provider, handshake).await
-                };
-                fut.await.map_err(|e| format!("{e:?}"))
+                let provider = provider_for(context, &udid).await?;
+                activation_info_xml(&provider, handshake).await
             }
             .instrument(span),
         )
@@ -282,14 +272,11 @@ pub extern "C" fn av_activation_finish(
         let span = operation_span(&job_id, "activation", &udid);
         block_bounded_unit(
             err,
-            ACTIVATION_STEP_TIMEOUT,
+            timeouts::DEVICE_WORK,
             "activation record apply timed out",
             async move {
-                let fut = async {
-                    let provider = provider_for(context, &udid).await?;
-                    apply_record(&provider, record, headers).await
-                };
-                fut.await.map_err(|e| format!("{e:?}"))
+                let provider = provider_for(context, &udid).await?;
+                apply_record(&provider, record, headers).await
             }
             .instrument(span),
         )

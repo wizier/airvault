@@ -13,15 +13,17 @@ use plist::Value;
 use tokio_util::io::InspectWriter;
 use tracing::Instrument;
 
-use crate::engine_error::ErrorKind;
+use crate::afc::FileGuard;
+use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{engine_udid, guard_error, out_buffer, AvBuffer, AvEngine, AvError};
+use crate::timeouts;
 use crate::{
-    block_bounded, block_bounded_out, block_bounded_unit, block_probe, operation_span, opt_owned,
-    out_str, provider_for, req_str, to_json, AirvaultProvider, EngineContext, ProbeError,
+    block_bounded, block_bounded_out, block_bounded_unit, operation_span, opt_owned, out_str,
+    provider_for, req_str, to_json, AirvaultProvider, EngineContext,
 };
 
-const APP_INSTALL_OPERATION_TIMEOUT: Duration = crate::timeouts::APP_INSTALL;
-const APP_UNINSTALL_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
+/// Installing streams the whole .ipa and then waits on installd.
+const APP_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const INSTALL_STAGING_PATH: &str = "PublicStaging/airvault-install.ipa";
 
 /// The first non-empty candidate, or "" — the display-name/version fallback ladder.
@@ -70,19 +72,16 @@ pub extern "C" fn av_device_power(
         let span = operation_span(&job_id, "power", &udid);
         block_bounded_unit(
             err,
-            crate::timeouts::UI_CALL,
+            timeouts::UI_CALL,
             "power request timed out",
             async move {
-                let fut = async {
-                    let provider = provider_for(context, &udid).await?;
-                    let mut dr = DiagnosticsRelayClient::connect(&provider).await?;
-                    match action {
-                        0 => dr.restart().await,
-                        1 => dr.shutdown().await,
-                        _ => dr.sleep().await,
-                    }
-                };
-                fut.await.map_err(|e| format!("{e:?}"))
+                let provider = provider_for(context, &udid).await?;
+                let mut dr = DiagnosticsRelayClient::connect(&provider).await?;
+                match action {
+                    0 => dr.restart().await,
+                    1 => dr.shutdown().await,
+                    _ => dr.sleep().await,
+                }
             }
             .instrument(span),
         )
@@ -129,7 +128,7 @@ async fn device_info_inner(
     // Battery gas-gauge via the diagnostics relay (AppleSmartBattery IORegistry):
     // USB-mostly and can HANG over a Wi-Fi/standby link, so hard-capped and
     // best-effort — on timeout/absence the key is simply omitted.
-    let battery = tokio::time::timeout(crate::timeouts::PROBE, async {
+    let battery = tokio::time::timeout(timeouts::PROBE, async {
         let mut dr = DiagnosticsRelayClient::connect(&provider).await.ok()?;
         dr.ioregistry(None, Some("AppleSmartBattery"), None)
             .await
@@ -165,13 +164,9 @@ pub extern "C" fn av_device_hardware(
         block_bounded_out(
             out_json,
             err,
-            crate::timeouts::UI_CALL,
+            timeouts::UI_CALL,
             "device info timed out",
-            async move {
-                device_info_inner(context, &udid)
-                    .await
-                    .map_err(|e| format!("{e:?}"))
-            },
+            device_info_inner(context, &udid),
         )
     })
 }
@@ -252,13 +247,9 @@ pub extern "C" fn av_apps_list(
         block_bounded_out(
             out_json,
             err,
-            crate::timeouts::DEVICE_WORK,
+            timeouts::DEVICE_WORK,
             "app list timed out",
-            async move {
-                apps_inner(context, &udid, kind)
-                    .await
-                    .map_err(|e| format!("{e:?}"))
-            },
+            apps_inner(context, &udid, kind),
         )
     })
 }
@@ -272,13 +263,13 @@ async fn app_install(
     ipa_path: &str,
     cb: InstallCb,
     callback_id: usize,
-) -> Result<(), String> {
+) -> Result<(), EngineFailure> {
     // Standard installation_proxy + AFC path (ideviceinstaller-style), no sync
     // session; netmuxd keeps Wi-Fi device liveness independent of this call.
     cb(callback_id, AV_INSTALL_PHASE_STAGING, 0);
     let provider = provider_for(context, udid)
         .await
-        .map_err(|e| format!("device provider lookup failed: {e:?}"))?;
+        .map_err(|e| EngineFailure::from_request("device provider lookup failed", e))?;
     app_install_run(&provider, ipa_path, cb, callback_id).await
 }
 
@@ -287,29 +278,30 @@ async fn app_install_run(
     ipa_path: &str,
     cb: InstallCb,
     callback_id: usize,
-) -> Result<(), String> {
+) -> Result<(), EngineFailure> {
     // 1. Stream the package into the AFC jail (installs read from PublicStaging).
     // 1 MiB chunks: AFC does one device round-trip per write, so small buffers
     // collapse throughput over Wi-Fi.
     let file = tokio::fs::File::open(ipa_path)
         .await
-        .map_err(|e| format!("read ipa: {e}"))?;
+        .map_err(|e| EngineFailure::new(ErrorKind::Internal, format!("read ipa: {e}")))?;
     let total = file
         .metadata()
         .await
-        .map_err(|e| format!("read ipa size: {e}"))?
+        .map_err(|e| EngineFailure::new(ErrorKind::Internal, format!("read ipa size: {e}")))?
         .len();
     let mut afc = AfcClient::connect(provider)
         .await
-        .map_err(|e| format!("connect AFC: {e:?}"))?;
+        .map_err(|e| EngineFailure::from_request("connect AFC", e))?;
     let _ = afc.mk_dir("PublicStaging").await; // best-effort — usually present
-    let fd = afc
-        .open_owned(INSTALL_STAGING_PATH, AfcFopenMode::WrOnly)
-        .await
-        .map_err(|e| format!("open staged IPA: {e:?}"))?;
+    let mut staged = FileGuard::new(
+        afc.open_owned(INSTALL_STAGING_PATH, AfcFopenMode::WrOnly)
+            .await
+            .map_err(|e| EngineFailure::from_request("open staged IPA", e))?,
+    );
     let mut copied = 0_u64;
     let mut last_percent = 0;
-    let mut fd = InspectWriter::new(fd, |bytes| {
+    let mut writer = InspectWriter::new(&mut *staged, |bytes| {
         copied += bytes.len() as u64;
         let percent = copied.min(total).saturating_mul(100) / total.max(1);
         if percent != last_percent {
@@ -318,14 +310,13 @@ async fn app_install_run(
         }
     });
     let mut reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
-    let upload = tokio::io::copy_buf(&mut reader, &mut fd)
+    let upload = tokio::io::copy_buf(&mut reader, &mut writer)
         .await
-        .map_err(|e| format!("upload IPA: {e}"));
-    let afc = fd
-        .into_inner()
+        .map_err(|e| EngineFailure::new(ErrorKind::Internal, format!("upload IPA: {e}")));
+    let afc = staged
         .close()
         .await
-        .map_err(|e| format!("close staged IPA: {e:?}"));
+        .map_err(|e| EngineFailure::from_request("close staged IPA", e));
     if let Err(error) = upload {
         if let Ok(mut afc) = afc {
             cleanup_staged_ipa(&mut afc).await;
@@ -340,7 +331,7 @@ async fn app_install_run(
         cb(callback_id, AV_INSTALL_PHASE_INSTALLING, 0);
         let mut ip = InstallationProxyClient::connect(provider)
             .await
-            .map_err(|e| format!("connect installation proxy: {e:?}"))?;
+            .map_err(|e| EngineFailure::from_request("connect installation proxy", e))?;
         ip.install_with_callback(
             INSTALL_STAGING_PATH,
             None,
@@ -350,9 +341,9 @@ async fn app_install_run(
             (),
         )
         .await
-        .map_err(|e| format!("install IPA: {e:?}"))?;
+        .map_err(|e| EngineFailure::from_request("install IPA", e))?;
         cb(callback_id, AV_INSTALL_PHASE_INSTALLING, 100);
-        Ok::<(), String>(())
+        Ok(())
     }
     .await;
     cleanup_staged_ipa(&mut afc).await;
@@ -383,7 +374,7 @@ pub extern "C" fn av_app_install(
         let span = operation_span(&job_id, "install", &udid);
         block_bounded_unit(
             err,
-            APP_INSTALL_OPERATION_TIMEOUT,
+            APP_INSTALL_TIMEOUT,
             "install timed out",
             app_install(context, &udid, &path, cb, callback_id).instrument(span),
         )
@@ -420,13 +411,9 @@ pub extern "C" fn av_app_icon(
         };
         block_bounded(
             err,
-            crate::timeouts::UI_CALL,
+            timeouts::UI_CALL,
             "app icon timed out",
-            async move {
-                app_icon_inner(context, &udid, &bundle)
-                    .await
-                    .map_err(|error| format!("{error:?}"))
-            },
+            app_icon_inner(context, &udid, &bundle),
             move |bytes| {
                 if out_buffer(out, bytes) {
                     0
@@ -444,20 +431,14 @@ async fn wallpaper_inner(
     context: &EngineContext,
     udid: &str,
     lock_screen: bool,
-) -> Result<Vec<u8>, ProbeError> {
-    let provider = provider_for(context, udid)
-        .await
-        .map_err(|e| ProbeError::Unreachable(format!("{e:?}")))?;
-    let mut sb = SpringBoardServicesClient::connect(&provider)
-        .await
-        .map_err(|e| ProbeError::Unreachable(format!("{e:?}")))?;
-    let png = if lock_screen {
+) -> Result<Vec<u8>, idevice::IdeviceError> {
+    let provider = provider_for(context, udid).await?;
+    let mut sb = SpringBoardServicesClient::connect(&provider).await?;
+    if lock_screen {
         sb.get_lock_screen_wallpaper_preview_pngdata().await
     } else {
         sb.get_home_screen_wallpaper_preview_pngdata().await
     }
-    .map_err(|e| ProbeError::Logical(format!("{e:?}")))?;
-    Ok(png)
 }
 
 /// Fetches a rendered wallpaper preview as raw PNG. `lock_screen` selects
@@ -475,9 +456,9 @@ pub extern "C" fn av_wallpaper_get(
             return ErrorKind::InvalidArgument.code();
         };
         let context = engine.context();
-        block_probe(
+        block_bounded(
             err,
-            crate::timeouts::UI_CALL,
+            timeouts::UI_CALL,
             "wallpaper preview timed out",
             wallpaper_inner(context, &udid, lock_screen != 0),
             move |bytes| {
@@ -498,16 +479,10 @@ async fn app_uninstall_inner(
     context: &EngineContext,
     udid: &str,
     bundle_id: &str,
-) -> Result<(), String> {
-    let provider = provider_for(context, udid)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let mut ip = InstallationProxyClient::connect(&provider)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    ip.uninstall(bundle_id.to_owned(), None)
-        .await
-        .map_err(|e| format!("{e:?}"))
+) -> Result<(), idevice::IdeviceError> {
+    let provider = provider_for(context, udid).await?;
+    let mut ip = InstallationProxyClient::connect(&provider).await?;
+    ip.uninstall(bundle_id.to_owned(), None).await
 }
 
 /// Uninstalls an app by bundle id (installation_proxy).
@@ -531,9 +506,9 @@ pub extern "C" fn av_app_uninstall(
         let span = operation_span(&job_id, "uninstall", &udid);
         block_bounded_unit(
             err,
-            APP_UNINSTALL_TIMEOUT,
+            timeouts::DEVICE_WORK,
             "uninstall timed out",
-            async move { app_uninstall_inner(context, &udid, &bundle).await }.instrument(span),
+            app_uninstall_inner(context, &udid, &bundle).instrument(span),
         )
     })
 }

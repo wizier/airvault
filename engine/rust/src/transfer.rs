@@ -14,12 +14,13 @@ mod sync_session;
 
 use metadata::{
     prepare_backup_info, remove_restore_applications, stage_restore_applications,
-    RestoreApplicationsError, RESTORE_APPLICATIONS_TIMEOUT,
+    RestoreApplicationsError,
 };
 use sync_session::SyncSession;
 
+use crate::timeouts;
 use crate::{
-    backup_storage::{BackupCb, BackupProgress, BackupStorage, BACKUP_PHASE_FINALIZING},
+    backup_storage::{BackupCb, BackupStorage, ProgressSink, BACKUP_PHASE_FINALIZING},
     bounded::{cancel_or_timeout, Interrupt},
     engine_error::{EngineFailure, ErrorKind},
     ffi::{engine_udid, guard_error, AvEngine, AvError},
@@ -28,15 +29,11 @@ use crate::{
     operation_registry::RegisterError,
     operation_span, opt_owned, out_str,
     path_sandbox::PathSandbox,
-    provider_for, req_str, timeouts, AirvaultProvider, EngineContext,
+    provider_for, req_str, write_failure, AirvaultProvider, EngineContext,
 };
 
-// Both stages can stall on the device passcode prompt, and the Info.plist pass
-// also has to survive an app census of one icon round-trip per installed app.
-const INFO_PLIST_TIMEOUT: Duration = timeouts::PROMPT;
-const MB2_CONNECT_TIMEOUT: Duration = timeouts::PROMPT;
-const CANCEL_OBSERVER_TIMEOUT: Duration = timeouts::PROBE;
-const FMIP_PREFLIGHT_TIMEOUT: Duration = timeouts::CONNECT;
+// The Info.plist pass runs an app census of one icon round-trip per installed app.
+const INFO_PLIST_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn merge_transfer_cleanup<T>(
     primary: Result<T, EngineFailure>,
@@ -83,7 +80,7 @@ async fn ensure_find_my_disabled(provider: &AirvaultProvider) -> Result<(), Engi
         lc.get_value(Some("IsAssociated"), Some("com.apple.fmip"))
             .await
     };
-    let read = tokio::time::timeout(FMIP_PREFLIGHT_TIMEOUT, read)
+    let read = tokio::time::timeout(timeouts::CONNECT, read)
         .await
         .unwrap_or(Err(idevice::IdeviceError::Timeout));
     match read {
@@ -140,7 +137,7 @@ async fn run_mb2(
     udid: &str,
     source: &str,
     spec: TransferSpec,
-    progress: BackupProgress,
+    progress: ProgressSink,
     cancel: CancellationToken,
 ) -> Result<u64, EngineFailure> {
     let root = context.backup_root();
@@ -194,7 +191,7 @@ async fn run_mb2_transfer(
     provider: &AirvaultProvider,
     storage: Mb2Storage<'_>,
     spec: TransferSpec,
-    progress: BackupProgress,
+    progress: ProgressSink,
     cancel: CancellationToken,
 ) -> Result<ObjectSession, EngineFailure> {
     let Mb2Storage {
@@ -253,7 +250,7 @@ async fn run_mb2_transfer(
         TransferSpec::Restore { .. } => {
             let staged = match cancel_or_timeout(
                 &cancel,
-                RESTORE_APPLICATIONS_TIMEOUT,
+                timeouts::DEVICE_WORK,
                 stage_restore_applications(provider, &delegate, &info_path),
             )
             .await
@@ -275,7 +272,7 @@ async fn run_mb2_transfer(
                 Err(interrupt) => Err(interrupt_failure(
                     label,
                     "RestoreApplications.plist preparation",
-                    RESTORE_APPLICATIONS_TIMEOUT,
+                    timeouts::DEVICE_WORK,
                     interrupt,
                 )),
             };
@@ -293,12 +290,7 @@ async fn run_mb2_transfer(
         if let Some(error) = session.error() {
             return Err(EngineFailure::from(error));
         }
-        match cancel_or_timeout(
-            &cancel,
-            MB2_CONNECT_TIMEOUT,
-            mobilebackup2::connect(provider),
-        )
-        .await
+        match cancel_or_timeout(&cancel, timeouts::CONNECT, mobilebackup2::connect(provider)).await
         {
             Ok(Ok(client)) => Ok(client),
             Ok(Err(error)) => Err(EngineFailure::from_idevice(
@@ -308,7 +300,7 @@ async fn run_mb2_transfer(
             Err(interrupt) => Err(interrupt_failure(
                 label,
                 "mobilebackup2 connect",
-                MB2_CONNECT_TIMEOUT,
+                timeouts::CONNECT,
                 interrupt,
             )),
         }
@@ -326,7 +318,7 @@ async fn run_mb2_transfer(
     // netmuxd owns the device heartbeat, so no heartbeat service is opened here.
     let (cancel_obs, observer_error) = match cancel_or_timeout(
         &cancel,
-        CANCEL_OBSERVER_TIMEOUT,
+        timeouts::PROBE,
         mobilebackup2::spawn_cancel_observer(provider, cancel.clone()),
     )
     .await
@@ -337,7 +329,7 @@ async fn run_mb2_transfer(
             Some(interrupt_failure(
                 label,
                 "cancel-observer setup",
-                CANCEL_OBSERVER_TIMEOUT,
+                timeouts::PROBE,
                 Interrupt::Cancelled,
             )),
         ),
@@ -345,7 +337,7 @@ async fn run_mb2_transfer(
             let error = interrupt_failure(
                 label,
                 "cancel-observer setup",
-                CANCEL_OBSERVER_TIMEOUT,
+                timeouts::PROBE,
                 Interrupt::TimedOut,
             );
             tracing::warn!(udid = %udid, error = %error.detail, "mb2: proceeding without device cancel observer");
@@ -450,7 +442,7 @@ fn run_transfer_export(engine: &AvEngine, request: TransferRequest, err: *mut *m
         }
     };
     let cancel = lease.cancellation_token();
-    let progress = BackupProgress {
+    let progress = ProgressSink {
         callback,
         id: callback_id,
     };
@@ -477,13 +469,11 @@ fn run_transfer_export(engine: &AvEngine, request: TransferRequest, err: *mut *m
                     }
                     0
                 }
-                Err(failure) => {
-                    out_str(err, &failure.detail);
+                Err(mut failure) => {
                     if cancel.is_cancelled() {
-                        ErrorKind::Cancelled.code()
-                    } else {
-                        failure.kind.code()
+                        failure.kind = ErrorKind::Cancelled;
                     }
+                    write_failure(err, failure)
                 }
             }
         }

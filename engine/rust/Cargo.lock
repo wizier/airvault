@@ -499,8 +499,9 @@ dependencies = [
 
 [[package]]
 name = "idevice"
-version = "0.1.66"
-source = "git+https://github.com/jkcoxson/idevice?tag=v0.1.66#c65dfbf17b888c5795f17ea3e3dad60e6737252c"
+version = "0.1.68"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5d7799c8497cef60ddfd38f7d92e267b9fa5d0b18e7691d31041453007400ca"
 dependencies = [
  "async-stream",
  "async_zip",

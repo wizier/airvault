@@ -11,9 +11,10 @@ use idevice::services::springboardservices::SpringBoardServicesClient;
 use idevice::{IdeviceError, IdeviceService};
 use plist::Value;
 
+use crate::afc::{read_small_file, FileGuard};
+use crate::timeouts;
 use crate::{getv_str, AirvaultProvider};
 
-pub(super) const RESTORE_APPLICATIONS_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
 // The canonical "iTunes Files" census (idevicebackup2).
 const ITUNES_FILES: [&str; 11] = [
     "ApertureAlbumPrefs",
@@ -88,23 +89,17 @@ pub(super) async fn stage_restore_applications(
     let mut xml = Vec::new();
     apps.to_writer_xml(&mut xml)
         .map_err(|error| RestoreApplicationsError::Snapshot(error.to_string()))?;
-    let mut afc = AfcClient::connect(provider)
+    let stage = async {
+        let mut afc = AfcClient::connect(provider).await?;
+        let _ = afc.mk_dir("/iTunesRestore").await;
+        let path = "/iTunesRestore/RestoreApplications.plist";
+        let mut file = FileGuard::new(afc.open_owned(path, AfcFopenMode::WrOnly).await?);
+        file.write_entire(&xml).await?;
+        file.close().await
+    };
+    stage
         .await
-        .map_err(|error| RestoreApplicationsError::Device(format!("{error:?}")))?;
-    let _ = afc.mk_dir("/iTunesRestore").await;
-    let mut file = afc
-        .open(
-            "/iTunesRestore/RestoreApplications.plist",
-            AfcFopenMode::WrOnly,
-        )
-        .await
-        .map_err(|error| RestoreApplicationsError::Device(format!("{error:?}")))?;
-    // Close even when the write failed, or the device-side descriptor leaks.
-    let written = file.write_entire(&xml).await;
-    let closed = file.close().await;
-    written
-        .and(closed)
-        .map_err(|error| RestoreApplicationsError::Device(format!("{error:?}")))?;
+        .map_err(|error: IdeviceError| RestoreApplicationsError::Device(format!("{error:?}")))?;
     Ok(true)
 }
 
@@ -115,7 +110,7 @@ pub(super) async fn remove_restore_applications(provider: &AirvaultProvider, udi
         let mut afc = AfcClient::connect(provider).await?;
         afc.remove_all("/iTunesRestore").await
     };
-    match tokio::time::timeout(crate::timeouts::PROBE, cleanup).await {
+    match tokio::time::timeout(timeouts::CONNECT, cleanup).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             tracing::debug!(udid = %udid, ?error, "restore: staged app list not removed")
@@ -124,11 +119,19 @@ pub(super) async fn remove_restore_applications(provider: &AirvaultProvider, udi
     }
 }
 
-async fn afc_file_contents(afc: &mut AfcClient, path: &str) -> Option<Vec<u8>> {
-    let mut file = afc.open(path, AfcFopenMode::RdOnly).await.ok()?;
-    let data = file.read_entire().await;
-    let _ = file.close().await;
-    data.ok().filter(|data| !data.is_empty())
+/// A file's non-empty contents, or None. Takes the client out of `afc` and puts
+/// it back unless the read lost it.
+async fn afc_file_contents(afc: &mut Option<AfcClient>, path: &str) -> Option<Vec<u8>> {
+    match read_small_file(afc.take()?, path, usize::MAX).await {
+        Ok((client, data)) => {
+            *afc = Some(client);
+            Some(data).filter(|data| !data.is_empty())
+        }
+        Err((client, _)) => {
+            *afc = client;
+            None
+        }
+    }
 }
 
 async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec<u8>, String> {
@@ -202,24 +205,23 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
         .unwrap_or(Value::Dictionary(plist::Dictionary::new()));
     info.insert("iTunes Settings".into(), itunes_settings);
 
-    let mut itunes_files = plist::Dictionary::new();
-    match AfcClient::connect(provider).await {
-        Ok(mut afc) => {
-            if let Some(data) = afc_file_contents(&mut afc, "/Books/iBooksData2.plist").await {
-                info.insert("iBooks Data 2".into(), Value::Data(data));
-            }
-            for name in ITUNES_FILES {
-                let path = format!("/iTunes_Control/iTunes/{name}");
-                if let Some(data) = afc_file_contents(&mut afc, &path).await {
-                    itunes_files.insert(name.into(), Value::Data(data));
-                }
-            }
-        }
-        Err(error) => {
+    let mut afc = AfcClient::connect(provider)
+        .await
+        .inspect_err(|error| {
             tracing::warn!(
                 ?error,
                 "afc unavailable; Info.plist carries no iTunes files"
             )
+        })
+        .ok();
+    if let Some(data) = afc_file_contents(&mut afc, "/Books/iBooksData2.plist").await {
+        info.insert("iBooks Data 2".into(), Value::Data(data));
+    }
+    let mut itunes_files = plist::Dictionary::new();
+    for name in ITUNES_FILES {
+        let path = format!("/iTunes_Control/iTunes/{name}");
+        if let Some(data) = afc_file_contents(&mut afc, &path).await {
+            itunes_files.insert(name.into(), Value::Data(data));
         }
     }
     info.insert("iTunes Files".into(), Value::Dictionary(itunes_files));
