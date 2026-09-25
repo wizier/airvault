@@ -2,18 +2,19 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use idevice::services::afc::{opcode::AfcFopenMode, AfcClient};
 use idevice::services::installation_proxy::InstallationProxyClient;
 use idevice::services::mobilebackup2::BackupDelegate;
 use idevice::services::springboardservices::SpringBoardServicesClient;
+use idevice::utils::plist::truncate_dates_to_seconds;
 use idevice::{IdeviceError, IdeviceService};
 use plist::Value;
 
 use crate::afc::{read_small_file, FileGuard};
+use crate::provider::{authed_lockdown, AirvaultProvider};
 use crate::timeouts;
-use crate::{getv_str, AirvaultProvider};
 
 // The canonical "iTunes Files" census (idevicebackup2).
 const ITUNES_FILES: [&str; 11] = [
@@ -28,6 +29,21 @@ const ITUNES_FILES: [&str; 11] = [
     "iTunesApplicationIDs",
     "iTunesPrefs",
     "iTunesPrefs.plist",
+];
+
+// Info.plist identity keys and the lockdown root-domain values they copy
+// (idevicebackup2's mobilebackup_factory_info_plist_new).
+const IDENTITY_KEYS: [(&str, &str); 10] = [
+    ("Build Version", "BuildVersion"),
+    ("Device Name", "DeviceName"),
+    ("Display Name", "DeviceName"),
+    ("ICCID", "IntegratedCircuitCardIdentity"),
+    ("IMEI", "InternationalMobileEquipmentIdentity"),
+    ("MEID", "MobileEquipmentIdentifier"),
+    ("Phone Number", "PhoneNumber"),
+    ("Product Type", "ProductType"),
+    ("Product Version", "ProductVersion"),
+    ("Serial Number", "SerialNumber"),
 ];
 
 pub(super) enum RestoreApplicationsError {
@@ -135,45 +151,23 @@ async fn afc_file_contents(afc: &mut Option<AfcClient>, path: &str) -> Option<Ve
 }
 
 async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec<u8>, String> {
-    let mut lockdown = crate::authed_lockdown(provider)
+    let mut lockdown = authed_lockdown(provider)
         .await
         .map_err(|error| format!("{error:?}"))?;
+    let root = lockdown
+        .get_value(None, None)
+        .await
+        .ok()
+        .and_then(Value::into_dictionary)
+        .unwrap_or_default();
     let mut info = plist::Dictionary::new();
-    let mut set = |key: &str, value: String| {
-        if !value.is_empty() {
-            info.insert(key.into(), Value::String(value));
+    for (info_key, lockdown_key) in IDENTITY_KEYS {
+        if let Some(value) = root.get(lockdown_key).and_then(Value::as_string) {
+            if !value.is_empty() {
+                info.insert(info_key.into(), Value::String(value.into()));
+            }
         }
-    };
-
-    let name = getv_str(&mut lockdown, "DeviceName").await;
-    set(
-        "Build Version",
-        getv_str(&mut lockdown, "BuildVersion").await,
-    );
-    set("Device Name", name.clone());
-    set("Display Name", name);
-    set(
-        "ICCID",
-        getv_str(&mut lockdown, "IntegratedCircuitCardIdentity").await,
-    );
-    set(
-        "IMEI",
-        getv_str(&mut lockdown, "InternationalMobileEquipmentIdentity").await,
-    );
-    set(
-        "MEID",
-        getv_str(&mut lockdown, "MobileEquipmentIdentifier").await,
-    );
-    set("Phone Number", getv_str(&mut lockdown, "PhoneNumber").await);
-    set("Product Type", getv_str(&mut lockdown, "ProductType").await);
-    set(
-        "Product Version",
-        getv_str(&mut lockdown, "ProductVersion").await,
-    );
-    set(
-        "Serial Number",
-        getv_str(&mut lockdown, "SerialNumber").await,
-    );
+    }
 
     info.insert(
         "GUID".into(),
@@ -186,11 +180,9 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
         Value::String(udid.to_uppercase()),
     );
     // CFDate only accepts whole seconds.
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| UNIX_EPOCH + Duration::from_secs(elapsed.as_secs()))
-        .unwrap_or(UNIX_EPOCH);
-    info.insert("Last Backup Date".into(), Value::Date(now.into()));
+    let mut now = Value::Date(SystemTime::now().into());
+    truncate_dates_to_seconds(&mut now);
+    info.insert("Last Backup Date".into(), now);
 
     let itunes_version = lockdown
         .get_value(Some("MinITunesVersion"), Some("com.apple.mobile.iTunes"))
@@ -277,14 +269,12 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
         };
         let mut application = plist::Dictionary::new();
         application.insert("ApplicationSINF".into(), sinf.clone());
-        if let Some(mut client) = springboard.take() {
+        if let Some(client) = springboard.as_mut() {
             match client.get_icon_pngdata(bundle.to_owned()).await {
-                Ok(png) => {
-                    if !png.is_empty() {
-                        application.insert("PlaceholderIcon".into(), Value::Data(png));
-                    }
-                    springboard = Some(client);
+                Ok(png) if !png.is_empty() => {
+                    application.insert("PlaceholderIcon".into(), Value::Data(png));
                 }
+                Ok(_) => {}
                 Err(error) => {
                     let client_usable = matches!(
                         &error,
@@ -297,8 +287,8 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
                         client_usable,
                         "sbservices icon read failed; census continues without this icon"
                     );
-                    if client_usable {
-                        springboard = Some(client);
+                    if !client_usable {
+                        springboard = None;
                     }
                 }
             }

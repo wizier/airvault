@@ -54,6 +54,10 @@ impl EngineFailure {
         }
     }
 
+    pub(crate) fn invalid_argument(detail: impl Into<String>) -> Self {
+        Self::new(ErrorKind::InvalidArgument, detail)
+    }
+
     pub(crate) fn integrity(detail: impl Into<String>) -> Self {
         Self::new(ErrorKind::Integrity, detail)
     }

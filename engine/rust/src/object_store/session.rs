@@ -8,20 +8,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use idevice::services::mobilebackup2::{BackupDelegate, DirEntryInfo, FsBackupDelegate};
-use idevice::IdeviceError;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use super::manifest::{
-    inspect_manifest_entries, load_manifest, validate_manifest_header, Manifest,
+    inspect_manifest_entries, load_manifest, validate_manifest_header, EntryKind, Manifest,
 };
 use super::object::{HashVerifyReader, ObjectWriter};
 use super::tree::{Node, NodeKind, Tree};
 use super::{
-    not_cancelled, reject_symlinks, relative_components, resolve_object_ref, system_time, unix_now,
-    validate_object_ref, validate_snapshot_id, validate_source, ObjectFailure, MAX_MANIFEST_BYTES,
-    PROTOCOL_DIR, VERSION,
+    not_cancelled, reject_symlinks, relative_components, resolve_object_ref, unix_now,
+    validate_snapshot_id, validate_source, ObjectFailure, MAX_MANIFEST_BYTES, PROTOCOL_DIR,
+    VERSION,
 };
 
 pub(super) struct State {
@@ -90,6 +88,13 @@ impl<W: Write> Write for CancelWriter<'_, W> {
     }
 }
 
+/// One child of a listed directory; `size` is None for a subdirectory.
+pub(crate) struct ListedEntry {
+    pub(crate) name: String,
+    pub(crate) size: Option<u64>,
+    pub(crate) modified_unix: i64,
+}
+
 /// One session over content-addressed whole-file objects and one complete
 /// manifest per snapshot. An object's bytes always hash to its name, so writing
 /// the same content again republishes it; entries are addressed by logical key.
@@ -122,7 +127,7 @@ impl ObjectSession {
 
         let tree = match base_snapshot_id.filter(|value| !value.is_empty()) {
             Some(base_snapshot_id) => {
-                Tree::from_entries(&load_manifest(root, source, base_snapshot_id)?.entries)?
+                Tree::from_entries(&load_manifest(root, source, base_snapshot_id)?.entries)
             }
             None => Tree::new(),
         };
@@ -142,7 +147,7 @@ impl ObjectSession {
         source: &str,
         snapshot_id: &str,
     ) -> Result<Self, ObjectFailure> {
-        let tree = Tree::from_entries(&load_manifest(root, source, snapshot_id)?.entries)?;
+        let tree = Tree::from_entries(&load_manifest(root, source, snapshot_id)?.entries);
         Ok(Self {
             inner: Arc::new(Inner {
                 root: root.to_path_buf(),
@@ -255,42 +260,41 @@ impl ObjectSession {
         Ok(added_bytes)
     }
 
-    pub(crate) fn free_disk_space(&self) -> u64 {
-        // Reuse only idevice's portable filesystem-capacity query. All backup
-        // reads and writes remain object-store operations.
-        FsBackupDelegate.get_free_disk_space(&self.inner.root)
+    pub(crate) fn root(&self) -> &Path {
+        &self.inner.root
     }
 
     // A restore session has no staging directory; every mutation is refused.
-    fn reject_write(&self) -> Result<&Path, IdeviceError> {
+    fn reject_write(&self) -> Result<&Path, String> {
         self.inner
             .staging_dir
             .as_deref()
-            .ok_or_else(|| internal_error("restore source is immutable"))
+            .ok_or_else(|| "restore source is immutable".to_string())
     }
 
-    fn record_delegate_failure(&self, failure: ObjectFailure) -> IdeviceError {
+    fn record_delegate_failure(&self, failure: ObjectFailure) -> String {
         let detail = failure.detail.clone();
         self.inner.record_failure(failure);
-        internal_error(detail)
+        detail
     }
 
     // Per-item mb2 outcomes (a bad move, an occupied path): canon reports them to
     // the device and carries on, so they are logged and returned rather than
     // latched into the run-fatal slot that stored-data failures use.
-    fn refuse(&self, operation: &str, detail: String) -> IdeviceError {
+    fn refuse(&self, operation: &str, detail: String) -> String {
         tracing::warn!(operation, %detail, "object request refused");
-        internal_error(detail)
+        detail
     }
 
-    pub(crate) fn open_file_read(&self, key: &str) -> Result<Box<dyn Read + Send>, IdeviceError> {
+    /// None when no logical entry exists at `key`.
+    pub(crate) fn open_file_read(&self, key: &str) -> Result<Option<Box<dyn Read + Send>>, String> {
         // mobilebackup2 probes protocol files (notably Status.plist) even on a
         // first full backup, so a missing logical entry is a normal ENOENT. Once
         // the manifest lists an entry, object failures are sticky integrity ones.
         let file = {
             let state = self.inner.state();
             match state.tree.get(key) {
-                None => return Err(IdeviceError::NotFound),
+                None => return Ok(None),
                 Some(Node {
                     kind: NodeKind::File { object_ref, size },
                     ..
@@ -301,7 +305,7 @@ impl ObjectSession {
             }
         };
         let (object_ref, size) = file.map_err(|failure| self.record_delegate_failure(failure))?;
-        let result = (|| -> Result<Box<dyn Read + Send>, ObjectFailure> {
+        let result = (|| -> Result<Option<Box<dyn Read + Send>>, ObjectFailure> {
             let object_path =
                 resolve_object_ref(&self.inner.root, &self.inner.source, &object_ref)?;
             let file = File::open(&object_path).map_err(|error| {
@@ -319,21 +323,18 @@ impl ObjectSession {
                     object_path.display()
                 )));
             }
-            Ok(Box::new(HashVerifyReader::new(
+            Ok(Some(Box::new(HashVerifyReader::new(
                 file,
                 self.inner.clone(),
                 size as u64,
                 object_ref.clone(),
                 format!("{key:?} ({object_ref})"),
-            )) as Box<dyn Read + Send>)
+            )) as Box<dyn Read + Send>))
         })();
         result.map_err(|failure| self.record_delegate_failure(failure))
     }
 
-    pub(crate) fn create_file_write(
-        &self,
-        key: &str,
-    ) -> Result<Box<dyn Write + Send>, IdeviceError> {
+    pub(crate) fn create_file_write(&self, key: &str) -> Result<Box<dyn Write + Send>, String> {
         let staging_dir = self.reject_write()?;
         let result = (|| -> Result<Box<dyn Write + Send>, ObjectFailure> {
             let temporary_dir = staging_dir.join("objects");
@@ -357,7 +358,7 @@ impl ObjectSession {
         result.map_err(|failure| self.record_delegate_failure(failure))
     }
 
-    pub(crate) fn create_dir_all(&self, key: &str) -> Result<(), IdeviceError> {
+    pub(crate) fn create_dir_all(&self, key: &str) -> Result<(), String> {
         self.reject_write()?;
         self.inner
             .state()
@@ -367,23 +368,21 @@ impl ObjectSession {
             .map_err(|detail| self.refuse("create_dir_all", detail))
     }
 
-    pub(crate) fn remove(&self, key: &str) -> Result<(), IdeviceError> {
+    pub(crate) fn remove(&self, key: &str) -> Result<(), String> {
         self.reject_write()?;
         if key.is_empty() {
-            return Err(internal_error("cannot remove the object root"));
+            return Err("cannot remove the object root".into());
         }
         // Recursive by contract: the delegate's remove takes a directory with
         // its subtree, matching the reference remove_dir_all. A missing path is
         // ordinary — the crate clears every destination before it writes.
         if self.inner.state().tree.remove(key).is_none() {
-            return Err(internal_error(format!(
-                "object path {key:?} does not exist"
-            )));
+            return Err(format!("object path {key:?} does not exist"));
         }
         Ok(())
     }
 
-    pub(crate) fn rename(&self, from: &str, to: &str) -> Result<(), IdeviceError> {
+    pub(crate) fn rename(&self, from: &str, to: &str) -> Result<(), String> {
         self.reject_write()?;
         if from.is_empty() || to.is_empty() || to.starts_with(&format!("{from}/")) {
             return Err(self.refuse("rename", "invalid object rename".into()));
@@ -398,7 +397,7 @@ impl ObjectSession {
     /// DLMessageCopyItem: a file overwrites its target, a missing source or type
     /// conflict is a silent skip. The recursive directory merge departs from canon
     /// on purpose — idevicebackup2 copies one level and leaves subdirectories empty.
-    pub(crate) fn copy(&self, src: &str, dst: &str) -> Result<(), IdeviceError> {
+    pub(crate) fn copy(&self, src: &str, dst: &str) -> Result<(), String> {
         self.reject_write()?;
         if src.is_empty() || dst.is_empty() {
             return Err(self.refuse("copy", "invalid object copy".into()));
@@ -424,28 +423,20 @@ impl ObjectSession {
         self.inner.state().tree.get(key).is_some_and(Node::is_dir)
     }
 
-    pub(crate) fn list_dir(&self, key: &str) -> Result<Vec<DirEntryInfo>, IdeviceError> {
+    pub(crate) fn list_dir(&self, key: &str) -> Result<Vec<ListedEntry>, String> {
         let state = self.inner.state();
         let Some(children) = state.tree.get(key).and_then(Node::children) else {
-            return Err(internal_error(format!(
-                "object path {key:?} is not a directory"
-            )));
+            return Err(format!("object path {key:?} is not a directory"));
         };
-        let mut entries = Vec::new();
-        for (name, child) in children {
-            let (is_file, size) = match &child.kind {
-                NodeKind::File { size, .. } => (true, (*size).max(0) as u64),
-                NodeKind::Dir { .. } => (false, 0),
-            };
-            entries.push(DirEntryInfo {
-                name: name.clone(),
-                is_dir: !is_file,
-                is_file,
-                size,
-                modified: system_time(child.modified_unix),
-            });
-        }
-        Ok(entries)
+        let entries = children.iter().map(|(name, child)| ListedEntry {
+            name: name.clone(),
+            size: match &child.kind {
+                NodeKind::File { size, .. } => Some((*size).max(0) as u64),
+                NodeKind::Dir { .. } => None,
+            },
+            modified_unix: child.modified_unix,
+        });
+        Ok(entries.collect())
     }
 }
 
@@ -464,9 +455,8 @@ fn prune_orphan_objects(
     for entry in manifest
         .entries
         .values()
-        .filter(|entry| entry.kind == "file")
+        .filter(|entry| entry.kind == EntryKind::File)
     {
-        validate_object_ref(&entry.object_ref)?;
         if referenced.insert(entry.object_ref.as_str()) && written.contains(&entry.object_ref) {
             added = added.saturating_add(entry.size.max(0) as u64);
         }
@@ -491,14 +481,10 @@ fn prune_orphan_objects(
     Ok(added)
 }
 
-fn internal_error(message: impl Into<String>) -> IdeviceError {
-    IdeviceError::InternalError(message.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::manifest::ManifestEntry;
-    use super::super::{hex_lower, OBJECT_PREFIX_LEN};
+    use super::super::OBJECT_PREFIX_LEN;
     use super::*;
     use std::collections::BTreeMap;
 
@@ -546,7 +532,7 @@ mod tests {
         write_object(&session, "data.bin", content);
 
         let object_ref = entry_ref(&session, "data.bin");
-        assert_eq!(object_ref, hex_lower(&Sha256::digest(content)));
+        assert_eq!(object_ref, format!("{:x}", Sha256::digest(content)));
         let object_path = resolve_object_ref(&root, "testudid01", &object_ref).unwrap();
         assert_eq!(
             object_path,
@@ -558,7 +544,7 @@ mod tests {
         );
         assert!(object_path.is_file());
 
-        let mut reader = session.open_file_read("data.bin").unwrap();
+        let mut reader = session.open_file_read("data.bin").unwrap().unwrap();
         assert_eq!(reader.read(&mut []).unwrap(), 0);
         let mut restored = Vec::new();
         reader.read_to_end(&mut restored).unwrap();
@@ -573,11 +559,7 @@ mod tests {
     fn missing_logical_file_is_not_an_integrity_failure() {
         let (root, session) = test_session("missing-logical-file-test");
 
-        let error = match session.open_file_read("Status.plist") {
-            Ok(_) => panic!("missing logical file unexpectedly opened"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, IdeviceError::NotFound));
+        assert!(session.open_file_read("Status.plist").unwrap().is_none());
         assert!(session.error().is_none());
 
         drop(session);
@@ -592,11 +574,7 @@ mod tests {
         let object_path = resolve_object_ref(&root, "testudid01", &object_ref).unwrap();
         fs::remove_file(object_path).unwrap();
 
-        let error = match session.open_file_read("Status.plist") {
-            Ok(_) => panic!("missing manifest object unexpectedly opened"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, IdeviceError::InternalError(_)));
+        assert!(session.open_file_read("Status.plist").is_err());
         let failure = session.error().unwrap();
         assert_eq!(failure.kind, super::super::ObjectFailureKind::Integrity);
         assert!(failure.detail.contains("open object"));
@@ -615,7 +593,7 @@ mod tests {
         let first = entry_ref(&session, "first.bin");
         let second = entry_ref(&session, "second.bin");
         assert_eq!(first, second);
-        assert_eq!(first, hex_lower(&Sha256::digest(content)));
+        assert_eq!(first, format!("{:x}", Sha256::digest(content)));
 
         let objects = fs::read_dir(root.join(format!(
             "testudid01/objects/{}",
@@ -744,7 +722,7 @@ mod tests {
         corrupted[0] ^= 0xff;
         fs::write(&object_path, corrupted).unwrap();
 
-        let mut reader = session.open_file_read("data.bin").unwrap();
+        let mut reader = session.open_file_read("data.bin").unwrap().unwrap();
         let error = reader.read_to_end(&mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("content hash mismatch"));
@@ -858,7 +836,7 @@ mod tests {
         entries.insert(
             "Manifest.db".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: ref_referenced.clone(),
                 size: 1,
                 modified_unix: 0,
@@ -868,7 +846,7 @@ mod tests {
         entries.insert(
             "old.txt".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: ref_inherited.clone(),
                 size: 1,
                 modified_unix: 0,

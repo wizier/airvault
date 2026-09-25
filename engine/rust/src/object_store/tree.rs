@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use super::manifest::ManifestEntry;
+use super::manifest::{EntryKind, ManifestEntry};
 
 #[derive(Clone, Debug)]
 pub(super) enum NodeKind {
@@ -206,26 +206,23 @@ impl Tree {
         entries
     }
 
-    /// Rebuilds the tree from the manifest's flat wire map. Every non-root
-    /// parent must already be present as a directory; manifests are never
-    /// silently repaired while loading.
-    pub(super) fn from_entries(entries: &BTreeMap<String, ManifestEntry>) -> Result<Self, String> {
+    /// Rebuilds the tree from a validated manifest's flat wire map, where
+    /// inspect_manifest_entries guarantees every parent is an earlier directory.
+    pub(super) fn from_entries(entries: &BTreeMap<String, ManifestEntry>) -> Self {
         let mut tree = Tree::new();
         for (key, entry) in entries {
-            let Some((parent, name)) = split_parent(key) else {
-                return Err(format!("invalid object path {key:?}"));
+            let node = match entry.kind {
+                EntryKind::Directory => Node::dir(entry.modified_unix),
+                EntryKind::File => {
+                    Node::file(entry.object_ref.clone(), entry.size, entry.modified_unix)
+                }
             };
-            let children = tree.directory_mut(parent).ok_or_else(|| {
-                format!("object path {key:?} has missing or non-directory parent {parent:?}")
-            })?;
-            let node = match entry.kind.as_str() {
-                "directory" => Node::dir(entry.modified_unix),
-                "file" => Node::file(entry.object_ref.clone(), entry.size, entry.modified_unix),
-                other => return Err(format!("object path {key:?} has invalid kind {other:?}")),
-            };
-            children.insert(name.to_owned(), node);
+            let (parent, name) = split_parent(key).expect("validated keys are non-empty");
+            tree.directory_mut(parent)
+                .expect("validated parents are directories")
+                .insert(name.to_owned(), node);
         }
-        Ok(tree)
+        tree
     }
 }
 
@@ -266,13 +263,13 @@ fn collect(
         path.push_str(&name);
         let modified_unix = child.modified_unix;
         let (kind, object_ref, size, grandchildren) = match child.kind {
-            NodeKind::Dir { children } => ("directory", String::new(), 0, Some(children)),
-            NodeKind::File { object_ref, size } => ("file", object_ref, size, None),
+            NodeKind::Dir { children } => (EntryKind::Directory, String::new(), 0, Some(children)),
+            NodeKind::File { object_ref, size } => (EntryKind::File, object_ref, size, None),
         };
         entries.insert(
             path.clone(),
             ManifestEntry {
-                kind: kind.into(),
+                kind,
                 object_ref,
                 size,
                 modified_unix,
@@ -401,7 +398,7 @@ mod tests {
             entries.keys().collect::<Vec<_>>(),
             ["a", "a/b", "a/b/c.bin", "a/empty"]
         );
-        let rebuilt = Tree::from_entries(&entries).unwrap();
+        let rebuilt = Tree::from_entries(&entries);
         assert_eq!(rebuilt.into_entries(), entries);
     }
 

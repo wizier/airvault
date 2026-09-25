@@ -10,15 +10,32 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    hex_lower, is_sha256_hex, relative_components, snapshot_manifest_path, validate_object_ref,
+    is_sha256_hex, relative_components, snapshot_manifest_path, validate_object_ref,
     validate_snapshot_id, ObjectFailure, MAX_ENTRIES, MAX_LOGICAL_DEPTH, MAX_MANIFEST_BYTES,
     VERSION,
 };
 
+/// Wire values "file" / "directory", shared with Go's internal/objectstore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum EntryKind {
+    File,
+    Directory,
+}
+
+impl EntryKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ManifestEntry {
-    pub(super) kind: String,
+    pub(super) kind: EntryKind,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(super) object_ref: String,
     #[serde(default, skip_serializing_if = "is_zero_i64")]
@@ -105,7 +122,7 @@ pub(super) struct EntryFacts {
 // manifestEntriesSeal reproduces byte-for-byte
 fn seal_entry(digest: &mut Sha256, key: &str, entry: &ManifestEntry) {
     seal_field(digest, key.as_bytes());
-    seal_field(digest, entry.kind.as_bytes());
+    seal_field(digest, entry.kind.as_str().as_bytes());
     seal_field(digest, entry.object_ref.as_bytes());
     digest.update(entry.size.to_le_bytes());
     digest.update(entry.modified_unix.to_le_bytes());
@@ -160,7 +177,7 @@ pub(super) fn inspect_manifest_entries(
         }
         if let Some((parent, _)) = key.rsplit_once('/') {
             match entries.get(parent) {
-                Some(parent_entry) if parent_entry.kind == "directory" => {}
+                Some(parent_entry) if parent_entry.kind == EntryKind::Directory => {}
                 Some(_) => {
                     return Err(format!(
                         "object manifest parent {parent:?} of {key:?} is not a directory"
@@ -173,15 +190,15 @@ pub(super) fn inspect_manifest_entries(
                 }
             }
         }
-        match entry.kind.as_str() {
-            "directory" => {
+        match entry.kind {
+            EntryKind::Directory => {
                 if !entry.object_ref.is_empty() || entry.size != 0 {
                     return Err(format!(
                         "object manifest directory {key:?} has file content"
                     ));
                 }
             }
-            "file" => {
+            EntryKind::File => {
                 if entry.size < 0 {
                     return Err(format!("object manifest file {key:?} has negative size"));
                 }
@@ -190,18 +207,12 @@ pub(super) fn inspect_manifest_entries(
                     .checked_add(entry.size)
                     .ok_or_else(|| "object manifest snapshot size overflow".to_string())?;
             }
-            _ => {
-                return Err(format!(
-                    "object manifest path {key:?} has invalid kind {:?}",
-                    entry.kind
-                ))
-            }
         }
         seal_entry(&mut digest, key, entry);
     }
     Ok(EntryFacts {
         size_bytes: snapshot_size,
-        entries_sha256: hex_lower(&digest.finalize()),
+        entries_sha256: format!("{:x}", digest.finalize()),
     })
 }
 
@@ -225,7 +236,7 @@ mod tests {
         for (key, entry) in entries {
             seal_entry(&mut digest, key, entry);
         }
-        hex_lower(&digest.finalize())
+        format!("{:x}", digest.finalize())
     }
 
     fn single_file_manifest() -> Manifest {
@@ -233,7 +244,7 @@ mod tests {
         entries.insert(
             "Manifest.db".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: "11".repeat(32),
                 size: 100,
                 modified_unix: 0,
@@ -269,7 +280,7 @@ mod tests {
         let entries = BTreeMap::from([(
             "file".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: "not-a-sha256".into(),
                 size: 1,
                 modified_unix: 0,
@@ -284,7 +295,7 @@ mod tests {
         let entries = BTreeMap::from([(
             "missing/file".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: "11".repeat(32),
                 size: 1,
                 modified_unix: 0,
@@ -298,7 +309,7 @@ mod tests {
             (
                 "parent".to_string(),
                 ManifestEntry {
-                    kind: "file".into(),
+                    kind: EntryKind::File,
                     object_ref: "11".repeat(32),
                     size: 1,
                     modified_unix: 0,
@@ -307,7 +318,7 @@ mod tests {
             (
                 "parent/child".to_string(),
                 ManifestEntry {
-                    kind: "file".into(),
+                    kind: EntryKind::File,
                     object_ref: "22".repeat(32),
                     size: 1,
                     modified_unix: 0,
@@ -326,7 +337,7 @@ mod tests {
         let entries = BTreeMap::from([(
             key,
             ManifestEntry {
-                kind: "directory".into(),
+                kind: EntryKind::Directory,
                 object_ref: String::new(),
                 size: 0,
                 modified_unix: 0,
@@ -346,7 +357,7 @@ mod tests {
         entries.insert(
             "A<&".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: "11".repeat(32),
                 size: 7,
                 modified_unix: 9,
@@ -361,7 +372,7 @@ mod tests {
         entries.insert(
             "a".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: "11".repeat(32),
                 size: 1,
                 modified_unix: 2,
@@ -370,7 +381,7 @@ mod tests {
         entries.insert(
             "B".to_string(),
             ManifestEntry {
-                kind: "directory".into(),
+                kind: EntryKind::Directory,
                 object_ref: String::new(),
                 size: 0,
                 modified_unix: 0,
@@ -379,7 +390,7 @@ mod tests {
         entries.insert(
             "а".to_string(),
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref: "22".repeat(32),
                 size: 3,
                 modified_unix: 4,

@@ -6,8 +6,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use super::read_small_file;
-use crate::block;
 use crate::bounded::{cancel_or_timeout, Interrupt};
+use crate::provider::block;
 use crate::timeouts;
 
 async fn request(stream: &mut DuplexStream) -> (u64, AfcOpcode) {

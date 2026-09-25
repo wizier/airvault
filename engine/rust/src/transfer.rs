@@ -18,19 +18,17 @@ use metadata::{
 };
 use sync_session::SyncSession;
 
+use crate::backup_storage::{BackupCb, BackupStorage, ProgressSink, BACKUP_PHASE_FINALIZING};
+use crate::bounded::{self, cancel_or_timeout, Interrupt};
+use crate::engine_error::{EngineFailure, ErrorKind};
+use crate::ffi::{engine_udid, guard_error, in_str, req_str, AvEngine, AvError};
+use crate::logging::operation_span;
+use crate::mobilebackup2;
+use crate::object_store::ObjectSession;
+use crate::operation_registry::RegisterError;
+use crate::path_sandbox::PathSandbox;
+use crate::provider::{authed_lockdown, provider_for, AirvaultProvider, EngineContext};
 use crate::timeouts;
-use crate::{
-    backup_storage::{BackupCb, BackupStorage, ProgressSink, BACKUP_PHASE_FINALIZING},
-    bounded::{cancel_or_timeout, Interrupt},
-    engine_error::{EngineFailure, ErrorKind},
-    ffi::{engine_udid, guard_error, AvEngine, AvError},
-    in_str, mobilebackup2,
-    object_store::ObjectSession,
-    operation_registry::RegisterError,
-    operation_span, opt_owned, out_str,
-    path_sandbox::PathSandbox,
-    provider_for, req_str, write_failure, AirvaultProvider, EngineContext,
-};
 
 // The Info.plist pass runs an app census of one icon round-trip per installed app.
 const INFO_PLIST_TIMEOUT: Duration = Duration::from_secs(180);
@@ -75,15 +73,12 @@ fn interrupt_failure(
 /// reject with MBErrorDomain/211 anyway, so fail fast with the same
 /// classification. Read failures never block — the device stays the authority.
 async fn ensure_find_my_disabled(provider: &AirvaultProvider) -> Result<(), EngineFailure> {
-    let read = async {
-        let mut lc = crate::authed_lockdown(provider).await?;
+    let read = bounded::within(timeouts::CONNECT, async {
+        let mut lc = authed_lockdown(provider).await?;
         lc.get_value(Some("IsAssociated"), Some("com.apple.fmip"))
             .await
-    };
-    let read = tokio::time::timeout(timeouts::CONNECT, read)
-        .await
-        .unwrap_or(Err(idevice::IdeviceError::Timeout));
-    match read {
+    });
+    match read.await {
         Ok(value) if value.as_boolean() == Some(true) => Err(EngineFailure::new(
             ErrorKind::FindMyEnabled,
             "Find My iPhone is on; turn it off on the phone before restoring",
@@ -142,8 +137,7 @@ async fn run_mb2(
 ) -> Result<u64, EngineFailure> {
     let root = context.backup_root();
     let is_backup = spec.is_backup();
-    let sandbox = PathSandbox::new(root, source)
-        .map_err(|error| EngineFailure::integrity(error.to_string()))?;
+    let sandbox = PathSandbox::new(root, source).map_err(EngineFailure::integrity)?;
     let provider = provider_for(context, udid)
         .await
         .map_err(|error| EngineFailure::from_idevice("device provider lookup failed", error))?;
@@ -398,87 +392,55 @@ async fn run_mb2_transfer(
     primary.map(|()| session)
 }
 
-struct TransferRequest {
+/// Registers the transfer under its job id (Busy while one runs for this
+/// device), then runs it on a dedicated current-thread runtime:
+/// BackupDelegate's object I/O is synchronous, so a slow NAS must not starve
+/// the shared runtime's workers.
+fn run_transfer_export(
+    engine: &AvEngine,
     udid: String,
     source: String,
     job_id: String,
-    operation_id: String,
     spec: TransferSpec,
-    callback: BackupCb,
-    callback_id: usize,
-    added_out: *mut u64,
-}
-
-/// Registers the transfer (Busy while one runs for this device), then runs it
-/// on a dedicated current-thread runtime: BackupDelegate's object I/O is
-/// synchronous, so a slow NAS must not starve the shared runtime's workers.
-fn run_transfer_export(engine: &AvEngine, request: TransferRequest, err: *mut *mut c_char) -> i32 {
-    let TransferRequest {
-        udid,
-        source,
-        job_id,
-        operation_id,
-        spec,
-        callback,
-        callback_id,
-        added_out,
-    } = request;
-    let label = spec.label();
-    let lease = match engine
+    progress: ProgressSink,
+) -> Result<u64, EngineFailure> {
+    let span = operation_span(&job_id, spec.label(), &udid);
+    let lease = engine
         .operations
-        .register_transfer(operation_id, udid.clone())
-    {
-        Ok(lease) => lease,
-        Err(RegisterError::DeviceBusy) => {
-            out_str(
-                err,
-                "a backup or restore is already running for this device",
-            );
-            return ErrorKind::Busy.code();
-        }
-        Err(RegisterError::DuplicateOperation) => {
-            out_str(err, "this operation id is already running");
-            return ErrorKind::Busy.code();
-        }
-    };
+        .register_transfer(job_id, udid.clone())
+        .map_err(|error| {
+            EngineFailure::new(
+                ErrorKind::Busy,
+                match error {
+                    RegisterError::DeviceBusy => {
+                        "a backup or restore is already running for this device"
+                    }
+                    RegisterError::DuplicateOperation => "this operation id is already running",
+                },
+            )
+        })?;
     let cancel = lease.cancellation_token();
-    let progress = ProgressSink {
-        callback,
-        id: callback_id,
-    };
-    let span = operation_span(&job_id, label, &udid);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("transfer runtime");
-    runtime.block_on(
-        async {
-            match run_mb2(
-                engine.context(),
-                &udid,
-                &source,
-                spec,
-                progress,
-                cancel.clone(),
-            )
-            .await
-            {
-                Ok(added) => {
-                    if !added_out.is_null() {
-                        unsafe { *added_out = added };
-                    }
-                    0
-                }
-                Err(mut failure) => {
-                    if cancel.is_cancelled() {
-                        failure.kind = ErrorKind::Cancelled;
-                    }
-                    write_failure(err, failure)
-                }
-            }
-        }
+    let result = runtime.block_on(
+        run_mb2(
+            engine.context(),
+            &udid,
+            &source,
+            spec,
+            progress,
+            cancel.clone(),
+        )
         .instrument(span),
-    )
+    );
+    result.map_err(|mut failure| {
+        if cancel.is_cancelled() {
+            failure.kind = ErrorKind::Cancelled;
+        }
+        failure
+    })
 }
 
 /// Runs a backup into a staging whole-file object manifest. An empty base ID
@@ -489,7 +451,6 @@ pub extern "C" fn av_snapshot_build(
     engine: *mut AvEngine,
     udid: *const c_char,
     job_id: *const c_char,
-    operation_id: *const c_char,
     snapshot_id: *const c_char,
     base_snapshot_id: *const c_char,
     cb: BackupCb,
@@ -500,37 +461,26 @@ pub extern "C" fn av_snapshot_build(
     if !added_bytes.is_null() {
         unsafe { *added_bytes = 0 };
     }
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let job_id = unsafe { opt_owned(job_id) };
-        let Some(operation_id) = (unsafe { req_str(operation_id, err, "bad operation id") }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let Some(snapshot_id) = (unsafe { req_str(snapshot_id, err, "bad snapshot id") }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
+        let job_id = unsafe { req_str(job_id, "bad job id") }?;
+        let snapshot_id = unsafe { req_str(snapshot_id, "bad snapshot id") }?;
         let base_snapshot_id = unsafe { in_str(base_snapshot_id) }
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
-        run_transfer_export(
-            engine,
-            TransferRequest {
-                source: udid.clone(),
-                udid,
-                job_id,
-                operation_id,
-                spec: TransferSpec::Backup {
-                    snapshot_id,
-                    base_snapshot_id,
-                },
-                callback: cb,
-                callback_id,
-                added_out: added_bytes,
-            },
-            err,
-        )
+        let spec = TransferSpec::Backup {
+            snapshot_id,
+            base_snapshot_id,
+        };
+        let progress = ProgressSink {
+            callback: cb,
+            id: callback_id,
+        };
+        let added = run_transfer_export(engine, udid.clone(), udid, job_id, spec, progress)?;
+        if !added_bytes.is_null() {
+            unsafe { *added_bytes = added };
+        }
+        Ok(())
     })
 }
 
@@ -540,7 +490,6 @@ pub extern "C" fn av_snapshot_restore(
     engine: *mut AvEngine,
     udid: *const c_char,
     job_id: *const c_char,
-    operation_id: *const c_char,
     source: *const c_char,
     snapshot_id: *const c_char,
     password: *const c_char,
@@ -552,24 +501,11 @@ pub extern "C" fn av_snapshot_restore(
     callback_id: usize,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let job_id = unsafe { opt_owned(job_id) };
-        let Some(operation_id) = (unsafe { req_str(operation_id, err, "bad operation id") }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let Some(source) = (unsafe { req_str(source, err, "bad backup source") }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let Some(snapshot_id) = (unsafe { req_str(snapshot_id, err, "bad backup snapshot id") })
-        else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let password = unsafe { in_str(password) }
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
+        let job_id = unsafe { req_str(job_id, "bad job id") }?;
+        let source = unsafe { req_str(source, "bad backup source") }?;
+        let snapshot_id = unsafe { req_str(snapshot_id, "bad backup snapshot id") }?;
         // Never copy the backup first: it would temporarily double hundreds of
         // gigabytes on the NAS, and the sealed CAS store already protects history.
         let mut options = RestoreOptions::new()
@@ -578,26 +514,18 @@ pub extern "C" fn av_snapshot_restore(
             .with_system_files(system_files != 0)
             .with_reboot(reboot != 0)
             .with_remove_items_not_restored(remove_items_not_restored != 0);
-        if let Some(password) = password.as_deref() {
+        if let Some(password) = unsafe { in_str(password) }.filter(|s| !s.is_empty()) {
             options = options.with_password(password);
         }
-        run_transfer_export(
-            engine,
-            TransferRequest {
-                udid,
-                source,
-                job_id,
-                operation_id,
-                spec: TransferSpec::Restore {
-                    snapshot_id,
-                    options,
-                },
-                callback: cb,
-                callback_id,
-                added_out: std::ptr::null_mut(),
-            },
-            err,
-        )
+        let spec = TransferSpec::Restore {
+            snapshot_id,
+            options,
+        };
+        let progress = ProgressSink {
+            callback: cb,
+            id: callback_id,
+        };
+        run_transfer_export(engine, udid, source, job_id, spec, progress).map(|_| ())
     })
 }
 

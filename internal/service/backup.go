@@ -88,7 +88,6 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	}
 	slog.DebugContext(ctx, "backup: starting", "device", device.Name, "udid", udid)
 	request := engine.BuildSnapshotRequest{
-		OperationID:    engine.OperationID(run.id),
 		DeviceID:       engine.DeviceID(udid),
 		SnapshotID:     engine.SnapshotID(snapshot.ID),
 		BaseSnapshotID: engine.SnapshotID(baseSnapshotID),

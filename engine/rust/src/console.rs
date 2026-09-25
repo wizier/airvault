@@ -6,11 +6,14 @@ use std::ffi::c_char;
 use idevice::services::os_trace_relay::{LogLevel, OsTraceRelayClient, OsTraceRelayReceiver};
 use idevice::IdeviceService;
 
-use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{engine_udid, guard_error, AvEngine, AvError, AV_STREAM_CLOSED};
+use crate::engine_error::EngineFailure;
+use crate::ffi::{
+    block_bounded, engine_udid, guard, guard_error, out_str, to_json, AvEngine, AvError,
+    AV_STREAM_CLOSED,
+};
+use crate::provider::provider_for;
 use crate::pull_stream::{ItemSender, PullStream};
 use crate::timeouts;
-use crate::{block_bounded, guard, out_str, provider_for, to_json};
 
 pub struct AvConsoleStream {
     stream: PullStream<String>,
@@ -73,31 +76,21 @@ pub extern "C" fn av_console_open(
     out_stream: *mut *mut AvConsoleStream,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context();
         if out_stream.is_null() {
-            out_str(err, "bad console stream output");
-            return ErrorKind::InvalidArgument.code();
+            return Err(EngineFailure::invalid_argument("bad console stream output"));
         }
         unsafe { *out_stream = std::ptr::null_mut() };
-        block_bounded(
-            err,
-            timeouts::UI_CALL,
-            "console connect timed out",
-            async {
-                let provider = provider_for(context, &udid).await?;
-                let client = OsTraceRelayClient::connect(&provider).await?;
-                client.start_trace(None).await
-            },
-            |receiver| {
-                let stream = PullStream::spawn(|sender| forward_records(receiver, sender));
-                unsafe { *out_stream = Box::into_raw(Box::new(AvConsoleStream { stream })) };
-                0
-            },
-        )
+        let receiver = block_bounded(timeouts::UI_CALL, "console connect timed out", async {
+            let provider = provider_for(context, &udid).await?;
+            let client = OsTraceRelayClient::connect(&provider).await?;
+            client.start_trace(None).await
+        })?;
+        let stream = PullStream::spawn(|sender| forward_records(receiver, sender));
+        unsafe { *out_stream = Box::into_raw(Box::new(AvConsoleStream { stream })) };
+        Ok(())
     })
 }
 

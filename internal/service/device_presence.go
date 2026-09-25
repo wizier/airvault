@@ -29,7 +29,7 @@ func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresen
 	pairable := map[string]bool{}
 	for _, item := range items {
 		udid := string(item.DeviceID)
-		presence[udid] = item.PreferredTransport.String()
+		presence[udid] = item.Connection
 		dev, err := s.store.Device.GetByUDID(ctx, udid)
 		switch {
 		case errors.Is(err, domain.ErrNotFound):

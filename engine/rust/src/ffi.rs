@@ -1,14 +1,20 @@
-//! Shared C-ABI types and the process-owned engine lifecycle.
-//! Operation adapters live beside their protocol implementation; safe inner
-//! code receives `EngineContext` and never retains caller-owned C pointers.
+//! The shared C-ABI pieces: error and buffer types, string marshalling, panic
+//! containment and the process-owned engine lifecycle. Operation adapters live
+//! beside their protocol implementation; safe inner code receives
+//! `EngineContext` and never retains caller-owned C pointers.
 
-use std::ffi::{c_char, CString};
+use std::ffi::{c_char, CStr, CString};
+use std::future::Future;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::engine_error::ErrorKind;
+use crate::bounded;
+use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::operation_registry::OperationRegistry;
-use crate::{guard, opt_owned, out_str, req_str, EngineContext};
+use crate::provider::{block, EngineContext};
+use crate::timeouts;
 
 #[repr(C)]
 pub struct AvBuffer {
@@ -55,27 +61,68 @@ pub const AV_STREAM_CLOSED: i32 = 101;
 /// caller may retry until registration lands or the operation returns.
 pub const AV_CANCEL_NOT_REGISTERED: i32 = 3;
 
-pub(crate) fn guard_error(error: *mut AvError, f: impl FnOnce(*mut *mut c_char) -> i32) -> i32 {
-    let mut detail: *mut c_char = std::ptr::null_mut();
-    let detail_out = &mut detail as *mut *mut c_char;
-    let rc = guard(detail_out, || f(detail_out));
-    if rc != 0 {
-        let message = if detail.is_null() {
-            "device engine operation failed".to_owned()
-        } else {
-            let value = unsafe { CString::from_raw(detail) };
-            value.to_string_lossy().into_owned()
-        };
-        if !error.is_null() {
-            unsafe {
-                (*error).detail = AvBuffer {
-                    ptr: std::ptr::null_mut(),
-                    len: 0,
-                };
+/// Convert UTF-8 into an owned C string without discarding diagnostics that
+/// contain an interior NUL. C cannot represent that byte, so expose it as the
+/// conventional visible `\\0` escape instead.
+pub(crate) fn ffi_cstring(s: &str) -> CString {
+    CString::new(s.replace('\0', "\\0")).expect("interior NULs are escaped")
+}
+
+/// Write an owned C string into an out-param (caller frees via av_string_free).
+pub(crate) fn out_str(dst: *mut *mut c_char, s: &str) {
+    if !dst.is_null() {
+        let c = ffi_cstring(s);
+        unsafe { *dst = c.into_raw() };
+    }
+}
+
+/// Free any string handed out by this shim (including error text).
+///
+/// # Safety
+/// `s` must be a string returned by this shim, or null.
+#[no_mangle]
+pub unsafe extern "C" fn av_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        unsafe { drop(CString::from_raw(s)) };
+    }
+}
+
+/// Catch panics so they never unwind across the C ABI.
+pub(crate) fn guard<F: FnOnce() -> i32>(err: *mut *mut c_char, f: F) -> i32 {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(rc) => rc,
+        Err(_) => {
+            // Free any detail the callee wrote before panicking.
+            if !err.is_null() {
+                unsafe { av_string_free(*err) };
+                unsafe { *err = std::ptr::null_mut() };
             }
-            let bytes = message.into_bytes();
-            unsafe { out_buffer(&mut (*error).detail, bytes) };
+            out_str(err, "panic in airvault_shim");
+            -1
         }
+    }
+}
+
+/// The one path from a failure to a string-error export: detail into `err`,
+/// kind as the rc.
+pub(crate) fn write_failure(err: *mut *mut c_char, failure: EngineFailure) -> i32 {
+    out_str(err, &failure.detail);
+    failure.kind.code()
+}
+
+/// Runs one request/response export: rc 0 on success, otherwise the failure's
+/// kind with its detail in `error`. A panic is contained and returns rc -1.
+pub(crate) fn guard_error(
+    error: *mut AvError,
+    f: impl FnOnce() -> Result<(), EngineFailure>,
+) -> i32 {
+    let (rc, detail) = match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(Ok(())) => return 0,
+        Ok(Err(failure)) => (failure.kind.code(), failure.detail),
+        Err(_) => (-1, "panic in airvault_shim".to_owned()),
+    };
+    if !error.is_null() {
+        unsafe { out_buffer(&mut (*error).detail, detail.into_bytes()) };
     }
     rc
 }
@@ -99,6 +146,50 @@ pub unsafe extern "C" fn av_buffer_free(buffer: AvBuffer) {
     if !buffer.ptr.is_null() {
         let slice = std::ptr::slice_from_raw_parts_mut(buffer.ptr, buffer.len);
         unsafe { drop(Box::from_raw(slice)) };
+    }
+}
+
+/// JSON-encode a response payload. The exported caller's guard contains the
+/// impossible serializer panic before it can cross the C ABI.
+pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_string(v).expect("shim payloads always serialize")
+}
+
+/// Blocks on `producer` under `limit`; an elapsed limit fails as
+/// AV_ERROR_TIMEOUT with `timeout_msg`.
+pub(crate) fn block_bounded<T, E: Into<EngineFailure>>(
+    limit: Duration,
+    timeout_msg: &str,
+    producer: impl Future<Output = Result<T, E>>,
+) -> Result<T, EngineFailure> {
+    block(async {
+        tokio::time::timeout(limit, producer)
+            .await
+            .map_err(|_| EngineFailure::new(ErrorKind::Timeout, timeout_msg))?
+            .map_err(Into::into)
+    })
+}
+
+/// Read a C string in-param.
+pub(crate) unsafe fn in_str<'a>(p: *const c_char) -> Option<&'a str> {
+    if p.is_null() {
+        return None;
+    }
+    CStr::from_ptr(p).to_str().ok()
+}
+
+/// Read an optional C-string in-param as an owned String (absent/null → empty).
+/// The idiom for job ids and passwords, which are optional at the boundary.
+pub(crate) unsafe fn opt_owned(p: *const c_char) -> String {
+    unsafe { in_str(p) }.unwrap_or("").to_owned()
+}
+
+/// Read a required (non-empty) C-string argument; `what` is the
+/// AV_ERROR_INVALID_ARGUMENT detail otherwise.
+pub(crate) unsafe fn req_str(p: *const c_char, what: &str) -> Result<String, EngineFailure> {
+    match in_str(p) {
+        Some(s) if !s.is_empty() => Ok(s.to_owned()),
+        _ => Err(EngineFailure::invalid_argument(what)),
     }
 }
 
@@ -126,14 +217,25 @@ impl AvEngine {
 }
 
 /// Required absolute-path argument for engine construction.
-unsafe fn abs_root(p: *const c_char, err: *mut *mut c_char, what: &str) -> Option<PathBuf> {
-    let value = unsafe { req_str(p, err, &format!("bad {what}")) }?;
-    let path = PathBuf::from(value);
+unsafe fn abs_root(p: *const c_char, what: &str) -> Result<PathBuf, EngineFailure> {
+    let path = PathBuf::from(unsafe { req_str(p, &format!("bad {what}")) }?);
     if !path.is_absolute() {
-        out_str(err, &format!("{what} must be absolute"));
-        return None;
+        return Err(EngineFailure::invalid_argument(format!(
+            "{what} must be absolute"
+        )));
     }
-    Some(path)
+    Ok(path)
+}
+
+unsafe fn engine_context(
+    backup_root: *const c_char,
+    pairing_root: *const c_char,
+    mux_address: *const c_char,
+) -> Result<EngineContext, EngineFailure> {
+    let root = unsafe { abs_root(backup_root, "backup root") }?;
+    let pairing_root = unsafe { abs_root(pairing_root, "pairing root") }?;
+    EngineContext::new(root, pairing_root, unsafe { in_str(mux_address) })
+        .map_err(EngineFailure::invalid_argument)
 }
 
 /// Creates an engine with immutable provider and storage configuration.
@@ -145,31 +247,16 @@ pub extern "C" fn av_engine_new(
     err: *mut *mut c_char,
 ) -> *mut AvEngine {
     let mut engine = std::ptr::null_mut();
-    let rc = guard(err, || {
-        let Some(root) = (unsafe { abs_root(backup_root, err, "backup root") }) else {
-            return 2;
-        };
-        let Some(pairing_root) = (unsafe { abs_root(pairing_root, err, "pairing root") }) else {
-            return 2;
-        };
-        let mux = unsafe { opt_owned(mux_address) };
-        let mux_address = (!mux.is_empty()).then_some(mux);
-
-        let context = match EngineContext::new(root, pairing_root, mux_address.as_deref()) {
-            Ok(context) => context,
-            Err(message) => {
-                out_str(err, &message);
-                return 2;
+    guard(err, || {
+        match unsafe { engine_context(backup_root, pairing_root, mux_address) } {
+            Ok(context) => {
+                engine = Box::into_raw(Box::new(AvEngine::new(context)));
+                0
             }
-        };
-        engine = Box::into_raw(Box::new(AvEngine::new(context)));
-        0
+            Err(failure) => write_failure(err, failure),
+        }
     });
-    if rc == 0 {
-        engine
-    } else {
-        std::ptr::null_mut()
-    }
+    engine
 }
 
 /// Releases an engine after every operation and stream has joined.
@@ -185,12 +272,12 @@ pub unsafe extern "C" fn av_engine_free(engine: *mut AvEngine) {
 #[no_mangle]
 pub extern "C" fn av_operation_cancel(engine: *mut AvEngine, operation_id: *const c_char) -> i32 {
     guard(std::ptr::null_mut(), || {
-        let Some(engine) = (unsafe { engine_ref(engine, std::ptr::null_mut()) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let Some(operation_id) =
-            (unsafe { req_str(operation_id, std::ptr::null_mut(), "bad operation id") })
-        else {
+        let (Ok(engine), Ok(operation_id)) = (unsafe {
+            (
+                engine_ref(engine),
+                req_str(operation_id, "bad operation id"),
+            )
+        }) else {
             return ErrorKind::InvalidArgument.code();
         };
         if engine.operations.cancel(&operation_id) {
@@ -201,43 +288,29 @@ pub extern "C" fn av_operation_cancel(engine: *mut AvEngine, operation_id: *cons
     })
 }
 
-pub(crate) unsafe fn engine_ref<'a>(
-    engine: *mut AvEngine,
-    err: *mut *mut c_char,
-) -> Option<&'a AvEngine> {
-    if engine.is_null() {
-        out_str(err, "engine is closed");
-        None
-    } else {
-        Some(unsafe { &*engine })
-    }
+pub(crate) unsafe fn engine_ref<'a>(engine: *mut AvEngine) -> Result<&'a AvEngine, EngineFailure> {
+    unsafe { engine.as_ref() }.ok_or_else(|| EngineFailure::invalid_argument("engine is closed"))
 }
 
 /// Unpacks the (engine, udid) pair every device export starts with.
 pub(crate) unsafe fn engine_udid<'a>(
     engine: *mut AvEngine,
     udid: *const c_char,
-    err: *mut *mut c_char,
-) -> Option<(&'a AvEngine, String)> {
-    let engine = unsafe { engine_ref(engine, err) }?;
-    let udid = unsafe { req_str(udid, err, "bad udid") }?;
-    Some((engine, udid))
+) -> Result<(&'a AvEngine, String), EngineFailure> {
+    Ok((unsafe { engine_ref(engine) }?, unsafe {
+        req_str(udid, "bad udid")
+    }?))
 }
 
 /// Reports whether the muxer (usbmuxd/netmuxd) is reachable. The ABI's one
 /// predicate-style return: 1 = up, 0 = down (a hung socket counts as down).
 #[no_mangle]
 pub extern "C" fn av_mux_probe(engine: *mut AvEngine) -> i32 {
-    let Some(engine) = (unsafe { engine_ref(engine, std::ptr::null_mut()) }) else {
+    let Ok(engine) = (unsafe { engine_ref(engine) }) else {
         return 0;
     };
     guard(std::ptr::null_mut(), || {
-        let context = engine.context();
-        let up = crate::block(async {
-            crate::mux_bound(context.mux_addr().connect(0))
-                .await
-                .is_ok()
-        });
-        up as i32
+        let mux = engine.context().mux_addr();
+        block(bounded::within(timeouts::MUX, mux.connect(0))).is_ok() as i32
     })
 }

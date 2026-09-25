@@ -7,8 +7,9 @@ use std::time::Duration;
 use idevice::{Idevice, IdeviceError};
 use plist::Value;
 
+use crate::bounded;
+use crate::provider::{connect_service, recv_framed, send_framed, AirvaultProvider};
 use crate::timeouts;
-use crate::AirvaultProvider;
 
 const ASSERTION_SERVICE: &str = "com.apple.mobile.assertion_agent";
 const WIRELESS_SYNC_TYPE: &str = "AMDPowerAssertionTypeWirelessSync";
@@ -32,37 +33,21 @@ async fn hold_wireless_sync(
     provider: &AirvaultProvider,
     name: &str,
 ) -> Result<PowerAssertion, IdeviceError> {
-    let mut connection = crate::connect_service(provider, ASSERTION_SERVICE).await?;
-    let mut request = plist::Dictionary::new();
-    request.insert(
-        "CommandKey".into(),
-        Value::String("CommandCreateAssertion".into()),
-    );
-    request.insert(
-        "AssertionTypeKey".into(),
-        Value::String(WIRELESS_SYNC_TYPE.into()),
-    );
-    request.insert("AssertionNameKey".into(), Value::String(name.into()));
-    request.insert(
-        "AssertionTimeoutKey".into(),
-        Value::Real(ASSERTION_BACKSTOP_SECS),
-    );
+    let mut connection = connect_service(provider, ASSERTION_SERVICE).await?;
+    let request: plist::Dictionary = [
+        ("CommandKey", Value::from("CommandCreateAssertion")),
+        ("AssertionTypeKey", WIRELESS_SYNC_TYPE.into()),
+        ("AssertionNameKey", name.into()),
+        ("AssertionTimeoutKey", ASSERTION_BACKSTOP_SECS.into()),
+    ]
+    .into_iter()
+    .collect();
     // Apple sends this as a binary plist (AMDServiceConnectionSendMessage, format 200).
     let mut body = Vec::new();
     plist::to_writer_binary(&mut body, &request)
         .map_err(|e| IdeviceError::UnexpectedResponse(format!("encode assertion request: {e}")))?;
-    let mut framed = Vec::with_capacity(4 + body.len());
-    framed.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    framed.extend_from_slice(&body);
-    connection.send_raw(&framed).await?;
-    let header = connection.read_raw(4).await?;
-    let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    if len == 0 || len > MAX_REPLY_BYTES {
-        return Err(IdeviceError::UnexpectedResponse(format!(
-            "assertion agent framed an implausible {len}-byte reply"
-        )));
-    }
-    let reply = connection.read_raw(len).await?;
+    send_framed(&mut connection, &body).await?;
+    let reply = recv_framed(&mut connection, MAX_REPLY_BYTES).await?;
     let reply: Value = plist::from_bytes(&reply)
         .map_err(|e| IdeviceError::UnexpectedResponse(format!("decode assertion reply: {e}")))?;
     tracing::debug!(
@@ -83,8 +68,7 @@ pub(crate) async fn keep_device_awake(provider: &AirvaultProvider, udid: &str, l
     let mut warned = false;
     loop {
         // Bounded, or a half-open socket would stall every later renewal.
-        let attempt = tokio::time::timeout(timeouts::CONNECT, hold_wireless_sync(provider, &name));
-        match attempt.await.unwrap_or(Err(IdeviceError::Timeout)) {
+        match bounded::within(timeouts::CONNECT, hold_wireless_sync(provider, &name)).await {
             Ok(assertion) => {
                 if held.is_none() {
                     tracing::info!(udid = %udid, "wireless-sync power assertion held");

@@ -9,11 +9,11 @@ void av_log_trampoline(int32_t level, const char* target, const char* message, c
 import "C"
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,9 +55,9 @@ func InitLogging(level string) bool {
 func goRustLogCallback(level C.int32_t, target, message, fieldsJSON *C.char) {
 	record := rustLogRecord{
 		level:                slog.Level(level),
-		target:               cstr(target),
-		message:              cstr(message),
-		structuredFieldsJSON: cstr(fieldsJSON),
+		target:               C.GoString(target),
+		message:              C.GoString(message),
+		structuredFieldsJSON: C.GoString(fieldsJSON),
 	}
 	select {
 	case rustLogging.records <- record:
@@ -80,18 +80,13 @@ func decodeRustLogAttrs(raw string) []slog.Attr {
 		return nil
 	}
 	var fields map[string]any
-	decoder := json.NewDecoder(bytes.NewBufferString(raw))
+	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&fields); err != nil {
 		return []slog.Attr{slog.String("rust_fields", raw)}
 	}
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	attrs := make([]slog.Attr, 0, len(keys))
-	for _, key := range keys {
+	attrs := make([]slog.Attr, 0, len(fields))
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
 		attrs = append(attrs, rustLogAttr(key, fields[key]))
 	}
 	return attrs

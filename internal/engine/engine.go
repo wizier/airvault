@@ -28,9 +28,6 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	if e == nil {
-		return "device engine error"
-	}
 	if e.Detail != "" {
 		return e.Detail
 	}
@@ -107,47 +104,11 @@ type DeviceInfo struct {
 	ActivationState string `json:"activationState"`
 }
 
-type Transport uint8
-
-const (
-	TransportUSB Transport = iota + 1
-	TransportWiFi
-)
-
-func (t Transport) String() string {
-	if t == TransportUSB {
-		return "usb"
-	}
-	if t == TransportWiFi {
-		return "wifi"
-	}
-	return ""
-}
-
 // DevicePresence is a cheap mux-local entry (no lockdown metadata).
+// Connection is the transport the muxer prefers for it: "usb" or "wifi".
 type DevicePresence struct {
-	DeviceID           DeviceID
-	PreferredTransport Transport
-}
-
-// rawPresence is the shim's wire shape for one presence entry.
-type rawPresence struct {
-	UDID       string `json:"udid"`
-	Connection string `json:"connection"`
-}
-
-func presenceFromRaw(raw []rawPresence) []DevicePresence {
-	items := make([]DevicePresence, 0, len(raw))
-	for _, item := range raw {
-		transport := TransportWiFi
-		if item.Connection == "usb" {
-			transport = TransportUSB
-		}
-		items = append(items, DevicePresence{
-			DeviceID: DeviceID(item.UDID), PreferredTransport: transport,
-		})
-	}
-	return items
+	DeviceID   DeviceID `json:"udid"`
+	Connection string   `json:"connection"`
 }
 
 // USBDevice is a device reachable over USB (for the pairing wizard).
@@ -163,7 +124,6 @@ type Battery struct {
 }
 
 type DeviceID string
-type OperationID string
 type SnapshotID string
 
 type SnapshotRef struct {
@@ -172,15 +132,13 @@ type SnapshotRef struct {
 }
 
 type BuildSnapshotRequest struct {
-	OperationID OperationID
-	DeviceID    DeviceID
-	SnapshotID  SnapshotID
+	DeviceID   DeviceID
+	SnapshotID SnapshotID
 	// BaseSnapshotID selects the incremental base (same device); empty = full backup.
 	BaseSnapshotID SnapshotID
 }
 
 type RestoreSnapshotRequest struct {
-	OperationID OperationID
 	TargetID    DeviceID
 	Snapshot    SnapshotRef
 	Password    string
@@ -191,10 +149,11 @@ type RestoreSnapshotRequest struct {
 	RemoveItemsNotRestored bool
 }
 
+// PowerAction values are the av_device_power ABI codes.
 type PowerAction uint8
 
 const (
-	PowerRestart PowerAction = iota + 1
+	PowerRestart PowerAction = iota
 	PowerShutdown
 	PowerSleep
 )
@@ -338,25 +297,11 @@ const (
 	ScreenLockComplete
 )
 
-type WallpaperScreen uint8
-
-const (
-	WallpaperHome WallpaperScreen = iota
-	WallpaperLock
-)
-
-type MuxState uint8
-
-const (
-	MuxUnavailable MuxState = iota + 1
-	MuxAvailable
-)
-
 // PresenceState is the latest complete muxer state. Watchers may coalesce
 // intermediate changes because every value is authoritative on its own.
 type PresenceState struct {
-	MuxState MuxState
-	Devices  []DevicePresence
+	MuxUp   bool             `json:"up"`
+	Devices []DevicePresence `json:"devices"`
 }
 
 // LockStream abstracts the owned notification stream so its supervisor can be

@@ -9,6 +9,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define AV_INSTALL_PHASE_STAGING 0
+
+#define AV_INSTALL_PHASE_INSTALLING 1
+
 #define AV_ERROR_INVALID_ARGUMENT 1
 
 #define AV_ERROR_DEVICE_UNAVAILABLE 2
@@ -59,10 +63,6 @@
  */
 #define AV_CANCEL_NOT_REGISTERED 3
 
-#define AV_INSTALL_PHASE_STAGING 0
-
-#define AV_INSTALL_PHASE_INSTALLING 1
-
 typedef struct AvAfcFile AvAfcFile;
 
 /**
@@ -82,12 +82,6 @@ typedef struct AvLockStream AvLockStream;
 
 typedef struct AvPresenceWatch AvPresenceWatch;
 
-/**
- * Structured tracing event callback into the Go host. Strings are borrowed
- * for the duration of the call; `fields_json` is a flat JSON object.
- */
-typedef void (*av_log_cb)(int32_t, const char*, const char*, const char*);
-
 typedef struct {
   uint8_t *ptr;
   size_t len;
@@ -103,6 +97,12 @@ typedef struct {
 typedef void (*av_install_cb)(size_t, int32_t, uint64_t);
 
 /**
+ * Structured tracing event callback into the Go host. Strings are borrowed
+ * for the duration of the call; `fields_json` is a flat JSON object.
+ */
+typedef void (*av_log_cb)(int32_t, const char*, const char*, const char*);
+
+/**
  * Progress callback into Go: (opaque operation id, phase, percent, bytes).
  * Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
  * `bytes` is the session's cumulative total (0 = not reported this call).
@@ -112,24 +112,6 @@ typedef void (*av_backup_cb)(size_t, int32_t, double, uint64_t);
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
-
-/**
- * Connects Rust tracing to the host logger before the runtime starts. The
- * selected application level applies to this crate; dependency warnings stay
- * available without enabling their high-volume info/debug streams.
- *
- * # Safety
- * `level` must be null or point to a valid NUL-terminated string for the call.
- */
-int32_t av_log_init(av_log_cb cb, const char *level);
-
-/**
- * Free any string handed out by this shim (including error text).
- *
- * # Safety
- * `s` must be a string returned by this shim, or null.
- */
-void av_string_free(char *s);
 
 /**
  * Reads the live activation state ("Unactivated", "Activated", ...).
@@ -264,6 +246,42 @@ void av_afc_close(AvAfcSession *session);
 void av_afc_file_close(AvAfcFile *file);
 
 /**
+ * Lists user-installed applications into out_json (see apps_inner). The
+ * generous timeout covers devices with hundreds of apps — the lookup answer is big.
+ */
+int32_t av_apps_list(AvEngine *engine, const char *udid, char **out_json, AvError *error);
+
+/**
+ * Installs a user-provided .ipa (host path) onto the device. Blocking, hard-
+ * capped — install can take a while. Returns diagnostic text on failure.
+ */
+int32_t av_app_install(AvEngine *engine,
+                       const char *udid,
+                       const char *job_id,
+                       const char *ipa_path,
+                       av_install_cb cb,
+                       size_t callback_id,
+                       AvError *error);
+
+/**
+ * Fetches one app icon into an owned binary buffer.
+ */
+int32_t av_app_icon(AvEngine *engine,
+                    const char *udid,
+                    const char *bundle_id,
+                    AvBuffer *out,
+                    AvError *error);
+
+/**
+ * Uninstalls an app by bundle id (installation_proxy).
+ */
+int32_t av_app_uninstall(AvEngine *engine,
+                         const char *udid,
+                         const char *job_id,
+                         const char *bundle_id,
+                         AvError *error);
+
+/**
  * Opens a structured console stream; the session handle lands in out_stream.
  * Records flow immediately — pull them with av_console_next.
  */
@@ -284,6 +302,32 @@ void av_console_cancel(AvConsoleStream *stream);
  * Releases a console session after its final `next` call has returned.
  */
 void av_console_close(AvConsoleStream *stream);
+
+/**
+ * Sends a power command (0 = restart, 1 = shutdown, 2 = sleep) via the
+ * diagnostics relay. Returns once the command is ACCEPTED — the device acts
+ * asynchronously and (for restart/shutdown) drops off the muxer.
+ */
+int32_t av_device_power(AvEngine *engine,
+                        const char *udid,
+                        const char *job_id,
+                        int32_t action,
+                        AvError *error);
+
+/**
+ * Hardware/storage/battery-health snapshot as JSON (see device_info_inner).
+ */
+int32_t av_device_hardware(AvEngine *engine, const char *udid, char **out_json, AvError *error);
+
+/**
+ * Fetches a rendered wallpaper preview as raw PNG. `lock_screen` selects
+ * lock (non-zero) or home (zero).
+ */
+int32_t av_wallpaper_get(AvEngine *engine,
+                         const char *udid,
+                         int32_t lock_screen,
+                         AvBuffer *out,
+                         AvError *error);
 
 /**
  * Discovers reachable devices WITH lockdown metadata (see DiscoverItem).
@@ -308,6 +352,14 @@ int32_t av_device_battery(AvEngine *engine, const char *udid, char **out_json, A
  * Lists USB devices into out_json (for the pairing wizard).
  */
 int32_t av_usb_devices_list(AvEngine *engine, char **out_json, AvError *error);
+
+/**
+ * Free any string handed out by this shim (including error text).
+ *
+ * # Safety
+ * `s` must be a string returned by this shim, or null.
+ */
+void av_string_free(char *s);
 
 void av_buffer_free(AvBuffer buffer);
 
@@ -348,70 +400,14 @@ void av_lock_observer_close(AvLockStream *stream);
 void av_lock_observer_cancel(AvLockStream *stream);
 
 /**
- * Sends a power command (0 = restart, 1 = shutdown, 2 = sleep) via the
- * diagnostics relay. Returns once the command is ACCEPTED — the device acts
- * asynchronously and (for restart/shutdown) drops off the muxer.
+ * Connects Rust tracing to the host logger before the runtime starts. The
+ * selected application level applies to this crate; dependency warnings stay
+ * available without enabling their high-volume info/debug streams.
+ *
+ * # Safety
+ * `level` must be null or point to a valid NUL-terminated string for the call.
  */
-int32_t av_device_power(AvEngine *engine,
-                        const char *udid,
-                        const char *job_id,
-                        int32_t action,
-                        AvError *error);
-
-/**
- * Hardware/storage/battery-health snapshot as JSON (see device_info_inner).
- */
-int32_t av_device_hardware(AvEngine *engine, const char *udid, char **out_json, AvError *error);
-
-/**
- * Lists installed applications into out_json (see apps_inner). The generous
- * timeout covers devices with hundreds of apps — the lookup answer is big.
- */
-int32_t av_apps_list(AvEngine *engine,
-                     const char *udid,
-                     int32_t kind,
-                     char **out_json,
-                     AvError *error);
-
-/**
- * Installs a user-provided .ipa (host path) onto the device. Blocking, hard-
- * capped — install can take a while. Returns diagnostic text on failure.
- */
-int32_t av_app_install(AvEngine *engine,
-                       const char *udid,
-                       const char *job_id,
-                       const char *ipa_path,
-                       av_install_cb cb,
-                       size_t callback_id,
-                       AvError *error);
-
-/**
- * Fetches one app icon into an owned binary buffer.
- */
-int32_t av_app_icon(AvEngine *engine,
-                    const char *udid,
-                    const char *bundle_id,
-                    AvBuffer *out,
-                    AvError *error);
-
-/**
- * Fetches a rendered wallpaper preview as raw PNG. `lock_screen` selects
- * lock (non-zero) or home (zero).
- */
-int32_t av_wallpaper_get(AvEngine *engine,
-                         const char *udid,
-                         int32_t lock_screen,
-                         AvBuffer *out,
-                         AvError *error);
-
-/**
- * Uninstalls an app by bundle id (installation_proxy).
- */
-int32_t av_app_uninstall(AvEngine *engine,
-                         const char *udid,
-                         const char *job_id,
-                         const char *bundle_id,
-                         AvError *error);
+int32_t av_log_init(av_log_cb cb, const char *level);
 
 /**
  * Unpairs: lockdown `Unpair` so the phone forgets this host, then our host
@@ -451,7 +447,6 @@ int32_t av_backup_password_change(AvEngine *engine,
 int32_t av_snapshot_build(AvEngine *engine,
                           const char *udid,
                           const char *job_id,
-                          const char *operation_id,
                           const char *snapshot_id,
                           const char *base_snapshot_id,
                           av_backup_cb cb,
@@ -465,7 +460,6 @@ int32_t av_snapshot_build(AvEngine *engine,
 int32_t av_snapshot_restore(AvEngine *engine,
                             const char *udid,
                             const char *job_id,
-                            const char *operation_id,
                             const char *source,
                             const char *snapshot_id,
                             const char *password,
@@ -483,7 +477,7 @@ int32_t av_snapshot_restore(AvEngine *engine,
 int32_t av_device_watch_open(AvEngine *engine, AvPresenceWatch **out, AvError *error);
 
 /**
- * Pulls the next complete versioned state JSON via the AV_STREAM_* pull protocol.
+ * Pulls the next complete state JSON via the AV_STREAM_* pull protocol.
  */
 int32_t av_device_watch_next(AvPresenceWatch *watcher, char **out_json, char **err);
 

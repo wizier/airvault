@@ -106,8 +106,8 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine,
 
 // MuxerReady reports whether the device muxer is reachable.
 func (s *Service) MuxerReady(ctx context.Context) bool {
-	state, err := s.engine.ProbeMux(ctx)
-	return err == nil && state == engine.MuxAvailable
+	up, err := s.engine.ProbeMux(ctx)
+	return err == nil && up
 }
 
 // Ping reports storage reachability (for /healthz).

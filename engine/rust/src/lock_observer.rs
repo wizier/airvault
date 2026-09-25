@@ -8,10 +8,10 @@ use idevice::services::notification_proxy::NotificationProxyClient;
 use idevice::IdeviceService;
 
 use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{engine_udid, guard_error, AvEngine, AvError, AV_STREAM_CLOSED};
+use crate::ffi::{engine_udid, guard, guard_error, out_str, AvEngine, AvError, AV_STREAM_CLOSED};
+use crate::provider::{provider_for, EngineContext};
 use crate::pull_stream::{ItemSender, PullStream};
 use crate::timeouts;
-use crate::{guard, out_str, provider_for, EngineContext};
 
 pub struct AvLockStream {
     stream: PullStream<i32>,
@@ -70,18 +70,17 @@ pub extern "C" fn av_lock_observer_open(
     out: *mut *mut AvLockStream,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context_arc();
         if out.is_null() {
-            out_str(err, "missing lock observer output");
-            return ErrorKind::InvalidArgument.code();
+            return Err(EngineFailure::invalid_argument(
+                "missing lock observer output",
+            ));
         }
         let stream = PullStream::spawn(|sender| observe_lock_state(context, udid, sender));
         unsafe { *out = Box::into_raw(Box::new(AvLockStream { stream })) };
-        0
+        Ok(())
     })
 }
 

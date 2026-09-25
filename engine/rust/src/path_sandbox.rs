@@ -17,26 +17,18 @@ const MAX_MB2_PATH_DEPTH: usize = 128;
 const MAX_MB2_COMPONENT_BYTES: usize = 255;
 const DEVICE_STAGING_DIR: &str = ".b";
 
-fn rejected_path(reason: impl Into<String>) -> idevice::IdeviceError {
-    idevice::IdeviceError::UnexpectedResponse(format!(
-        "rejected unsafe mobilebackup2 host path: {}",
-        reason.into()
-    ))
+fn rejected_path(reason: impl Into<String>) -> String {
+    format!("rejected unsafe mobilebackup2 host path: {}", reason.into())
 }
 
-fn normalize_path(path: &Path) -> Result<PathBuf, idevice::IdeviceError> {
-    if path.as_os_str().is_empty() {
-        return Err(rejected_path("empty path"));
+// The engine requires an absolute backup root and mobilebackup2 joins every
+// device path onto it, so a relative path is never addressable.
+fn normalize_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(rejected_path("path is not absolute"));
     }
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| rejected_path(format!("cannot resolve current directory: {e}")))?
-            .join(path)
-    };
     let mut normalized = PathBuf::new();
-    for component in absolute.components() {
+    for component in path.components() {
         match component {
             Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
             Component::RootDir => normalized.push(Component::RootDir.as_os_str()),
@@ -60,7 +52,7 @@ pub(crate) struct PathSandbox {
 }
 
 impl PathSandbox {
-    pub(crate) fn new(root: &Path, source: &str) -> Result<Self, idevice::IdeviceError> {
+    pub(crate) fn new(root: &Path, source: &str) -> Result<Self, String> {
         // One source-identifier contract for the whole store (Go enforces the same).
         validate_source(source).map_err(rejected_path)?;
         let backup_root = normalize_path(root)?;
@@ -80,7 +72,7 @@ impl PathSandbox {
     }
 
     /// Resolves one mb2 host path into a logical manifest key ("" = source root).
-    pub(crate) fn resolve_key(&self, path: &Path) -> Result<String, idevice::IdeviceError> {
+    pub(crate) fn resolve_key(&self, path: &Path) -> Result<String, String> {
         if path.as_os_str().as_encoded_bytes().len() > MAX_MB2_PATH_BYTES {
             return Err(rejected_path("path exceeds 4096-byte limit"));
         }
@@ -93,11 +85,9 @@ impl PathSandbox {
             return Err(rejected_path("backup root is not an addressable path"));
         };
 
+        // Below the normalized root every component is Normal.
         let rest: Vec<&str> = components
-            .map(|component| match component {
-                Component::Normal(part) => key_component(part),
-                _ => Err(rejected_path("path contains a non-normal component")),
-            })
+            .map(|component| key_component(component.as_os_str()))
             .collect::<Result<_, _>>()?;
         if rest.len() + 1 > MAX_MB2_PATH_DEPTH {
             return Err(rejected_path("path exceeds 128-component depth limit"));
@@ -131,18 +121,14 @@ impl PathSandbox {
 
 /// One validated key component: UTF-8, bounded, and free of the characters the
 /// manifest contract forbids in logical paths.
-fn key_component(part: &OsStr) -> Result<&str, idevice::IdeviceError> {
+fn key_component(part: &OsStr) -> Result<&str, String> {
     if part.as_encoded_bytes().len() > MAX_MB2_COMPONENT_BYTES {
         return Err(rejected_path("path component exceeds 255-byte limit"));
     }
     let part = part
         .to_str()
         .ok_or_else(|| rejected_path("path is not valid UTF-8"))?;
-    if part.is_empty()
-        || part == "."
-        || part == ".."
-        || part.contains(['/', '\\', '\0', '\u{2028}', '\u{2029}'])
-    {
+    if part.contains(['/', '\\', '\0', '\u{2028}', '\u{2029}']) {
         return Err(rejected_path("path contains an invalid component"));
     }
     Ok(part)

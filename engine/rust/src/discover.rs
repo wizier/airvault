@@ -6,194 +6,62 @@ use std::time::Duration;
 
 use idevice::provider::IdeviceProvider;
 use idevice::services::lockdown::LockdownClient;
-use idevice::usbmuxd::Connection;
-use idevice::IdeviceService;
+use idevice::usbmuxd::{Connection, UsbmuxdDevice};
+use idevice::{IdeviceError, IdeviceService};
 use plist::Value;
+use tokio::time::{timeout, timeout_at, Instant};
 
 use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{engine_ref, engine_udid, guard_error, AvEngine, AvError};
-use crate::timeouts;
-use crate::{
-    block, block_bounded_out, conn_str, devices_deduped, getv_str, out_str, provider_for, to_json,
-    write_failure, EngineContext,
+use crate::ffi::{
+    block_bounded, engine_ref, engine_udid, guard_error, out_str, to_json, AvEngine, AvError,
 };
+use crate::provider::{
+    authed_lockdown, block, devices_deduped, provider_for, provider_from, AirvaultProvider,
+    EngineContext,
+};
+use crate::timeouts;
 
 /// Discovery answers the device list: probe every phone and fail fast, because
 /// one unreachable device must not stall the refresh worker.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(serde::Serialize)]
-struct SnapshotItem {
+pub(crate) struct SnapshotItem {
     udid: String,
     connection: &'static str,
 }
 
 /// The cheap availability snapshot: usbmuxd get_devices with NO lockdown
 /// metadata, as `[{"udid","connection"}]`. Shared by the one-shot list and the
-/// owned presence watcher so both speak the identical shape.
-pub(crate) async fn snapshot_json(
-    context: &EngineContext,
-) -> Result<String, idevice::IdeviceError> {
+/// owned presence watcher so both speak the identical shape. An unclassified
+/// connection is reported as usb (a locally attached device), never dropped.
+pub(crate) async fn snapshot(context: &EngineContext) -> Result<Vec<SnapshotItem>, IdeviceError> {
     let devices = devices_deduped(context).await?;
-    let items: Vec<SnapshotItem> = devices
+    Ok(devices
         .into_iter()
         .map(|d| SnapshotItem {
-            connection: conn_str(&d.connection_type),
+            connection: match d.connection_type {
+                Connection::Network(_) => "wifi",
+                Connection::Usb | Connection::Unknown(_) => "usb",
+            },
             udid: d.udid,
         })
-        .collect();
-    Ok(to_json(&items))
+        .collect())
 }
 
 /// The lockdown-enriched view of a device: identity plus pairing/sync/encryption
 /// flags. Pairing is intentionally tri-state: a transport or lockdown failure
 /// does not prove that a previously paired device became unpaired.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 enum PairingState {
     Paired,
     Unpaired,
+    #[default]
     Unknown,
 }
 
-struct DeviceMeta {
-    name: String,
-    ptype: String,
-    ver: String,
-    metadata_known: bool,
-    pairing_state: PairingState,
-    flags_known: bool,
-    enc: bool,
-    activation: String,
-}
-
-impl DeviceMeta {
-    fn unknown() -> Self {
-        Self {
-            name: String::new(),
-            ptype: String::new(),
-            ver: String::new(),
-            metadata_known: false,
-            pairing_state: PairingState::Unknown,
-            flags_known: false,
-            enc: false,
-            activation: String::new(),
-        }
-    }
-}
-
-/// Enrich a device over lockdown, time-bounded. Failure produces an explicit
-/// unknown result instead of removing a mux-reachable device from the response.
-async fn device_meta(context: &EngineContext, udid: &str) -> DeviceMeta {
-    let deadline = tokio::time::Instant::now() + DISCOVERY_TIMEOUT;
-    let provider = match tokio::time::timeout_at(deadline, provider_for(context, udid)).await {
-        Ok(Ok(provider)) => provider,
-        Ok(Err(_)) | Err(_) => return DeviceMeta::unknown(),
-    };
-    let mut lc = match tokio::time::timeout_at(deadline, LockdownClient::connect(&provider)).await {
-        Ok(Ok(client)) => client,
-        Ok(Err(_)) | Err(_) => return DeviceMeta::unknown(),
-    };
-
-    // Establish the pairing verdict first. Once a session succeeds, later
-    // metadata or flag timeouts must not erase that confirmed result.
-    let pairing_state = pairing_state(&provider, &mut lc, deadline).await;
-
-    // Identity is an all-or-nothing snapshot. Consumers must not overwrite
-    // known metadata with empty strings when any GetValue read fails.
-    let identity = tokio::time::timeout_at(deadline, read_identity(&mut lc))
-        .await
-        .unwrap_or_default();
-
-    // A failed or malformed read is propagated to flagsKnown=false; a valid
-    // boolean false remains distinguishable.
-    let (enc, flags_known) = if pairing_state == PairingState::Paired {
-        // The encryption flag does not affect the already-confirmed pairing verdict.
-        match tokio::time::timeout_at(deadline, crate::read_will_encrypt(&mut lc)).await {
-            Ok(Ok(enc)) => (enc, true),
-            Ok(Err(_)) | Err(_) => (false, false),
-        }
-    } else {
-        (false, false)
-    };
-
-    // Best-effort: an unactivated phone (Setup Assistant) cannot run mb2
-    // operations, so the UI warns from this field. Empty = unknown.
-    let activation =
-        match tokio::time::timeout_at(deadline, get_required_string(&mut lc, "ActivationState"))
-            .await
-        {
-            Ok(Ok(state)) => state,
-            Ok(Err(_)) | Err(_) => String::new(),
-        };
-
-    let (name, ptype, ver, metadata_known) = match identity {
-        Some((name, ptype, ver)) => (name, ptype, ver, true),
-        None => (String::new(), String::new(), String::new(), false),
-    };
-
-    DeviceMeta {
-        name,
-        ptype,
-        ver,
-        metadata_known,
-        pairing_state,
-        flags_known,
-        enc,
-        activation,
-    }
-}
-
-async fn pairing_state(
-    provider: &crate::AirvaultProvider,
-    lc: &mut LockdownClient,
-    deadline: tokio::time::Instant,
-) -> PairingState {
-    // A missing local pairing record surfaces as InvalidHostID from the
-    // provider; the same variant from start_session means the phone revoked us.
-    let pf = match provider.get_pairing_file().await {
-        Ok(pf) => pf,
-        Err(error) => return unpaired_or_unknown(&error),
-    };
-
-    match tokio::time::timeout_at(deadline, lc.start_session(&pf)).await {
-        Ok(Ok(_)) => PairingState::Paired,
-        Ok(Err(error)) => unpaired_or_unknown(&error),
-        Err(_) => PairingState::Unknown,
-    }
-}
-
-async fn read_identity(lc: &mut LockdownClient) -> Option<(String, String, String)> {
-    let name = get_required_string(lc, "DeviceName").await.ok()?;
-    let ptype = get_required_string(lc, "ProductType").await.ok()?;
-    let ver = get_required_string(lc, "ProductVersion").await.ok()?;
-    Some((name, ptype, ver))
-}
-
-async fn get_required_string(
-    lc: &mut LockdownClient,
-    key: &str,
-) -> Result<String, idevice::IdeviceError> {
-    lc.get_value(Some(key), None)
-        .await?
-        .as_string()
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            idevice::IdeviceError::UnexpectedResponse(format!(
-                "lockdown {key} is missing or not a non-empty string"
-            ))
-        })
-}
-
-fn unpaired_or_unknown(error: &idevice::IdeviceError) -> PairingState {
-    match error {
-        idevice::IdeviceError::InvalidHostID => PairingState::Unpaired,
-        _ => PairingState::Unknown,
-    }
-}
-
-#[derive(serde::Serialize)]
+#[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoverItem {
     udid: String,
@@ -207,6 +75,111 @@ struct DiscoverItem {
     activation_state: String,
 }
 
+/// Enrich a device over lockdown, time-bounded. Failure produces an explicit
+/// unknown result instead of removing a mux-reachable device from the response.
+async fn device_meta(context: &EngineContext, device: &UsbmuxdDevice) -> DiscoverItem {
+    let mut item = DiscoverItem {
+        udid: device.udid.clone(),
+        name: device.udid.clone(),
+        ..DiscoverItem::default()
+    };
+    let deadline = Instant::now() + DISCOVERY_TIMEOUT;
+    let provider = provider_from(context, device);
+    let Ok(Ok(mut lc)) = timeout_at(deadline, LockdownClient::connect(&provider)).await else {
+        return item;
+    };
+
+    // Establish the pairing verdict first. Once a session succeeds, later
+    // metadata or flag timeouts must not erase that confirmed result.
+    item.pairing_state = pairing_state(&provider, &mut lc, deadline).await;
+
+    // Identity is an all-or-nothing snapshot. Consumers must not overwrite
+    // known metadata with empty strings when any GetValue read fails.
+    if let Ok(Some((name, product_type, ios_version))) =
+        timeout_at(deadline, read_identity(&mut lc)).await
+    {
+        item.name = name;
+        item.product_type = product_type;
+        item.ios_version = ios_version;
+        item.metadata_known = true;
+    }
+
+    // A failed or malformed read is propagated to flagsKnown=false; a valid
+    // boolean false remains distinguishable. The encryption flag does not
+    // affect the already-confirmed pairing verdict.
+    if item.pairing_state == PairingState::Paired {
+        if let Ok(Ok(encrypted)) = timeout_at(deadline, read_will_encrypt(&mut lc)).await {
+            item.encrypted = encrypted;
+            item.flags_known = true;
+        }
+    }
+
+    // Best-effort: an unactivated phone (Setup Assistant) cannot run mb2
+    // operations, so the UI warns from this field. Empty = unknown.
+    if let Ok(Ok(state)) =
+        timeout_at(deadline, get_required_string(&mut lc, "ActivationState")).await
+    {
+        item.activation_state = state;
+    }
+    item
+}
+
+async fn pairing_state(
+    provider: &AirvaultProvider,
+    lc: &mut LockdownClient,
+    deadline: Instant,
+) -> PairingState {
+    // A missing local pairing record surfaces as InvalidHostID from the
+    // provider; the same variant from start_session means the phone revoked us.
+    let pf = match provider.get_pairing_file().await {
+        Ok(pf) => pf,
+        Err(error) => return unpaired_or_unknown(&error),
+    };
+
+    match timeout_at(deadline, lc.start_session(&pf)).await {
+        Ok(Ok(_)) => PairingState::Paired,
+        Ok(Err(error)) => unpaired_or_unknown(&error),
+        Err(_) => PairingState::Unknown,
+    }
+}
+
+async fn read_identity(lc: &mut LockdownClient) -> Option<(String, String, String)> {
+    let name = get_required_string(lc, "DeviceName").await.ok()?;
+    let ptype = get_required_string(lc, "ProductType").await.ok()?;
+    let ver = get_required_string(lc, "ProductVersion").await.ok()?;
+    Some((name, ptype, ver))
+}
+
+async fn get_required_string(lc: &mut LockdownClient, key: &str) -> Result<String, IdeviceError> {
+    lc.get_value(Some(key), None)
+        .await?
+        .as_string()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            IdeviceError::UnexpectedResponse(format!(
+                "lockdown {key} is missing or not a non-empty string"
+            ))
+        })
+}
+
+fn unpaired_or_unknown(error: &IdeviceError) -> PairingState {
+    match error {
+        IdeviceError::InvalidHostID => PairingState::Unpaired,
+        _ => PairingState::Unknown,
+    }
+}
+
+/// The one lockdown read shared by discovery and the backup-password flow.
+pub(crate) async fn read_will_encrypt(lc: &mut LockdownClient) -> Result<bool, IdeviceError> {
+    lc.get_value(Some("WillEncrypt"), Some("com.apple.mobile.backup"))
+        .await?
+        .as_boolean()
+        .ok_or_else(|| {
+            IdeviceError::UnexpectedResponse("lockdown WillEncrypt is not a boolean".into())
+        })
+}
+
 /// Discovers reachable devices WITH lockdown metadata (see DiscoverItem).
 /// No connection field on purpose — presence/transport is the watcher's domain.
 #[no_mangle]
@@ -215,39 +188,17 @@ pub extern "C" fn av_devices_inspect(
     out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(engine) = (unsafe { engine_ref(engine, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
-        block(async {
-            let devices = match devices_deduped(context).await {
-                Ok(d) => d,
-                Err(e) => return write_failure(err, e.into()),
-            };
-
-            let mut items: Vec<DiscoverItem> = Vec::with_capacity(devices.len());
-            for d in devices {
-                let meta = device_meta(context, &d.udid).await;
-                items.push(DiscoverItem {
-                    name: if meta.name.is_empty() {
-                        d.udid.clone()
-                    } else {
-                        meta.name
-                    },
-                    udid: d.udid,
-                    product_type: meta.ptype,
-                    ios_version: meta.ver,
-                    pairing_state: meta.pairing_state,
-                    metadata_known: meta.metadata_known,
-                    flags_known: meta.flags_known,
-                    encrypted: meta.enc,
-                    activation_state: meta.activation,
-                });
+    guard_error(error, || {
+        let context = unsafe { engine_ref(engine) }?.context();
+        let items = block(async {
+            let mut items = Vec::new();
+            for device in devices_deduped(context).await? {
+                items.push(device_meta(context, &device).await);
             }
-            out_str(out_json, &to_json(&items));
-            0
-        })
+            Ok::<_, EngineFailure>(items)
+        })?;
+        out_str(out_json, &to_json(&items));
+        Ok(())
     })
 }
 
@@ -260,27 +211,18 @@ pub extern "C" fn av_devices_list(
     out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(engine) = (unsafe { engine_ref(engine, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
-        block(async {
-            match snapshot_json(context).await {
-                Ok(j) => {
-                    out_str(out_json, &j);
-                    0
-                }
-                Err(e) => write_failure(err, e.into()),
-            }
-        })
+    guard_error(error, || {
+        let context = unsafe { engine_ref(engine) }?.context();
+        let items = block(snapshot(context))?;
+        out_str(out_json, &to_json(&items));
+        Ok(())
     })
 }
 
 /// Reads the device battery state over a lockdown session.
 async fn battery_inner(context: &EngineContext, udid: &str) -> Result<String, EngineFailure> {
     let provider = provider_for(context, udid).await?;
-    let mut lc = crate::authed_lockdown(&provider).await?;
+    let mut lc = authed_lockdown(&provider).await?;
     let value = lc.get_value(None, Some("com.apple.mobile.battery")).await?;
     let Value::Dictionary(d) = value else {
         let detail = "battery domain did not return a dictionary";
@@ -314,18 +256,15 @@ pub extern "C" fn av_device_battery(
     out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
-        block_bounded_out(
-            out_json,
-            err,
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
+        let json = block_bounded(
             timeouts::PROBE,
             "battery read timed out",
-            battery_inner(context, &udid),
-        )
+            battery_inner(engine.context(), &udid),
+        )?;
+        out_str(out_json, &json);
+        Ok(())
     })
 }
 
@@ -340,32 +279,25 @@ struct UsbItem {
 /// USB-reachable devices for the pairing wizard: [{"udid","name"}]. The name
 /// comes from an unauthenticated lockdown GetValue (allowed pre-pairing); the
 /// udid stands in when even that fails.
-async fn usb_list_inner(context: &EngineContext) -> Result<String, idevice::IdeviceError> {
-    let devices = devices_deduped(context).await?;
-    let mut items: Vec<UsbItem> = Vec::new();
-    for d in devices {
+async fn usb_list_inner(context: &EngineContext) -> Result<Vec<UsbItem>, IdeviceError> {
+    let mut items = Vec::new();
+    for d in devices_deduped(context).await? {
         if !matches!(d.connection_type, Connection::Usb) {
             continue;
         }
-        let name = match tokio::time::timeout(DISCOVERY_TIMEOUT, usb_name(context, &d.udid)).await {
-            Ok(n) if !n.is_empty() => n,
+        let name = match timeout(DISCOVERY_TIMEOUT, usb_name(context, &d)).await {
+            Ok(Some(name)) => name,
             _ => d.udid.clone(),
         };
         items.push(UsbItem { udid: d.udid, name });
     }
-    Ok(to_json(&items))
+    Ok(items)
 }
 
-async fn usb_name(context: &EngineContext, udid: &str) -> String {
-    let provider = match provider_for(context, udid).await {
-        Ok(p) => p,
-        Err(_) => return String::new(),
-    };
-    let mut lc = match LockdownClient::connect(&provider).await {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    getv_str(&mut lc, "DeviceName").await
+async fn usb_name(context: &EngineContext, device: &UsbmuxdDevice) -> Option<String> {
+    let provider = provider_from(context, device);
+    let mut lc = LockdownClient::connect(&provider).await.ok()?;
+    get_required_string(&mut lc, "DeviceName").await.ok()
 }
 
 /// Lists USB devices into out_json (for the pairing wizard).
@@ -375,19 +307,10 @@ pub extern "C" fn av_usb_devices_list(
     out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(engine) = (unsafe { engine_ref(engine, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
-        block(async {
-            match usb_list_inner(context).await {
-                Ok(j) => {
-                    out_str(out_json, &j);
-                    0
-                }
-                Err(e) => write_failure(err, e.into()),
-            }
-        })
+    guard_error(error, || {
+        let context = unsafe { engine_ref(engine) }?.context();
+        let items = block(usb_list_inner(context))?;
+        out_str(out_json, &to_json(&items));
+        Ok(())
     })
 }

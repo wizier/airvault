@@ -19,12 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bounded::{cancel_or_timeout, Interrupt};
 use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{engine_ref, guard_error, AvEngine, AvError};
+use crate::ffi::{block_bounded, engine_ref, guard_error, out_str, to_json, AvEngine, AvError};
+use crate::provider::{block, provider_for, EngineContext, MAX_UDID_BYTES};
 use crate::timeouts;
-use crate::{
-    block, block_bounded, out_str, provider_for, to_json, write_failure, EngineContext,
-    MAX_UDID_BYTES,
-};
 
 const AFC_SOURCE_MEDIA: i32 = 0;
 const AFC_SOURCE_APP_DOCUMENTS: i32 = 1;
@@ -73,20 +70,96 @@ impl<T> Slot<T> {
         Ok(())
     }
 
-    fn close(&self) -> Option<T> {
+    /// Cancels any in-flight operation and releases the idle resource.
+    fn close(&self) {
         let resource = {
             let mut state = crate::lock(&self.state);
             state.closed = true;
             state.resource.take()
         };
         self.cancel.cancel();
-        resource
+        drop(resource);
     }
 }
 
 enum Resource {
     Session(AfcClient),
     File(FileGuard),
+}
+
+impl Slot<Resource> {
+    fn take_session(&self) -> Result<AfcClient, EngineFailure> {
+        match self.take() {
+            Some(Resource::Session(client)) => Ok(client),
+            Some(other) => {
+                let _ = self.put(other);
+                Err(cancelled("AFC handle is not a session"))
+            }
+            None => Err(cancelled("AFC session is closed")),
+        }
+    }
+
+    fn take_file(&self) -> Result<FileGuard, EngineFailure> {
+        match self.take() {
+            Some(Resource::File(file)) => Ok(file),
+            Some(other) => {
+                let _ = self.put(other);
+                Err(cancelled("AFC handle is not a file"))
+            }
+            None => Err(cancelled("AFC file is closed")),
+        }
+    }
+
+    /// Runs one operation on a taken resource under the shared cancel/timeout
+    /// budget. The operation hands back the resource to keep, or None when the
+    /// transport is lost with the failure and the slot must close.
+    fn run<T>(
+        &self,
+        cancelled_detail: &str,
+        timeout_detail: &str,
+        operation: impl Future<Output = (Option<Resource>, Result<T, EngineFailure>)>,
+    ) -> Result<T, EngineFailure> {
+        match block(cancel_or_timeout(
+            &self.cancel,
+            timeouts::DEVICE_WORK,
+            operation,
+        )) {
+            Ok((Some(resource), result)) => {
+                if self.put(resource).is_err() {
+                    return Err(cancelled(cancelled_detail));
+                }
+                result
+            }
+            Ok((None, result)) => {
+                self.close();
+                result
+            }
+            Err(Interrupt::Cancelled) => {
+                self.close();
+                Err(cancelled(cancelled_detail))
+            }
+            Err(Interrupt::TimedOut) => {
+                self.close();
+                Err(EngineFailure::new(ErrorKind::Timeout, timeout_detail))
+            }
+        }
+    }
+
+    /// Runs one operation on the idle session, which it hands back for reuse.
+    fn run_session<T, E: Into<EngineFailure>, Fut>(
+        &self,
+        timeout_detail: &str,
+        operation: impl FnOnce(AfcClient) -> Fut,
+    ) -> Result<T, EngineFailure>
+    where
+        Fut: Future<Output = (Option<AfcClient>, Result<T, E>)>,
+    {
+        let client = self.take_session()?;
+        self.run("AFC session cancelled", timeout_detail, async {
+            let (client, result) = operation(client).await;
+            (client.map(Resource::Session), result.map_err(Into::into))
+        })
+    }
 }
 
 /// Makes an owned AFC descriptor drop-safe. The upstream type asserts when
@@ -174,16 +247,47 @@ impl AvAfcSession {
             false
         }
     }
-
-    fn close(&self) {
-        if let Some(slot) = crate::lock(&self.slot).take() {
-            close_slot(&slot);
-        }
-    }
 }
 
-fn fail(err: *mut *mut c_char, kind: ErrorKind, message: &str) -> i32 {
-    write_failure(err, EngineFailure::new(kind, message))
+fn cancelled(detail: &str) -> EngineFailure {
+    EngineFailure::new(ErrorKind::Cancelled, detail)
+}
+
+/// The live slot behind a session handle, or Cancelled once it is closed.
+unsafe fn session_slot(session: *mut AvAfcSession) -> Result<Arc<Slot<Resource>>, EngineFailure> {
+    unsafe { session.as_ref() }
+        .and_then(AvAfcSession::slot)
+        .ok_or_else(|| cancelled("AFC session is closed"))
+}
+
+/// Zeroes a required string out-param before the call can fail.
+fn reset_out(out: *mut *mut c_char, what: &str) -> Result<(), EngineFailure> {
+    if out.is_null() {
+        return Err(EngineFailure::invalid_argument(what));
+    }
+    unsafe { *out = ptr::null_mut() };
+    Ok(())
+}
+
+/// Checks the caller's read buffer and zeroes its byte count.
+fn reset_read(
+    buffer: *mut u8,
+    buffer_len: usize,
+    out_read: *mut usize,
+) -> Result<(), EngineFailure> {
+    if buffer.is_null() || out_read.is_null() || buffer_len == 0 || buffer_len > MAX_READ_BYTES {
+        return Err(EngineFailure::invalid_argument("bad AFC read buffer"));
+    }
+    unsafe { *out_read = 0 };
+    Ok(())
+}
+
+/// Copies read bytes into the caller's buffer (already bounded by the caller).
+unsafe fn copy_read(bytes: &[u8], buffer: *mut u8, out_read: *mut usize) {
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
+        *out_read = bytes.len();
+    }
 }
 
 unsafe fn input(
@@ -192,35 +296,37 @@ unsafe fn input(
     max: usize,
     label: &str,
     allow_empty: bool,
-) -> Result<String, String> {
+) -> Result<String, EngineFailure> {
+    let bad = |detail: String| Err(EngineFailure::invalid_argument(detail));
     if len > max || (ptr.is_null() && len != 0) {
-        return Err(format!("bad {label}"));
+        return bad(format!("bad {label}"));
     }
     if len == 0 {
         return if allow_empty {
             Ok(String::new())
         } else {
-            Err(format!("bad {label}"))
+            bad(format!("bad {label}"))
         };
     }
     // SAFETY: the caller promises a readable buffer for the duration of this
     // synchronous FFI call; length was bounded above.
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     if bytes.contains(&0) {
-        return Err(format!("bad {label}: contains NUL"));
+        return bad(format!("bad {label}: contains NUL"));
     }
-    std::str::from_utf8(bytes)
-        .map(str::to_owned)
-        .map_err(|_| format!("bad {label}: not UTF-8"))
+    match std::str::from_utf8(bytes) {
+        Ok(value) => Ok(value.to_owned()),
+        Err(_) => bad(format!("bad {label}: not UTF-8")),
+    }
 }
 
 // Go (devicefs) owns path policy — component structure and . / .. rejection.
 // Here only the raw-pointer memory safety in input() plus an absolute-path
 // shape check remain; the AFC OS jail confines every path regardless.
-unsafe fn physical_path(ptr: *const u8, len: usize) -> Result<String, String> {
+unsafe fn physical_path(ptr: *const u8, len: usize) -> Result<String, EngineFailure> {
     let path = unsafe { input(ptr, len, MAX_PATH_BYTES, "AFC path", false) }?;
     if !path.starts_with('/') {
-        return Err("bad AFC path".into());
+        return Err(EngineFailure::invalid_argument("bad AFC path"));
     }
     Ok(path)
 }
@@ -230,17 +336,18 @@ enum Source {
     AppDocuments,
 }
 
-fn parse_source(source: i32, bundle: &str) -> Result<Source, String> {
+fn parse_source(source: i32, bundle: &str) -> Result<Source, EngineFailure> {
+    let bad = |detail: &str| Err(EngineFailure::invalid_argument(detail));
     match source {
         AFC_SOURCE_MEDIA if !bundle.is_empty() => {
-            Err("media AFC source must not carry a bundle id".into())
+            bad("media AFC source must not carry a bundle id")
         }
         AFC_SOURCE_APP_DOCUMENTS if bundle.is_empty() => {
-            Err("app Documents source requires a bundle id".into())
+            bad("app Documents source requires a bundle id")
         }
         AFC_SOURCE_MEDIA => Ok(Source::Media),
         AFC_SOURCE_APP_DOCUMENTS => Ok(Source::AppDocuments),
-        _ => Err("bad AFC source".into()),
+        _ => bad("bad AFC source"),
     }
 }
 
@@ -260,88 +367,12 @@ async fn connect(
     }
 }
 
-fn restore(slot: &Slot<Resource>, resource: Resource) {
-    drop(slot.put(resource));
-}
-
-fn close_slot(slot: &Slot<Resource>) {
-    drop(slot.close());
-}
-
-/// Dispose an in-hand file (closing its dedicated AFC session) and tear down its
-/// handle — the failure teardown after a file has been taken out of its slot.
-fn discard_file(slot: &Slot<Resource>, file: FileGuard) {
-    drop(file);
-    close_slot(slot);
-}
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RawStat {
     is_dir: bool,
     size: u64,
     modified: i64,
-}
-
-// The operation returns the client for reuse, or None when the transport is
-// lost with the failure and the slot must close.
-fn run_session<T, E, F, Fut>(
-    slot: &Arc<Slot<Resource>>,
-    timeout_message: &'static str,
-    operation: F,
-) -> Result<T, EngineFailure>
-where
-    E: Into<EngineFailure>,
-    F: FnOnce(AfcClient) -> Fut,
-    Fut: Future<Output = (Option<AfcClient>, Result<T, E>)>,
-{
-    let client = match slot.take() {
-        Some(Resource::Session(client)) => client,
-        Some(resource) => {
-            restore(slot, resource);
-            return Err(EngineFailure::new(
-                ErrorKind::Cancelled,
-                "AFC handle is not a session",
-            ));
-        }
-        None => {
-            return Err(EngineFailure::new(
-                ErrorKind::Cancelled,
-                "AFC session is closed",
-            ))
-        }
-    };
-    let outcome = block(cancel_or_timeout(
-        &slot.cancel,
-        timeouts::DEVICE_WORK,
-        operation(client),
-    ));
-    match outcome {
-        Ok((Some(client), result)) => {
-            if slot.put(Resource::Session(client)).is_err() {
-                return Err(EngineFailure::new(
-                    ErrorKind::Cancelled,
-                    "AFC session cancelled",
-                ));
-            }
-            result.map_err(Into::into)
-        }
-        Ok((None, result)) => {
-            close_slot(slot);
-            result.map_err(Into::into)
-        }
-        Err(Interrupt::Cancelled) => {
-            close_slot(slot);
-            Err(EngineFailure::new(
-                ErrorKind::Cancelled,
-                "AFC session cancelled",
-            ))
-        }
-        Err(Interrupt::TimedOut) => {
-            close_slot(slot);
-            Err(EngineFailure::new(ErrorKind::Timeout, timeout_message))
-        }
-    }
 }
 
 /// Opens one short-lived AFC connection. rc 0 or an AV_ERROR_* kind.
@@ -356,39 +387,23 @@ pub extern "C" fn av_afc_open(
     out_session: *mut *mut AvAfcSession,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(engine) = (unsafe { engine_ref(engine, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
+    guard_error(error, || {
+        let context = unsafe { engine_ref(engine) }?.context();
         if out_session.is_null() {
-            return fail(err, ErrorKind::InvalidArgument, "bad AFC session output");
+            return Err(EngineFailure::invalid_argument("bad AFC session output"));
         }
         unsafe { *out_session = ptr::null_mut() };
-        let udid = match unsafe { input(udid_ptr, udid_len, MAX_UDID_BYTES, "udid", false) } {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
-        let bundle =
-            match unsafe { input(bundle_ptr, bundle_len, MAX_BUNDLE_BYTES, "bundle id", true) } {
-                Ok(value) => value,
-                Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-            };
-        let source = match parse_source(source, &bundle) {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
-        block_bounded(
-            err,
+        let udid = unsafe { input(udid_ptr, udid_len, MAX_UDID_BYTES, "udid", false) }?;
+        let bundle = unsafe { input(bundle_ptr, bundle_len, MAX_BUNDLE_BYTES, "bundle id", true) }?;
+        let source = parse_source(source, &bundle)?;
+        let client = block_bounded(
             timeouts::DEVICE_WORK,
             "opening AFC session timed out",
             connect(context, &udid, source, &bundle),
-            |client| {
-                let slot = Arc::new(Slot::new(Resource::Session(client)));
-                unsafe { *out_session = Box::into_raw(Box::new(AvAfcSession::new(slot))) };
-                0
-            },
-        )
+        )?;
+        let slot = Arc::new(Slot::new(Resource::Session(client)));
+        unsafe { *out_session = Box::into_raw(Box::new(AvAfcSession::new(slot))) };
+        Ok(())
     })
 }
 
@@ -402,36 +417,17 @@ pub extern "C" fn av_afc_list(
     out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(session) = (unsafe { session.as_ref() }) else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        let Some(slot) = session.slot() else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        if out_json.is_null() {
-            return fail(err, ErrorKind::InvalidArgument, "bad AFC list output");
-        }
-        unsafe { *out_json = ptr::null_mut() };
-        let path = match unsafe { physical_path(path_ptr, path_len) } {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
-        let result = run_session(
-            &slot,
-            "listing AFC directory timed out",
-            |mut client| async move {
+    guard_error(error, || {
+        let slot = unsafe { session_slot(session) }?;
+        reset_out(out_json, "bad AFC list output")?;
+        let path = unsafe { physical_path(path_ptr, path_len) }?;
+        let json =
+            slot.run_session("listing AFC directory timed out", |mut client| async move {
                 let result = client.list_dir(path).await.map(|names| to_json(&names));
                 (Some(client), result)
-            },
-        );
-        match result {
-            Ok(json) => {
-                out_str(out_json, &json);
-                0
-            }
-            Err(failure) => write_failure(err, failure),
-        }
+            })?;
+        out_str(out_json, &json);
+        Ok(())
     })
 }
 
@@ -444,22 +440,11 @@ pub extern "C" fn av_afc_stat(
     out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(session) = (unsafe { session.as_ref() }) else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        let Some(slot) = session.slot() else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        if out_json.is_null() {
-            return fail(err, ErrorKind::InvalidArgument, "bad AFC stat output");
-        }
-        unsafe { *out_json = ptr::null_mut() };
-        let path = match unsafe { physical_path(path_ptr, path_len) } {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
-        let result = run_session(&slot, "AFC stat timed out", |mut client| async move {
+    guard_error(error, || {
+        let slot = unsafe { session_slot(session) }?;
+        reset_out(out_json, "bad AFC stat output")?;
+        let path = unsafe { physical_path(path_ptr, path_len) }?;
+        let json = slot.run_session("AFC stat timed out", |mut client| async move {
             let result = client.get_file_info(path).await.map(|info| {
                 to_json(&RawStat {
                     is_dir: info.st_ifmt == "S_IFDIR",
@@ -468,14 +453,9 @@ pub extern "C" fn av_afc_stat(
                 })
             });
             (Some(client), result)
-        });
-        match result {
-            Ok(json) => {
-                out_str(out_json, &json);
-                0
-            }
-            Err(failure) => write_failure(err, failure),
-        }
+        })?;
+        out_str(out_json, &json);
+        Ok(())
     })
 }
 
@@ -487,29 +467,13 @@ pub extern "C" fn av_afc_remove(
     path_len: usize,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(session) = (unsafe { session.as_ref() }) else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        let Some(slot) = session.slot() else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        let path = match unsafe { physical_path(path_ptr, path_len) } {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
-        let result = run_session(
-            &slot,
-            "removing AFC path timed out",
-            |mut client| async move {
-                let result = client.remove(path).await;
-                (Some(client), result)
-            },
-        );
-        match result {
-            Ok(()) => 0,
-            Err(failure) => write_failure(err, failure),
-        }
+    guard_error(error, || {
+        let slot = unsafe { session_slot(session) }?;
+        let path = unsafe { physical_path(path_ptr, path_len) }?;
+        slot.run_session("removing AFC path timed out", |mut client| async move {
+            let result = client.remove(path).await;
+            (Some(client), result)
+        })
     })
 }
 
@@ -565,46 +529,25 @@ pub extern "C" fn av_afc_read_small(
     out_read: *mut usize,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(session) = (unsafe { session.as_ref() }) else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        let Some(slot) = session.slot() else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        if buffer.is_null() || out_read.is_null() || buffer_len == 0 || buffer_len > MAX_READ_BYTES
-        {
-            return fail(err, ErrorKind::InvalidArgument, "bad AFC read buffer");
-        }
-        unsafe { *out_read = 0 };
-        let path = match unsafe { physical_path(path_ptr, path_len) } {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
+    guard_error(error, || {
+        let slot = unsafe { session_slot(session) }?;
+        reset_read(buffer, buffer_len, out_read)?;
+        let path = unsafe { physical_path(path_ptr, path_len) }?;
         // A lost client closes the slot, so Go sees the next call as a dead session.
-        let result = run_session(&slot, "reading AFC file timed out", |client| async move {
+        let bytes = slot.run_session("reading AFC file timed out", |client| async move {
             match read_small_file(client, &path, buffer_len).await {
                 Ok((client, bytes)) => (Some(client), Ok(bytes)),
                 Err((client, failure)) => (client, Err(failure)),
             }
-        });
-        match result {
-            Ok(bytes) => {
-                if bytes.len() > buffer_len {
-                    return fail(
-                        err,
-                        ErrorKind::Internal,
-                        "AFC returned more data than requested",
-                    );
-                }
-                unsafe {
-                    ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
-                    *out_read = bytes.len();
-                }
-                0
-            }
-            Err(failure) => write_failure(err, failure),
+        })?;
+        if bytes.len() > buffer_len {
+            return Err(EngineFailure::new(
+                ErrorKind::Internal,
+                "AFC returned more data than requested",
+            ));
         }
+        unsafe { copy_read(&bytes, buffer, out_read) };
+        Ok(())
     })
 }
 
@@ -619,71 +562,44 @@ pub extern "C" fn av_afc_file_open(
     out_file: *mut *mut AvAfcFile,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(session_ref) = (unsafe { session.as_ref() }) else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
-        let Some(slot) = session_ref.slot() else {
-            return fail(err, ErrorKind::Cancelled, "AFC session is closed");
-        };
+    guard_error(error, || {
+        let slot = unsafe { session_slot(session) }?;
         if out_size.is_null() || out_file.is_null() {
-            return fail(err, ErrorKind::InvalidArgument, "bad AFC file output");
+            return Err(EngineFailure::invalid_argument("bad AFC file output"));
         }
         unsafe {
             *out_size = 0;
             *out_file = ptr::null_mut();
         }
-        let path = match unsafe { physical_path(path_ptr, path_len) } {
-            Ok(value) => value,
-            Err(message) => return fail(err, ErrorKind::InvalidArgument, &message),
-        };
-        let mut client = match slot.take() {
-            Some(Resource::Session(client)) => client,
-            Some(resource) => {
-                restore(&slot, resource);
-                return fail(err, ErrorKind::Cancelled, "AFC handle is not a session");
-            }
-            None => return fail(err, ErrorKind::Cancelled, "AFC session is closed"),
-        };
-        let outcome = block(cancel_or_timeout(
-            &slot.cancel,
-            timeouts::DEVICE_WORK,
+        let path = unsafe { physical_path(path_ptr, path_len) }?;
+        let mut client = slot.take_session()?;
+        let size = slot.run(
+            "AFC session cancelled",
+            "opening AFC file timed out",
             async move {
-                let size = regular_file_size(&mut client, &path).await? as u64;
-                let file = client.open_owned(path, AfcFopenMode::RdOnly).await?;
-                Ok::<_, IdeviceError>((FileGuard::new(file), size))
+                let opened = async {
+                    let size = regular_file_size(&mut client, &path).await? as u64;
+                    let file = client.open_owned(path, AfcFopenMode::RdOnly).await?;
+                    Ok::<_, IdeviceError>((FileGuard::new(file), size))
+                };
+                match opened.await {
+                    Ok((file, size)) => (Some(Resource::File(file)), Ok(size)),
+                    Err(error) => (None, Err(error.into())),
+                }
             },
-        ));
-        match outcome {
-            Ok(Ok((file, size))) => {
-                if slot.put(Resource::File(file)).is_err() {
-                    return fail(err, ErrorKind::Cancelled, "AFC session cancelled");
-                }
-                // Transfer the resource before publishing the file pointer: Go
-                // releases the emptied session wrapper only after this returns.
-                if !session_ref.detach(&slot) {
-                    close_slot(&slot);
-                    return fail(err, ErrorKind::Cancelled, "AFC session cancelled");
-                }
-                unsafe {
-                    *out_size = size;
-                    *out_file = Box::into_raw(Box::new(AvAfcFile { slot }));
-                }
-                0
-            }
-            Ok(Err(error)) => {
-                close_slot(&slot);
-                write_failure(err, error.into())
-            }
-            Err(Interrupt::Cancelled) => {
-                close_slot(&slot);
-                fail(err, ErrorKind::Cancelled, "AFC session cancelled")
-            }
-            Err(Interrupt::TimedOut) => {
-                close_slot(&slot);
-                fail(err, ErrorKind::Timeout, "opening AFC file timed out")
-            }
+        )?;
+        // Transfer the resource before publishing the file pointer: Go
+        // releases the emptied session wrapper only after this returns.
+        // SAFETY: session_slot above proved the handle non-null.
+        if !unsafe { &*session }.detach(&slot) {
+            slot.close();
+            return Err(cancelled("AFC session cancelled"));
         }
+        unsafe {
+            *out_size = size;
+            *out_file = Box::into_raw(Box::new(AvAfcFile { slot }));
+        }
+        Ok(())
     })
 }
 
@@ -697,71 +613,40 @@ pub extern "C" fn av_afc_file_read(
     out_read: *mut usize,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some(file_ref) = (unsafe { file.as_ref() }) else {
-            return fail(err, ErrorKind::Cancelled, "AFC file is closed");
+    guard_error(error, || {
+        let Some(file) = (unsafe { file.as_ref() }) else {
+            return Err(cancelled("AFC file is closed"));
         };
-        let slot = &file_ref.slot;
-        if buffer.is_null() || out_read.is_null() || buffer_len == 0 || buffer_len > MAX_READ_BYTES
-        {
-            return fail(err, ErrorKind::InvalidArgument, "bad AFC read buffer");
-        }
-        unsafe { *out_read = 0 };
-        let mut file = match slot.take() {
-            Some(Resource::File(file)) => file,
-            Some(resource) => {
-                restore(slot, resource);
-                return fail(err, ErrorKind::Cancelled, "AFC handle is not a file");
-            }
-            None => return fail(err, ErrorKind::Cancelled, "AFC file is closed"),
-        };
-        let outcome = block(cancel_or_timeout(
-            &slot.cancel,
-            timeouts::DEVICE_WORK,
-            async {
-                match file.read_n(buffer_len).await {
+        let slot = &file.slot;
+        reset_read(buffer, buffer_len, out_read)?;
+        let mut guard = slot.take_file()?;
+        let bytes = slot.run(
+            "AFC file cancelled",
+            "reading AFC file timed out",
+            async move {
+                match guard.read_n(buffer_len).await {
+                    // A well-behaved device never returns more than requested; refuse an
+                    // oversized frame instead of overflowing the caller's fixed buffer.
+                    Ok(bytes) if bytes.len() > buffer_len => (
+                        None,
+                        Err(EngineFailure::new(
+                            ErrorKind::Internal,
+                            "AFC returned more data than requested",
+                        )),
+                    ),
+                    Ok(bytes) => (Some(Resource::File(guard)), Ok(bytes)),
                     // AFC represents a normal read past the end as a status error.
                     // Normalize that protocol detail at the native boundary so Go
                     // receives the ordinary io.Reader contract (zero bytes = EOF).
-                    Err(IdeviceError::Afc(AfcError::EndOfData)) => Ok(Vec::new()),
-                    result => result,
+                    Err(IdeviceError::Afc(AfcError::EndOfData)) => {
+                        (Some(Resource::File(guard)), Ok(Vec::new()))
+                    }
+                    Err(error) => (None, Err(error.into())),
                 }
             },
-        ));
-        match outcome {
-            Ok(Ok(bytes)) => {
-                // A well-behaved device never returns more than requested; refuse an
-                // oversized frame instead of overflowing the caller's fixed buffer.
-                if bytes.len() > buffer_len {
-                    discard_file(slot, file);
-                    return fail(
-                        err,
-                        ErrorKind::Internal,
-                        "AFC returned more data than requested",
-                    );
-                }
-                if slot.put(Resource::File(file)).is_err() {
-                    return fail(err, ErrorKind::Cancelled, "AFC file cancelled");
-                }
-                unsafe {
-                    ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
-                    *out_read = bytes.len();
-                }
-                0
-            }
-            Ok(Err(error)) => {
-                discard_file(slot, file);
-                write_failure(err, error.into())
-            }
-            Err(Interrupt::Cancelled) => {
-                discard_file(slot, file);
-                fail(err, ErrorKind::Cancelled, "AFC file cancelled")
-            }
-            Err(Interrupt::TimedOut) => {
-                discard_file(slot, file);
-                fail(err, ErrorKind::Timeout, "reading AFC file timed out")
-            }
-        }
+        )?;
+        unsafe { copy_read(&bytes, buffer, out_read) };
+        Ok(())
     })
 }
 
@@ -769,17 +654,15 @@ pub extern "C" fn av_afc_file_read(
 /// waiting for an in-flight FFI operation, then calls close after it returns.
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_cancel(session: *mut AvAfcSession) {
-    if let Some(session) = unsafe { session.as_ref() } {
-        if let Some(slot) = session.slot() {
-            close_slot(&slot);
-        }
+    if let Ok(slot) = unsafe { session_slot(session) } {
+        slot.close();
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_file_cancel(file: *mut AvAfcFile) {
     if let Some(file) = unsafe { file.as_ref() } {
-        close_slot(&file.slot);
+        file.slot.close();
     }
 }
 
@@ -787,8 +670,10 @@ pub unsafe extern "C" fn av_afc_file_cancel(file: *mut AvAfcFile) {
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_close(session: *mut AvAfcSession) {
     if !session.is_null() {
-        let session = unsafe { Box::from_raw(session) };
-        session.close();
+        let slot = crate::lock(&unsafe { Box::from_raw(session) }.slot).take();
+        if let Some(slot) = slot {
+            slot.close();
+        }
     }
 }
 
@@ -796,8 +681,7 @@ pub unsafe extern "C" fn av_afc_close(session: *mut AvAfcSession) {
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_file_close(file: *mut AvAfcFile) {
     if !file.is_null() {
-        let file = unsafe { Box::from_raw(file) };
-        close_slot(&file.slot);
+        unsafe { Box::from_raw(file) }.slot.close();
     }
 }
 
@@ -812,7 +696,7 @@ mod tests {
 
     use super::{av_afc_open, physical_path, AvAfcSession, ErrorKind, Slot};
     use crate::ffi::{av_buffer_free, AvBuffer, AvEngine, AvError};
-    use crate::EngineContext;
+    use crate::provider::EngineContext;
 
     #[test]
     fn physical_paths_require_absolute_utf8() {
@@ -867,14 +751,14 @@ mod tests {
     fn closed_slot_rejects_in_flight_resource() {
         let slot = Slot::new(7);
         assert_eq!(slot.take(), Some(7));
-        assert_eq!(slot.close(), None);
+        slot.close();
         assert_eq!(slot.put(7), Err(7));
     }
 
     #[test]
     fn close_collects_idle_resource() {
         let slot = Slot::new(7);
-        assert_eq!(slot.close(), Some(7));
+        slot.close();
         assert_eq!(slot.take(), None);
     }
 }

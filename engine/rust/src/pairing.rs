@@ -6,20 +6,22 @@ use std::time::Duration;
 
 use idevice::pairing_file::PairingFile;
 use idevice::services::lockdown::LockdownClient;
-use idevice::IdeviceService;
+use idevice::services::mobilebackup2::MobileBackup2Client;
+use idevice::{IdeviceError, IdeviceService};
 use plist::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::discover::read_will_encrypt;
 use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{engine_udid, guard_error, AvEngine, AvError};
+use crate::ffi::{block_bounded, engine_udid, guard_error, opt_owned, out_str, AvEngine, AvError};
+use crate::logging::operation_span;
 use crate::mobilebackup2;
-use crate::timeouts;
-use crate::{
-    block, block_bounded, operation_span, opt_owned, out_str, provider_for, write_failure,
-    EngineContext,
+use crate::pairing_store::{PairingIdentity, PairingStoreError};
+use crate::provider::{
+    authed_lockdown, block, provider_for, recv_framed, send_framed, AirvaultProvider, EngineContext,
 };
-use crate::{PairingIdentity, PairingStoreError};
+use crate::timeouts;
 
 const MAX_PASSWORD_DL_FRAME_BYTES: usize = 8 * 1024 * 1024;
 /// ChangePassword waits on the passcode prompt iOS raises: a person at the
@@ -45,34 +47,12 @@ struct PasswordRunResult {
     result: Result<(), EngineFailure>,
 }
 
-fn checked_dl_frame_len(len: usize) -> Result<u32, String> {
-    if len == 0 {
-        return Err("received an empty DeviceLink frame".into());
-    }
-    if len > MAX_PASSWORD_DL_FRAME_BYTES {
-        return Err(format!(
-            "DeviceLink frame exceeds {}-byte limit",
-            MAX_PASSWORD_DL_FRAME_BYTES
-        ));
-    }
-    u32::try_from(len).map_err(|_| "DeviceLink frame length does not fit u32".into())
-}
-
 /// The pinned idevice reader allocates an untrusted u32 frame length directly.
 /// ChangePassword owns its receive loop, so enforce a bound before allocation.
 async fn receive_capped_dl_message(
-    mb2: &mut idevice::services::mobilebackup2::MobileBackup2Client,
+    mb2: &mut MobileBackup2Client,
 ) -> Result<(String, Value), String> {
-    let header = mb2
-        .idevice
-        .read_raw(4)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-    let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    checked_dl_frame_len(len)?;
-    let body = mb2
-        .idevice
-        .read_raw(len)
+    let body = recv_framed(&mut mb2.idevice, MAX_PASSWORD_DL_FRAME_BYTES)
         .await
         .map_err(|e| format!("{e:?}"))?;
     let value: Value = plist::from_bytes(&body).map_err(|e| format!("decode: {e}"))?;
@@ -96,7 +76,7 @@ async fn device_unpair(context: &EngineContext, udid: &str, pf: &PairingFile) {
         lc.unpair(pf.host_id.clone()).await
     };
     match tokio::time::timeout(timeouts::CONNECT, attempt).await {
-        Ok(Ok(())) | Ok(Err(idevice::IdeviceError::InvalidHostID)) => {
+        Ok(Ok(())) | Ok(Err(IdeviceError::InvalidHostID)) => {
             tracing::info!(udid = %udid, "unpair: device forgot this host")
         }
         Ok(Err(e)) => tracing::warn!(
@@ -125,10 +105,6 @@ fn delete_local_pairing(context: &EngineContext, udid: &str) -> Result<(), Strin
     }
 }
 
-fn store_error(error: PairingStoreError) -> idevice::IdeviceError {
-    idevice::IdeviceError::UnexpectedResponse(error.to_string())
-}
-
 /// Unpairs: lockdown `Unpair` so the phone forgets this host, then our host
 /// record goes — independently, whatever the phone answered, so no device can
 /// become unremovable. AV_ERROR_INTERNAL = that removal itself failed.
@@ -138,36 +114,26 @@ pub extern "C" fn av_pairing_unpair(
     udid: *const c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context();
-        block(async {
-            match context.pairing_store.load_pairing(&udid) {
-                Ok(Some(pf)) => device_unpair(context, &udid, &pf).await,
-                Ok(None) => tracing::warn!(udid = %udid, "unpair: no local pairing record"),
-                Err(PairingStoreError::InvalidUdid(_)) => {
-                    out_str(err, "bad udid");
-                    return ErrorKind::InvalidArgument.code();
-                }
-                Err(store) => tracing::warn!(
-                    udid = %udid,
-                    error = %store,
-                    "unpair: pairing record unreadable, cannot revoke on the device"
-                ),
+        match context.pairing_store.load_pairing(&udid) {
+            Ok(Some(pf)) => block(device_unpair(context, &udid, &pf)),
+            Ok(None) => tracing::warn!(udid = %udid, "unpair: no local pairing record"),
+            Err(PairingStoreError::InvalidUdid(_)) => {
+                return Err(EngineFailure::invalid_argument("bad udid"));
             }
-            // Only OUR record is deleted: the muxer's system store is shared
-            // per-device (Finder's record lives there on a dev Mac), and
-            // removing it destroys the host's Wi-Fi visibility of the phone.
-            match delete_local_pairing(context, &udid) {
-                Ok(()) => 0,
-                Err(cleanup) => {
-                    out_str(err, &cleanup);
-                    ErrorKind::Internal.code()
-                }
-            }
-        })
+            Err(store) => tracing::warn!(
+                udid = %udid,
+                error = %store,
+                "unpair: pairing record unreadable, cannot revoke on the device"
+            ),
+        }
+        // Only OUR record is deleted: the muxer's system store is shared
+        // per-device (Finder's record lives there on a dev Mac), and
+        // removing it destroys the host's Wi-Fi visibility of the phone.
+        delete_local_pairing(context, &udid)
+            .map_err(|cleanup| EngineFailure::new(ErrorKind::Internal, cleanup))
     })
 }
 
@@ -177,7 +143,7 @@ pub extern "C" fn av_pairing_unpair(
 async fn pair_trust_inner(
     context: &EngineContext,
     udid: &str,
-) -> Result<&'static str, idevice::IdeviceError> {
+) -> Result<&'static str, EngineFailure> {
     let mut mux = context.mux_addr().connect(0).await?;
     let provider = provider_for(context, udid).await?;
     let mut lc = LockdownClient::connect(&provider).await?;
@@ -185,18 +151,18 @@ async fn pair_trust_inner(
 
     // Idempotent, but only OUR OWN record counts as already-paired — a Finder
     // record on a dev Mac must NOT stand in for an AirVault pairing.
-    let existing = pairing_store.load_pairing(udid).map_err(store_error)?;
+    let existing = pairing_store.load_pairing(udid)?;
     let preferred_identity = if let Some(pf) = existing {
         match lc.start_session(&pf).await {
             Ok(_) => {
-                pairing_store.delete_identity(udid).map_err(store_error)?;
+                pairing_store.delete_identity(udid)?;
                 return Ok(finish_pairing(&mut mux, &mut lc, udid, pf).await);
             }
-            Err(idevice::IdeviceError::InvalidHostID) => {}
-            Err(idevice::IdeviceError::PasswordProtected | idevice::IdeviceError::DeviceLocked) => {
+            Err(IdeviceError::InvalidHostID) => {}
+            Err(IdeviceError::PasswordProtected | IdeviceError::DeviceLocked) => {
                 return Ok("locked")
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
         // The device explicitly rejected this record. Reuse its stable host
         // identity while creating fresh cryptographic material.
@@ -209,7 +175,7 @@ async fn pair_trust_inner(
     // Persist HostID/SystemBUID before the trust request: a pending dialog can
     // span many polls or a daemon restart, and rerolling the identifiers leaves
     // device and host disagreeing about which relationship the user approved.
-    let identity = match pairing_store.load_identity(udid).map_err(store_error)? {
+    let identity = match pairing_store.load_identity(udid)? {
         Some(identity) => identity,
         None => {
             let candidate = match preferred_identity {
@@ -219,9 +185,7 @@ async fn pair_trust_inner(
                     mux.get_buid().await?,
                 ),
             };
-            pairing_store
-                .persist_identity_if_absent(udid, candidate)
-                .map_err(store_error)?
+            pairing_store.persist_identity_if_absent(udid, candidate)?
         }
     };
     match lc
@@ -234,14 +198,15 @@ async fn pair_trust_inner(
     {
         Ok(pf) => {
             if pf.host_id != identity.host_id || pf.system_buid != identity.system_buid {
-                return Err(idevice::IdeviceError::UnexpectedResponse(
-                    "device returned a pairing record with different HostID/SystemBUID".into(),
+                return Err(EngineFailure::new(
+                    ErrorKind::Internal,
+                    "device returned a pairing record with different HostID/SystemBUID",
                 ));
             }
             // Our own store is the source of truth. Wi-Fi setup below also
             // ensures that the muxer has a record it can use for discovery.
-            pairing_store.save_pairing(udid, &pf).map_err(store_error)?;
-            pairing_store.delete_identity(udid).map_err(store_error)?;
+            pairing_store.save_pairing(udid, &pf)?;
+            pairing_store.delete_identity(udid)?;
             if let Err(error) = lc.start_session(&pf).await {
                 tracing::warn!(
                     udid,
@@ -252,10 +217,10 @@ async fn pair_trust_inner(
             }
             Ok(finish_pairing(&mut mux, &mut lc, udid, pf).await)
         }
-        Err(idevice::IdeviceError::PairingDialogResponsePending) => Ok("trust_pending"),
-        Err(idevice::IdeviceError::UserDeniedPairing) => Ok("denied"),
-        Err(idevice::IdeviceError::PasswordProtected) => Ok("locked"),
-        Err(e) => Err(e),
+        Err(IdeviceError::PairingDialogResponsePending) => Ok("trust_pending"),
+        Err(IdeviceError::UserDeniedPairing) => Ok("denied"),
+        Err(IdeviceError::PasswordProtected) => Ok("locked"),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -269,23 +234,17 @@ pub extern "C" fn av_pairing_advance(
     out_status: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
+    guard_error(error, || {
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let job_id = unsafe { opt_owned(job_id) };
         let span = operation_span(&job_id, "pairing", &udid);
-        block_bounded(
-            err,
+        let status = block_bounded(
             PAIRING_ADVANCE_TIMEOUT,
             "pairing timed out",
-            pair_trust_inner(context, &udid).instrument(span),
-            |status| {
-                out_str(out_status, status);
-                0
-            },
-        )
+            pair_trust_inner(engine.context(), &udid).instrument(span),
+        )?;
+        out_str(out_status, status);
+        Ok(())
     })
 }
 
@@ -519,7 +478,7 @@ fn expected_encryption_transition(
 }
 
 async fn send_backup_password_request(
-    mb2: &mut idevice::services::mobilebackup2::MobileBackup2Client,
+    mb2: &mut MobileBackup2Client,
     udid: &str,
     old: Option<&str>,
     new: Option<&str>,
@@ -543,24 +502,12 @@ async fn send_backup_password_request(
     let mut body = Vec::new();
     plist::to_writer_binary(&mut body, &dl)
         .map_err(|error| EngineFailure::new(ErrorKind::Protocol, format!("encode: {error}")))?;
-    let frame_len = checked_dl_frame_len(body.len())
-        .map_err(|error| EngineFailure::new(ErrorKind::Protocol, error))?;
-    let capacity = body.len().checked_add(4).ok_or_else(|| {
-        EngineFailure::new(ErrorKind::Protocol, "DeviceLink frame capacity overflow")
-    })?;
-    let mut framed = Vec::with_capacity(capacity);
-    framed.extend_from_slice(&frame_len.to_be_bytes());
-    framed.extend_from_slice(&body);
-    mb2.idevice
-        .send_raw(&framed)
+    send_framed(&mut mb2.idevice, &body)
         .await
-        .map_err(|error| EngineFailure::from_idevice("send ChangePassword failed", error))?;
-    Ok(())
+        .map_err(|error| EngineFailure::from_idevice("send ChangePassword failed", error))
 }
 
-async fn read_password_device_link(
-    mb2: &mut idevice::services::mobilebackup2::MobileBackup2Client,
-) -> PasswordProtocolOutcome {
+async fn read_password_device_link(mb2: &mut MobileBackup2Client) -> PasswordProtocolOutcome {
     // This one future owns the DeviceLink reader for the full message loop, so
     // no competing select branch can cancel a partially-read frame.
     loop {
@@ -583,16 +530,14 @@ async fn read_password_device_link(
     }
 }
 
-async fn read_backup_encryption(
-    provider: &crate::AirvaultProvider,
-) -> Result<bool, idevice::IdeviceError> {
-    let mut lockdown = crate::authed_lockdown(provider).await?;
-    crate::read_will_encrypt(&mut lockdown).await
+async fn read_backup_encryption(provider: &AirvaultProvider) -> Result<bool, IdeviceError> {
+    let mut lockdown = authed_lockdown(provider).await?;
+    read_will_encrypt(&mut lockdown).await
 }
 
 /// None = the flag could not be read. Failures are expected while the phone is
 /// busy applying the change, so they stay at debug.
-async fn probe_backup_encryption(provider: &crate::AirvaultProvider) -> Option<bool> {
+async fn probe_backup_encryption(provider: &AirvaultProvider) -> Option<bool> {
     match tokio::time::timeout(timeouts::PROBE, read_backup_encryption(provider)).await {
         Ok(Ok(encrypted)) => Some(encrypted),
         Ok(Err(error)) => {
@@ -607,12 +552,11 @@ async fn probe_backup_encryption(provider: &crate::AirvaultProvider) -> Option<b
 }
 
 async fn wait_backup_encryption_transition(
-    provider: &crate::AirvaultProvider,
+    provider: &AirvaultProvider,
     expected: Option<bool>,
 ) -> bool {
     let Some(expected) = expected else {
-        std::future::pending::<()>().await;
-        unreachable!();
+        return std::future::pending().await;
     };
     loop {
         if probe_backup_encryption(provider).await == Some(expected) {
@@ -668,18 +612,17 @@ pub extern "C" fn av_backup_password_change(
     out_encrypted: *mut i32,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
+    guard_error(error, || {
         if !out_encrypted.is_null() {
             unsafe { *out_encrypted = -1 };
         }
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
+        let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context();
         let job_id = unsafe { opt_owned(job_id) };
         if job_id.is_empty() {
-            out_str(err, "backup password change requires a job id");
-            return ErrorKind::InvalidArgument.code();
+            return Err(EngineFailure::invalid_argument(
+                "backup password change requires a job id",
+            ));
         }
         let lease = engine.operations.register_command(job_id.clone());
         let old = unsafe { opt_owned(old_pw) };
@@ -696,10 +639,7 @@ pub extern "C" fn av_backup_password_change(
                         unsafe { *out_encrypted = i32::from(encrypted) };
                     }
                 }
-                match outcome.result {
-                    Ok(()) => 0,
-                    Err(failure) => write_failure(err, failure),
-                }
+                outcome.result
             }
             .instrument(span),
         )
@@ -710,10 +650,7 @@ pub extern "C" fn av_backup_password_change(
 mod password_tests {
     use plist::{Dictionary, Value};
 
-    use super::{
-        checked_dl_frame_len, expected_encryption_transition, password_change_verdict,
-        PasswordProtocolOutcome, MAX_PASSWORD_DL_FRAME_BYTES,
-    };
+    use super::{expected_encryption_transition, password_change_verdict, PasswordProtocolOutcome};
     use crate::engine_error::ErrorKind;
 
     fn process_message(code: i64) -> Value {
@@ -786,12 +723,5 @@ mod password_tests {
         );
         assert_eq!(expected_encryption_transition(None, false, true), None);
         assert_eq!(expected_encryption_transition(Some(true), true, true), None);
-    }
-
-    #[test]
-    fn password_frames_are_bounded_before_allocation() {
-        assert!(checked_dl_frame_len(0).is_err());
-        assert!(checked_dl_frame_len(MAX_PASSWORD_DL_FRAME_BYTES).is_ok());
-        assert!(checked_dl_frame_len(MAX_PASSWORD_DL_FRAME_BYTES + 1).is_err());
     }
 }

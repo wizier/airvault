@@ -7,6 +7,10 @@ use std::time::Duration;
 /// StartService, a service the phone answers without asking anyone.
 pub(crate) const CONNECT: Duration = Duration::from_secs(20);
 
+/// A muxer conversation (connect + query). A usbmuxd socket that accepts and
+/// then hangs must never block the daemon's single refresh worker.
+pub(crate) const MUX: Duration = Duration::from_secs(5);
+
 /// One small read whose failure never blocks the outcome: a lockdown value, a
 /// best-effort gauge. Kept short so a wedged link degrades instead of hanging.
 pub(crate) const PROBE: Duration = Duration::from_secs(5);

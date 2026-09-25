@@ -10,8 +10,8 @@ use tracing::Instrument;
 
 use crate::bounded;
 use crate::engine_error::{EngineFailure, ErrorKind};
+use crate::provider::AirvaultProvider;
 use crate::timeouts;
-use crate::AirvaultProvider;
 
 /// Connect with the pairing record's escrow bag so backupd can read protected
 /// keychain items while the phone is locked.

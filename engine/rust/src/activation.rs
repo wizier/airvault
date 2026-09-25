@@ -4,29 +4,24 @@
 //! crate exposes only the parameterless ones. TODO(upstream): contribute them.
 
 use std::ffi::c_char;
+use std::future::Future;
 
 use idevice::services::mobileactivationd::MobileActivationdClient;
-use idevice::{Idevice, IdeviceError};
+use idevice::IdeviceError;
 use plist::Value;
 use tracing::Instrument;
 
-use crate::engine_error::ErrorKind;
-use crate::ffi::{engine_udid, guard_error, AvEngine, AvError};
-use crate::timeouts;
-use crate::{
-    block_bounded_out, block_bounded_unit, operation_span, opt_owned, out_str, provider_for,
-    AirvaultProvider,
+use crate::engine_error::EngineFailure;
+use crate::ffi::{block_bounded, engine_udid, guard_error, opt_owned, out_str, AvEngine, AvError};
+use crate::logging::operation_span;
+use crate::provider::{
+    authed_lockdown, connect_service, provider_for, recv_framed, send_framed, AirvaultProvider,
 };
+use crate::timeouts;
 
 const ACTIVATION_SERVICE: &str = "com.apple.mobileactivationd";
 // Activation payloads carry certificate chains; cap generously.
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
-
-/// Fresh service connection per request — the daemon requires it (the crate
-/// module and both canonical clients reconnect for every command).
-async fn activation_connect(provider: &AirvaultProvider) -> Result<Idevice, IdeviceError> {
-    crate::connect_service(provider, ACTIVATION_SERVICE).await
-}
 
 /// One framed command: length-prefixed XML plist out, length-prefixed plist
 /// back — the crate's wire shape for this daemon. A reply carrying `Error`
@@ -38,25 +33,15 @@ async fn activation_command(
 ) -> Result<plist::Dictionary, IdeviceError> {
     let mut request = plist::Dictionary::new();
     request.insert("Command".into(), Value::String(command.into()));
-    for (key, value) in extra {
-        request.insert(key, value);
-    }
+    request.extend(extra);
     let mut body = Vec::new();
     plist::to_writer_xml(&mut body, &request)
         .map_err(|e| IdeviceError::UnexpectedResponse(format!("encode {command}: {e}")))?;
-    let mut connection = activation_connect(provider).await?;
-    let mut framed = Vec::with_capacity(4 + body.len());
-    framed.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    framed.extend_from_slice(&body);
-    connection.send_raw(&framed).await?;
-    let header = connection.read_raw(4).await?;
-    let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    if len == 0 || len > MAX_REPLY_BYTES {
-        return Err(IdeviceError::UnexpectedResponse(format!(
-            "mobileactivationd framed an implausible {len}-byte reply"
-        )));
-    }
-    let reply = connection.read_raw(len).await?;
+    // Fresh service connection per request — the daemon requires it (the crate
+    // module and both canonical clients reconnect for every command).
+    let mut connection = connect_service(provider, ACTIVATION_SERVICE).await?;
+    send_framed(&mut connection, &body).await?;
+    let reply = recv_framed(&mut connection, MAX_REPLY_BYTES).await?;
     let reply: Value = plist::from_bytes(&reply)
         .map_err(|e| IdeviceError::UnexpectedResponse(format!("decode {command} reply: {e}")))?;
     let Value::Dictionary(dict) = reply else {
@@ -124,7 +109,7 @@ async fn apply_record(
     }
     activation_command(provider, "HandleActivationInfoWithSessionRequest", extra).await?;
     let ack = async {
-        let mut lc = crate::authed_lockdown(provider).await?;
+        let mut lc = authed_lockdown(provider).await?;
         lc.set_value("ActivationStateAcknowledged", true.into(), None)
             .await
     };
@@ -137,6 +122,28 @@ async fn apply_record(
     Ok(())
 }
 
+/// The preamble every activation export shares: one step against a freshly
+/// looked-up provider, bounded and traced under the caller's job.
+unsafe fn run_step<T, Fut>(
+    engine: *mut AvEngine,
+    udid: *const c_char,
+    job_id: *const c_char,
+    timeout_msg: &str,
+    step: impl FnOnce(AirvaultProvider) -> Fut,
+) -> Result<T, EngineFailure>
+where
+    Fut: Future<Output = Result<T, IdeviceError>>,
+{
+    let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
+    let span = operation_span(&unsafe { opt_owned(job_id) }, "activation", &udid);
+    let context = engine.context();
+    block_bounded(
+        timeouts::DEVICE_WORK,
+        timeout_msg,
+        async move { step(provider_for(context, &udid).await?).await }.instrument(span),
+    )
+}
+
 /// Reads the live activation state ("Unactivated", "Activated", ...).
 #[no_mangle]
 pub extern "C" fn av_activation_state(
@@ -146,24 +153,15 @@ pub extern "C" fn av_activation_state(
     out_state: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
-        let job_id = unsafe { opt_owned(job_id) };
-        let span = operation_span(&job_id, "activation", &udid);
-        block_bounded_out(
-            out_state,
-            err,
-            timeouts::DEVICE_WORK,
-            "activation state read timed out",
-            async move {
-                let provider = provider_for(context, &udid).await?;
+    guard_error(error, || {
+        let timeout = "activation state read timed out";
+        let state = unsafe {
+            run_step(engine, udid, job_id, timeout, |provider| async move {
                 MobileActivationdClient::new(&provider).state().await
-            }
-            .instrument(span),
-        )
+            })
+        }?;
+        out_str(out_state, &state);
+        Ok(())
     })
 }
 
@@ -176,24 +174,15 @@ pub extern "C" fn av_activation_session_info(
     out_xml: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
-        let job_id = unsafe { opt_owned(job_id) };
-        let span = operation_span(&job_id, "activation", &udid);
-        block_bounded_out(
-            out_xml,
-            err,
-            timeouts::DEVICE_WORK,
-            "activation session info timed out",
-            async move {
-                let provider = provider_for(context, &udid).await?;
+    guard_error(error, || {
+        let timeout = "activation session info timed out";
+        let xml = unsafe {
+            run_step(engine, udid, job_id, timeout, |provider| async move {
                 session_info_xml(&provider).await
-            }
-            .instrument(span),
-        )
+            })
+        }?;
+        out_str(out_xml, &xml);
+        Ok(())
     })
 }
 
@@ -208,29 +197,19 @@ pub extern "C" fn av_activation_info(
     out_xml: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
+    guard_error(error, || {
         if handshake.is_null() || handshake_len == 0 {
-            out_str(err, "bad handshake response");
-            return ErrorKind::InvalidArgument.code();
+            return Err(EngineFailure::invalid_argument("bad handshake response"));
         }
         let handshake = unsafe { std::slice::from_raw_parts(handshake, handshake_len) }.to_vec();
-        let job_id = unsafe { opt_owned(job_id) };
-        let span = operation_span(&job_id, "activation", &udid);
-        block_bounded_out(
-            out_xml,
-            err,
-            timeouts::DEVICE_WORK,
-            "activation info timed out",
-            async move {
-                let provider = provider_for(context, &udid).await?;
+        let timeout = "activation info timed out";
+        let xml = unsafe {
+            run_step(engine, udid, job_id, timeout, |provider| async move {
                 activation_info_xml(&provider, handshake).await
-            }
-            .instrument(span),
-        )
+            })
+        }?;
+        out_str(out_xml, &xml);
+        Ok(())
     })
 }
 
@@ -246,39 +225,23 @@ pub extern "C" fn av_activation_finish(
     headers_json: *const c_char,
     error: *mut AvError,
 ) -> i32 {
-    guard_error(error, |err| {
-        let Some((engine, udid)) = (unsafe { engine_udid(engine, udid, err) }) else {
-            return ErrorKind::InvalidArgument.code();
-        };
-        let context = engine.context();
+    guard_error(error, || {
         if record.is_null() || record_len == 0 {
-            out_str(err, "bad activation record");
-            return ErrorKind::InvalidArgument.code();
+            return Err(EngineFailure::invalid_argument("bad activation record"));
         }
         let record = unsafe { std::slice::from_raw_parts(record, record_len) }.to_vec();
         let headers_json = unsafe { opt_owned(headers_json) };
         let headers = if headers_json.is_empty() {
             serde_json::Map::new()
         } else {
-            match serde_json::from_str(&headers_json) {
-                Ok(headers) => headers,
-                Err(_) => {
-                    out_str(err, "bad activation response headers");
-                    return ErrorKind::InvalidArgument.code();
-                }
-            }
+            serde_json::from_str(&headers_json)
+                .map_err(|_| EngineFailure::invalid_argument("bad activation response headers"))?
         };
-        let job_id = unsafe { opt_owned(job_id) };
-        let span = operation_span(&job_id, "activation", &udid);
-        block_bounded_unit(
-            err,
-            timeouts::DEVICE_WORK,
-            "activation record apply timed out",
-            async move {
-                let provider = provider_for(context, &udid).await?;
+        let timeout = "activation record apply timed out";
+        unsafe {
+            run_step(engine, udid, job_id, timeout, |provider| async move {
                 apply_record(&provider, record, headers).await
-            }
-            .instrument(span),
-        )
+            })
+        }
     })
 }

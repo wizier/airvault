@@ -11,7 +11,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::engine_error::EngineFailure;
-use crate::ffi::{AV_STREAM_CLOSED, AV_STREAM_CONTINUE};
+use crate::ffi::{write_failure, AV_STREAM_CLOSED, AV_STREAM_CONTINUE};
+use crate::provider::{block, spawn};
 
 /// How often `next` returns to Go so it can notice cancellation.
 const STREAM_TICK: Duration = Duration::from_secs(1);
@@ -38,7 +39,7 @@ impl<T: Send + 'static> PullStream<T> {
         let cancel = CancellationToken::new();
         let producer = producer(sender.clone());
         let stopped = cancel.clone();
-        let task = crate::spawn(async move {
+        let task = spawn(async move {
             tokio::select! {
                 _ = stopped.cancelled() => {}
                 result = producer => {
@@ -59,7 +60,7 @@ impl<T: Send + 'static> PullStream<T> {
     /// quiet tick, CLOSED once cancelled or finished, or the producer's failure.
     pub(crate) fn next(&self, err: *mut *mut c_char) -> Result<T, i32> {
         let mut receiver = crate::lock(&self.receiver);
-        let pulled = crate::block(async {
+        let pulled = block(async {
             tokio::select! {
                 biased;
                 _ = self.cancel.cancelled() => Ok(None),
@@ -70,7 +71,7 @@ impl<T: Send + 'static> PullStream<T> {
             Err(_) => Err(AV_STREAM_CONTINUE),
             Ok(None) => Err(AV_STREAM_CLOSED),
             Ok(Some(Ok(item))) => Ok(item),
-            Ok(Some(Err(failure))) => Err(crate::write_failure(err, failure)),
+            Ok(Some(Err(failure))) => Err(write_failure(err, failure)),
         }
     }
 
@@ -88,6 +89,6 @@ impl<T: Send + 'static> PullStream<T> {
         cancel.cancel();
         // Unblocks a producer still delivering its failure into a full channel.
         drop(receiver);
-        let _ = crate::block(task);
+        let _ = block(task);
     }
 }

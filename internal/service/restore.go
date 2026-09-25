@@ -69,8 +69,7 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	}
 
 	restoreErr := s.engine.RestoreSnapshot(ctx, engine.RestoreSnapshotRequest{
-		OperationID: engine.OperationID(run.id),
-		TargetID:    engine.DeviceID(udid),
+		TargetID: engine.DeviceID(udid),
 		Snapshot: engine.SnapshotRef{
 			SourceID:   engine.DeviceID(plan.snapshot.SourceUDID),
 			SnapshotID: engine.SnapshotID(plan.snapshot.ID),

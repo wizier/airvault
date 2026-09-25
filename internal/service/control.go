@@ -106,11 +106,7 @@ func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) (
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
 	}
-	engineScreen := engine.WallpaperHome
-	if lockScreen {
-		engineScreen = engine.WallpaperLock
-	}
-	png, err := s.engine.Wallpaper(ctx, engine.DeviceID(udid), engineScreen)
+	png, err := s.engine.Wallpaper(ctx, engine.DeviceID(udid), lockScreen)
 	if err != nil {
 		slog.DebugContext(ctx, "wallpaper: engine", "udid", udid, "error", err)
 		return nil, domain.ErrNotFound

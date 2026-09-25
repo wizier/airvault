@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use idevice::IdeviceError;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Debug)]
@@ -11,12 +12,23 @@ pub(crate) enum Interrupt {
     TimedOut,
 }
 
+/// Await `future` under `limit`, flattening an elapsed limit into
+/// `IdeviceError::Timeout`.
+pub(crate) async fn within<T>(
+    limit: Duration,
+    future: impl Future<Output = Result<T, IdeviceError>>,
+) -> Result<T, IdeviceError> {
+    tokio::time::timeout(limit, future)
+        .await
+        .unwrap_or(Err(IdeviceError::Timeout))
+}
+
 /// Await a teardown step under `limit`, flattening its value to `()` and its
 /// error or elapsed timeout to a `stage`-labelled String.
 pub(crate) async fn step<T>(
     limit: Duration,
     stage: &str,
-    future: impl Future<Output = Result<T, idevice::IdeviceError>>,
+    future: impl Future<Output = Result<T, IdeviceError>>,
 ) -> Result<(), String> {
     match tokio::time::timeout(limit, future).await {
         Ok(Ok(_)) => Ok(()),

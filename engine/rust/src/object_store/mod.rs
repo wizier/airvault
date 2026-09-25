@@ -9,7 +9,7 @@ mod tree;
 pub(crate) use session::ObjectSession;
 
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio_util::sync::CancellationToken;
 
@@ -87,18 +87,18 @@ fn snapshot_manifest_path(root: &Path, source: &str, snapshot_id: &str) -> Resul
 
 /// Pool path of an object without the per-component symlink walk. Publish
 /// validates the shard directory once per session and lstats the target itself.
-fn object_pool_path(root: &Path, source: &str, object_ref: &str) -> Result<PathBuf, String> {
-    validate_source(source)?;
-    validate_object_ref(object_ref)?;
-    let relative = format!(
-        "{source}/objects/{}/{object_ref}",
-        &object_ref[..OBJECT_PREFIX_LEN]
-    );
-    Ok(root.join(relative_components(&relative)?))
+/// Sources and object refs reaching here were validated when they entered the
+/// session (manifest load, session open, or the writer's own hash).
+fn object_pool_path(root: &Path, source: &str, object_ref: &str) -> PathBuf {
+    let shard = &object_ref[..OBJECT_PREFIX_LEN];
+    root.join(source)
+        .join("objects")
+        .join(shard)
+        .join(object_ref)
 }
 
 fn resolve_object_ref(root: &Path, source: &str, object_ref: &str) -> Result<PathBuf, String> {
-    let target = object_pool_path(root, source, object_ref)?;
+    let target = object_pool_path(root, source, object_ref);
     reject_symlinks(root, &target)?;
     Ok(target)
 }
@@ -173,15 +173,6 @@ fn validate_snapshot_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-        out.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
-    }
-    out
-}
-
 /// Lowercase hex only — the Go checksum contract stores object hashes lowercase.
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64
@@ -195,10 +186,6 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
-}
-
-fn system_time(unix: i64) -> Option<SystemTime> {
-    (unix > 0).then(|| UNIX_EPOCH + Duration::from_secs(unix as u64))
 }
 
 fn not_cancelled(cancel: &CancellationToken) -> Result<(), String> {

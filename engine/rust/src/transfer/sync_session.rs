@@ -15,8 +15,8 @@ use idevice::IdeviceService;
 use crate::afc::FileGuard;
 use crate::bounded;
 use crate::engine_error::EngineFailure;
+use crate::provider::AirvaultProvider;
 use crate::timeouts;
-use crate::AirvaultProvider;
 
 const LOCK_SYNC: &str = "/com.apple.itunes.lock_sync";
 /// Another host (Finder, iTunes) may hold the sync lock; wait briefly, then
@@ -47,11 +47,10 @@ impl SyncSession {
 
     /// syncWillStart → open and lock the sync file → syncDidStart.
     async fn start(provider: &AirvaultProvider) -> Result<Self, idevice::IdeviceError> {
-        let mut notifications = start_step(NotificationProxyClient::connect(provider)).await?;
-        if let Err(error) =
-            start_step(notifications.post_notification("com.apple.itunes-mobdev.syncWillStart"))
-                .await
-        {
+        let mut notifications =
+            bounded::within(timeouts::PROBE, NotificationProxyClient::connect(provider)).await?;
+        let will_start = notifications.post_notification("com.apple.itunes-mobdev.syncWillStart");
+        if let Err(error) = bounded::within(timeouts::PROBE, will_start).await {
             let _ = cleanup_step(
                 "syncDidFinish notification after syncWillStart failure",
                 notifications.post_notification("com.apple.itunes-mobdev.syncDidFinish"),
@@ -82,13 +81,10 @@ impl SyncSession {
             notifications,
             file,
         };
-        if let Err(error) = start_step(
-            session
-                .notifications
-                .post_notification("com.apple.itunes-mobdev.syncDidStart"),
-        )
-        .await
-        {
+        let did_start = session
+            .notifications
+            .post_notification("com.apple.itunes-mobdev.syncDidStart");
+        if let Err(error) = bounded::within(timeouts::PROBE, did_start).await {
             if let Err(cleanup_error) = session.finish().await {
                 tracing::warn!(
                     error = %cleanup_error,
@@ -130,14 +126,6 @@ impl SyncSession {
     }
 }
 
-async fn start_step<T>(
-    future: impl Future<Output = Result<T, idevice::IdeviceError>>,
-) -> Result<T, idevice::IdeviceError> {
-    tokio::time::timeout(timeouts::PROBE, future)
-        .await
-        .unwrap_or(Err(idevice::IdeviceError::Timeout))
-}
-
 async fn cleanup_step<T>(
     stage: &str,
     future: impl Future<Output = Result<T, idevice::IdeviceError>>,
@@ -164,11 +152,12 @@ async fn acquire(
     provider: &AirvaultProvider,
     notifications: &mut NotificationProxyClient,
 ) -> Result<FileGuard, idevice::IdeviceError> {
-    let afc = start_step(AfcClient::connect(provider)).await?;
-    let mut file = FileGuard::new(start_step(afc.open_owned(LOCK_SYNC, AfcFopenMode::Rw)).await?);
-    if let Err(error) =
-        start_step(notifications.post_notification("com.apple.itunes-mobdev.syncLockRequest")).await
-    {
+    let afc = bounded::within(timeouts::PROBE, AfcClient::connect(provider)).await?;
+    let file =
+        bounded::within(timeouts::PROBE, afc.open_owned(LOCK_SYNC, AfcFopenMode::Rw)).await?;
+    let mut file = FileGuard::new(file);
+    let lock_request = notifications.post_notification("com.apple.itunes-mobdev.syncLockRequest");
+    if let Err(error) = bounded::within(timeouts::PROBE, lock_request).await {
         return Err(preserve_acquire_error(file, error).await);
     }
 

@@ -8,14 +8,15 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use super::manifest::{EntryKind, ManifestEntry};
 use super::session::Inner;
-use super::{hex_lower, object_pool_path, reject_symlinks, ObjectFailure, OBJECT_PREFIX_LEN};
-use super::{manifest::ManifestEntry, unix_now};
+use super::{object_pool_path, reject_symlinks, unix_now, ObjectFailure, OBJECT_PREFIX_LEN};
 
 pub(super) struct ObjectWriter {
     pub(super) inner: Arc<Inner>,
     pub(super) key: String,
     pub(super) temporary: PathBuf,
+    /// Open until `finalize`, which only runs from Drop.
     pub(super) file: Option<File>,
     pub(super) size: u64,
     pub(super) hasher: Sha256,
@@ -24,12 +25,8 @@ pub(super) struct ObjectWriter {
 
 impl Write for ObjectWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let result = self
-            .file
-            .as_mut()
-            .ok_or_else(|| std::io::Error::other("object writer is closed"))?
-            .write(buffer);
-        match result {
+        let file = self.file.as_mut().expect("object file is open until drop");
+        match file.write(buffer) {
             Ok(0) if !buffer.is_empty() => {
                 let error = std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
@@ -68,19 +65,9 @@ impl Write for ObjectWriter {
         }
     }
 
+    // Writes go straight to the file, which has no userspace buffer to flush.
     fn flush(&mut self) -> std::io::Result<()> {
-        let result = self
-            .file
-            .as_mut()
-            .ok_or_else(|| std::io::Error::other("object writer is closed"))?
-            .flush();
-        if let Err(error) = &result {
-            self.fail(ObjectFailure::from_io(
-                format!("flush object {:?}", self.key),
-                error,
-            ));
-        }
-        result
+        Ok(())
     }
 }
 
@@ -113,6 +100,9 @@ impl ObjectWriter {
     }
 
     fn finalize(&mut self) -> Result<(ManifestEntry, bool), ObjectFailure> {
+        // Close before renaming or removing: network filesystems (SMB) may
+        // refuse either on a file that is still open.
+        drop(self.file.take());
         if self.failed {
             let _ = fs::remove_file(&self.temporary);
             return Err(ObjectFailure::integrity(format!(
@@ -120,17 +110,8 @@ impl ObjectWriter {
                 self.key
             )));
         }
-        let mut file = self
-            .file
-            .take()
-            .ok_or_else(|| ObjectFailure::integrity("object writer was already finalized"))?;
-        file.flush().map_err(|error| {
-            ObjectFailure::from_io(format!("flush object {:?}", self.key), &error)
-        })?;
-        drop(file);
-        let object_ref = hex_lower(&std::mem::take(&mut self.hasher).finalize());
-        let target = object_pool_path(&self.inner.root, &self.inner.source, &object_ref)
-            .map_err(ObjectFailure::integrity)?;
+        let object_ref = format!("{:x}", std::mem::take(&mut self.hasher).finalize());
+        let target = object_pool_path(&self.inner.root, &self.inner.source, &object_ref);
         let shard = object_ref[..OBJECT_PREFIX_LEN].to_string();
         if !self.inner.state().ready_shards.contains(&shard) {
             let parent = target
@@ -183,7 +164,7 @@ impl ObjectWriter {
         };
         Ok((
             ManifestEntry {
-                kind: "file".into(),
+                kind: EntryKind::File,
                 object_ref,
                 size: self.size as i64,
                 modified_unix: unix_now(),
@@ -237,7 +218,7 @@ impl HashVerifyReader {
     }
 
     fn verify(&mut self) -> std::io::Result<()> {
-        let got = hex_lower(&std::mem::take(&mut self.hasher).finalize());
+        let got = format!("{:x}", std::mem::take(&mut self.hasher).finalize());
         if got != self.expected_hex {
             return Err(
                 self.fail_integrity(std::io::ErrorKind::InvalidData, "content hash mismatch")

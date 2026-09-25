@@ -77,7 +77,7 @@ func (s *Service) StartWatch(ctx context.Context) {
 // consumePresence applies snapshots until the stream ends; true means at least
 // one snapshot arrived, so the reopen backoff resets.
 func (s *Service) consumePresence(ctx context.Context, watcher *engine.PresenceWatcher) bool {
-	var muxState engine.MuxState
+	muxUp := false
 	received := false
 	for {
 		state, err := watcher.Next()
@@ -87,16 +87,16 @@ func (s *Service) consumePresence(ctx context.Context, watcher *engine.PresenceW
 			}
 			return received
 		}
-		received = true
 		wantRefresh := s.applySnapshot(ctx, state.Devices)
-		if state.MuxState != muxState {
-			muxState = state.MuxState
-			// Emitted only after the complete presence state has been applied, so
-			// event-triggered readers never observe the old snapshot.
-			up := state.MuxState == engine.MuxAvailable
-			slog.Info("muxer: transition", "up", up)
-			s.bus.Emit(events.MuxerChanged, map[string]any{"up": up})
+		// The first state is always announced. Emitted only after the complete
+		// presence state has been applied, so event-triggered readers never
+		// observe the old snapshot.
+		if !received || state.MuxUp != muxUp {
+			muxUp = state.MuxUp
+			slog.Info("muxer: transition", "up", muxUp)
+			s.bus.Emit(events.MuxerChanged, map[string]any{"up": muxUp})
 		}
+		received = true
 		if wantRefresh {
 			s.requestDeviceRefresh()
 		}
