@@ -23,17 +23,17 @@ func TestOperationCoordinatorSharesReadsAndExcludesWriter(t *testing.T) {
 	if _, err := coordinator.acquire("restore", write); !errors.Is(err, domain.ErrBusy) {
 		t.Fatalf("writer with active readers returned %v, want ErrBusy", err)
 	}
-	first.Release()
-	first.Release()
+	first()
+	first()
 	if _, err := coordinator.acquire("restore", write); !errors.Is(err, domain.ErrBusy) {
 		t.Fatalf("duplicate release dropped another reader: %v", err)
 	}
-	second.Release()
+	second()
 	writer, err := coordinator.acquire("restore", write)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer writer.Release()
+	defer writer()
 	if _, err := coordinator.acquire("browse", read); !errors.Is(err, domain.ErrBusy) {
 		t.Fatalf("reader with active writer returned %v, want ErrBusy", err)
 	}
@@ -45,7 +45,7 @@ func TestOperationCoordinatorAcquiresMultipleResourcesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer busy.Release()
+	defer busy()
 	_, err = coordinator.acquire("backup",
 		resourceRequest{key: "snapshot:a", mode: resourceWrite},
 		resourceRequest{key: "snapshot:b", mode: resourceRead},
@@ -58,7 +58,7 @@ func TestOperationCoordinatorAcquiresMultipleResourcesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed admission leaked its first resource: %v", err)
 	}
-	lease.Release()
+	lease()
 }
 
 // A rejection has to explain itself for the log while still reducing to the
@@ -77,7 +77,7 @@ func TestBusyRejectionExplainsItselfAndStaysErrBusy(t *testing.T) {
 	if !strings.Contains(err.Error(), "maintenance") {
 		t.Fatalf("rejection %q does not name the holding writer", err)
 	}
-	held.Release()
+	held()
 
 	// Browsing and a backup share the device as readers. The browse ends, so
 	// naming the reader that created the state would blame an operation that is
@@ -90,8 +90,8 @@ func TestBusyRejectionExplainsItselfAndStaysErrBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backup.Release()
-	browse.Release()
+	defer backup()
+	browse()
 
 	_, err = coordinator.acquire("restore", deviceWriteResource(udid))
 	if !errors.Is(err, domain.ErrBusy) {

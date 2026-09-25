@@ -23,7 +23,7 @@ func (s *Service) scrub(ctx context.Context, sources []string) {
 		}
 		// Direct acquire: a busy source at startup is expected, so the refusal is
 		// Debug here rather than the Info an operation's rejection gets.
-		lease, err := s.ops.acquire("maintenance", snapshotWriteResource(source))
+		release, err := s.ops.acquire("maintenance", snapshotWriteResource(source))
 		if err != nil {
 			slog.DebugContext(ctx, "maintenance: source busy, left to its owner",
 				"source", source, "error", err)
@@ -32,7 +32,7 @@ func (s *Service) scrub(ctx context.Context, sources []string) {
 		if err := s.collectSource(ctx, source); err != nil {
 			slog.WarnContext(ctx, "maintenance: source deferred", "source", source, "error", err)
 		}
-		lease.Release()
+		release()
 	}
 }
 
@@ -40,7 +40,7 @@ func (s *Service) scrub(ctx context.Context, sources []string) {
 // the corrupt restore points that surface, reclaims dead objects and publishes
 // the size of what remains. The caller holds the source write lease.
 func (s *Service) collectSource(ctx context.Context, source string) error {
-	live, corrupt, err := s.objects.ScanLive(ctx, source)
+	live, corrupt, err := s.objects.ScanLive(ctx, source, nil)
 	if err != nil {
 		return fmt.Errorf("scan source manifests: %w", err)
 	}
@@ -55,11 +55,7 @@ func (s *Service) collectSource(ctx context.Context, source string) error {
 	if err := s.objects.CollectLive(source, live); err != nil {
 		return fmt.Errorf("collect source objects: %w", err)
 	}
-	footprint, err := live.Footprint()
-	if err != nil {
-		return fmt.Errorf("total source footprint: %w", err)
-	}
-	s.cacheSourceFootprint(ctx, source, footprint)
+	s.cacheSourceFootprint(ctx, source, live.Footprint())
 	s.bus.Emit(events.BackupCatalog, map[string]any{"udid": source})
 	return nil
 }

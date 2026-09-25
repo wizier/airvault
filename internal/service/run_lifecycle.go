@@ -121,21 +121,21 @@ func (s *Service) beginCommit(run *runReservation) bool {
 	return true
 }
 
-// completeRun removes the runtime run before publishing its terminal SSE, so
-// no later progress frame can overtake the terminal event.
-func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr error) error {
+// completeRun alone classifies a run: a failure after a user cancel (not
+// shutdown) is cancelled. It removes the runtime run before publishing the
+// terminal SSE, so no later progress frame can overtake the terminal event.
+func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr error) {
 	state := runStateCompleted
 	eventErrorCode := outcome.errorCode
-	userCancelled := run.ctx.Err() != nil && run.app.Err() == nil
 	switch {
 	case runErr == nil:
 		// The engine and publication path returned a verified success. A cancel
 		// arriving just after that point cannot retroactively turn an immutable
 		// published snapshot (or completed restore) into a cancelled run.
-	case userCancelled || errors.Is(runErr, domain.ErrCancelled):
+	case run.ctx.Err() != nil && s.app.Err() == nil:
 		state = runStateCancelled
 		eventErrorCode = "operation_cancelled"
-	case runErr != nil:
+	default:
 		state = runStateFailed
 		if eventErrorCode == "" {
 			eventErrorCode = run.kind + "_failed"
@@ -175,16 +175,12 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 	default:
 		s.bus.Emit(events.BackupFailed, data)
 	}
-	if state == runStateCancelled {
-		return errors.Join(domain.ErrCancelled, runErr)
-	}
-	return runErr
 }
 
 // launchRun supervises one reserved run and returns its id; completion reaches
 // clients through the terminal SSE event, never a join.
 func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, error)) string {
-	go func() {
+	s.wg.Go(func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				slog.ErrorContext(run.ctx, "operation worker panicked", "kind", run.kind,
@@ -198,22 +194,20 @@ func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, err
 							"source", run.udid, "error", err)
 					}
 				}
-				_ = s.completeRun(run, runOutcome{}, fmt.Errorf("%s worker panicked", run.kind))
+				s.completeRun(run, runOutcome{}, fmt.Errorf("%s worker panicked", run.kind))
 			}
-			s.finishRun(run)
+			run.cancel()
+			run.release()
 		}()
 		outcome, err := execute()
-		_ = s.completeRun(run, outcome, err)
-	}()
+		s.completeRun(run, outcome, err)
+	})
 	return run.id
 }
 
 // engineErrorCode maps only the engine's stable typed classification to the
 // HTTP/SSE contract; diagnostic text is never inspected.
 func engineErrorCode(err error) string {
-	if err == nil {
-		return ""
-	}
 	var engineErr *engine.Error
 	if !errors.As(err, &engineErr) {
 		return ""

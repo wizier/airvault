@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/events"
 )
@@ -29,15 +31,18 @@ func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresen
 		udid := string(item.DeviceID)
 		presence[udid] = item.PreferredTransport.String()
 		dev, err := s.store.Device.GetByUDID(ctx, udid)
-		if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
 			wantRefresh = true
 			pairable[udid] = true
-		} else if !dev.Paired {
+		case err != nil:
+			slog.Warn("watch: read device", "udid", udid, "error", err)
+		case !dev.Paired:
 			pairable[udid] = true
 		}
 	}
-	connections := s.live.applyPresence(presence)
-	wantRefresh = s.publishConnections(ctx, connections, pairable) || wantRefresh
+	s.live.applyPresence(presence)
+	wantRefresh = s.publishConnections(ctx, presence, pairable) || wantRefresh
 	return wantRefresh
 }
 

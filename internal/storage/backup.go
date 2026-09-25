@@ -2,12 +2,9 @@ package storage
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -18,9 +15,6 @@ type BackupRepo struct{ s *Store }
 
 // InsertSnapshot admits a manifest-derived projection after it was published.
 func (r *BackupRepo) InsertSnapshot(ctx context.Context, backup model.Backup) error {
-	if err := validateSnapshot(backup); err != nil {
-		return err
-	}
 	_, err := sqlx.NamedExecContext(ctx, r.s.ext(), `
 		INSERT INTO backups
 			(id, source_udid, size_bytes, transferred_bytes,
@@ -157,9 +151,6 @@ func (r *BackupRepo) SummaryBySource(ctx context.Context) (map[string]SourceSumm
 
 // SetSourceFootprint records a measured footprint, whatever the cache held.
 func (r *BackupRepo) SetSourceFootprint(ctx context.Context, source string, diskBytes int64) error {
-	if diskBytes < 0 {
-		return fmt.Errorf("set source footprint: size must be non-negative")
-	}
 	_, err := r.s.ext().ExecContext(ctx, `
 		INSERT INTO backup_sources (source_udid, disk_bytes) VALUES (?, ?)
 		ON CONFLICT(source_udid) DO UPDATE SET disk_bytes = excluded.disk_bytes`,
@@ -171,9 +162,6 @@ func (r *BackupRepo) SetSourceFootprint(ctx context.Context, source string, disk
 // means nothing without a measured base, so an unknown size stays unknown here
 // instead of being seeded from one.
 func (r *BackupRepo) AddSourceFootprint(ctx context.Context, source string, delta int64) error {
-	if delta < 0 {
-		return fmt.Errorf("add source footprint: delta must be non-negative")
-	}
 	_, err := r.s.ext().ExecContext(ctx, `
 		UPDATE backup_sources SET disk_bytes = disk_bytes + ?
 		WHERE source_udid = ?`, delta, source)
@@ -195,16 +183,4 @@ func (r *BackupRepo) DropUnreferencedFootprints(ctx context.Context) error {
 		DELETE FROM backup_sources
 		WHERE source_udid NOT IN (SELECT source_udid FROM backups)`)
 	return wrap(err, "drop unreferenced source footprints")
-}
-
-// validateSnapshot keeps a bad manifest read from becoming a durable row.
-func validateSnapshot(backup model.Backup) error {
-	parsedID, err := uuid.Parse(backup.ID)
-	if err != nil || parsedID.String() != backup.ID ||
-		backup.SizeBytes < 0 ||
-		backup.CreatedAt <= 0 ||
-		(backup.TransferredBytes != nil && *backup.TransferredBytes < 0) {
-		return fmt.Errorf("backup snapshot: invalid projection")
-	}
-	return domain.ValidateSource(backup.SourceUDID)
 }

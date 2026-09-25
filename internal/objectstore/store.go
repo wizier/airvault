@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/wizier/airvault/internal/domain"
@@ -18,10 +17,11 @@ import (
 // Store owns object manifests and immutable file objects below BackupDir,
 // and owns that root exclusively.
 type Store struct {
-	root       string
-	lockFile   *os.File
-	syncFor    func() error       // test seam for failures before the atomic rename
-	syncDirFor func(string) error // test seam for failures after the atomic rename
+	root     string
+	lockFile *os.File
+	// Publication's syncs; tests replace them to fail either side of the rename.
+	syncContents func() error
+	syncDir      func(string) error
 }
 
 const objectPrefixLength = 2
@@ -38,7 +38,9 @@ func New(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{root: absolute, lockFile: lockFile}, nil
+	store := &Store{root: absolute, lockFile: lockFile, syncDir: syncDirectory}
+	store.syncContents = store.Sync
+	return store, nil
 }
 
 // Close releases this process's exclusive ownership of the object-store root.
@@ -93,8 +95,8 @@ func validateSnapshotID(snapshotID string) error {
 // crash after it is completed by FinishPublication during recovery.
 func (s *Store) Publish(staging *StagingView) (*View, error) {
 	source, snapshotID := staging.manifest.SourceUDID, staging.manifest.SnapshotID
-	if err := s.preparePublication(); err != nil {
-		return nil, err
+	if err := s.syncContents(); err != nil {
+		return nil, fmt.Errorf("sync published snapshot contents: %w", err)
 	}
 	stagingPath, err := s.resolveManifest(staging.relative)
 	if err != nil {
@@ -179,8 +181,15 @@ func (s *Store) RemoveSourceTree(source string) error {
 // retrying resumes the same directory commit.
 func (s *Store) FinishPublication(published *View) error {
 	source := published.manifest.SourceUDID
-	if err := s.syncPublishedNamespace(source); err != nil {
+	sourceRoot, err := s.sourcePath(source)
+	if err != nil {
 		return err
+	}
+	if err := s.syncDir(filepath.Join(sourceRoot, "snapshots")); err != nil {
+		return fmt.Errorf("sync published object manifest: %w", err)
+	}
+	if err := s.syncDir(sourceRoot); err != nil {
+		return fmt.Errorf("sync published snapshot directory: %w", err)
 	}
 	if err := s.DiscardStaging(source, published.manifest.SnapshotID); err != nil {
 		return fmt.Errorf("remove published staging directory: %w", err)
@@ -188,39 +197,10 @@ func (s *Store) FinishPublication(published *View) error {
 	return nil
 }
 
-func (s *Store) preparePublication() error {
-	syncStore := s.Sync
-	if s.syncFor != nil {
-		syncStore = s.syncFor
-	}
-	if err := syncStore(); err != nil {
-		return fmt.Errorf("sync published snapshot contents: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) syncPublishedNamespace(source string) error {
-	syncDir := syncDirectory
-	if s.syncDirFor != nil {
-		syncDir = s.syncDirFor
-	}
-	sourceRoot, err := s.sourcePath(source)
-	if err != nil {
-		return err
-	}
-	if err := syncDir(filepath.Join(sourceRoot, "snapshots")); err != nil {
-		return fmt.Errorf("sync published object manifest: %w", err)
-	}
-	if err := syncDir(sourceRoot); err != nil {
-		return fmt.Errorf("sync published snapshot directory: %w", err)
-	}
-	return nil
-}
-
 // DiscardStaging unconditionally drops one snapshot's mutable envelope — a
 // stranded one blocks every later collection for the source.
 func (s *Store) DiscardStaging(source, snapshotID string) error {
-	if err := validateSnapshotIdentity(source, snapshotID); err != nil {
+	if err := validateSnapshotID(snapshotID); err != nil {
 		return err
 	}
 	directory, err := s.sourcePath(source, "staging", snapshotID)
@@ -236,18 +216,12 @@ func (s *Store) DiscardStaging(source, snapshotID string) error {
 // ReconcileStaging resolves every filesystem transaction: published manifests
 // finish their durability boundary, unpublished ones are discarded.
 func (s *Store) ReconcileStaging() error {
-	sources, err := os.ReadDir(s.root)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+	sources, err := s.ListSources()
 	if err != nil {
 		return err
 	}
-	for _, sourceEntry := range sources {
-		if !sourceEntry.IsDir() || domain.ValidateSource(sourceEntry.Name()) != nil {
-			continue
-		}
-		if err := s.ReconcileSourceStaging(sourceEntry.Name()); err != nil {
+	for _, source := range sources {
+		if err := s.ReconcileSourceStaging(source); err != nil {
 			return err
 		}
 	}
@@ -261,10 +235,7 @@ func (s *Store) ReconcileSourceStaging(source string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(stagingRoot)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+	entries, err := readDirIfExists(stagingRoot)
 	if err != nil {
 		return err
 	}
@@ -291,12 +262,9 @@ func (s *Store) ReconcileSourceStaging(source string) error {
 	return syncExistingDirectory(filepath.Dir(stagingRoot))
 }
 
-// ListSources returns every source (UDID) subtree present in the store.
+// ListSources returns every source (UDID) subtree present in the store, sorted.
 func (s *Store) ListSources() ([]string, error) {
-	entries, err := os.ReadDir(s.root)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	entries, err := readDirIfExists(s.root)
 	if err != nil {
 		return nil, err
 	}
@@ -306,8 +274,17 @@ func (s *Store) ListSources() ([]string, error) {
 			sources = append(sources, entry.Name())
 		}
 	}
-	sort.Strings(sources)
 	return sources, nil
+}
+
+// readDirIfExists is os.ReadDir (sorted by name) reading a missing directory as
+// empty.
+func readDirIfExists(directory string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return entries, err
 }
 
 // hiddenEntry reports Finder/SMB metadata droppings (.DS_Store, AppleDouble).
@@ -330,10 +307,7 @@ func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, er
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	entries, err := readDirIfExists(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +330,6 @@ func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, er
 		}
 		manifests = append(manifests, snapshotManifestFile{id: id, size: info.Size()})
 	}
-	sort.Slice(manifests, func(i, j int) bool { return manifests[i].id < manifests[j].id })
 	return manifests, nil
 }
 
@@ -400,7 +373,7 @@ func validateObjectRef(objectRef string) error {
 
 func rejectSymlinkTraversal(root, target string) error {
 	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+	if err != nil || !filepath.IsLocal(relative) {
 		return fmt.Errorf("storage path escaped backup root")
 	}
 	current := root

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/model"
 )
 
@@ -45,7 +46,7 @@ func (s *Service) latestRestorableSnapshot(ctx context.Context, sourceUDID strin
 		snapshot := &snapshots[i]
 		view, inspectErr := s.objects.OpenSnapshot(sourceUDID, snapshot.ID)
 		if inspectErr == nil {
-			if _, inspectErr = inspectBackupView(view); inspectErr == nil {
+			if _, inspectErr = iosbackup.Inspect(view); inspectErr == nil {
 				return snapshot, nil
 			}
 		}

@@ -9,7 +9,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"syscall"
 )
 
@@ -26,11 +25,8 @@ func (s *Store) ensureCollectable(source string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(stagingRoot)
+	entries, err := readDirIfExists(stagingRoot)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
 		return err
 	}
 	for _, entry := range entries {
@@ -45,9 +41,6 @@ func (s *Store) ensureCollectable(source string) error {
 // damaged live ones — a missing or wrong-size object never wedges the pass and is
 // never deleted itself. What survives is the live set, so its Footprint is final.
 func (s *Store) CollectLive(source string, live *LiveSet) error {
-	if live == nil {
-		return errors.New("live object set is nil")
-	}
 	if err := s.ensureCollectable(source); err != nil {
 		return err
 	}
@@ -64,7 +57,7 @@ func (s *Store) CollectLive(source string, live *LiveSet) error {
 			slog.Warn("collect: live object missing", "source", source, "object", objectRef)
 		}
 	}
-	if err := s.sweepObjects(objectsRoot, paths); err != nil {
+	if err := s.sweepObjects(paths); err != nil {
 		return err
 	}
 	if live.empty() {
@@ -74,18 +67,17 @@ func (s *Store) CollectLive(source string, live *LiveSet) error {
 }
 
 // sweepObjects unlinks the garbage, then the prefixes it emptied.
-func (s *Store) sweepObjects(objectsRoot string, paths []string) error {
+func (s *Store) sweepObjects(paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	sort.Strings(paths)
 	for _, filePath := range paths {
 		if err := os.Remove(filePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
 	for _, filePath := range paths {
-		if err := removeEmptyObjectPrefix(filepath.Dir(filePath), objectsRoot); err != nil {
+		if err := removeDirIfEmpty(filepath.Dir(filePath)); err != nil {
 			return err
 		}
 	}
@@ -120,8 +112,8 @@ func (live *LiveSet) empty() bool {
 
 // Footprint is the reachable object payload plus the manifests that reach it.
 // Both totals are already accumulated, so this traverses nothing.
-func (live *LiveSet) Footprint() (int64, error) {
-	return addChecked(live.objectBytes, live.manifestBytes)
+func (live *LiveSet) Footprint() int64 {
+	return live.objectBytes + live.manifestBytes
 }
 
 // addChecked keeps the store's byte arithmetic from wrapping.
@@ -155,10 +147,7 @@ func (s *Store) collectableObjects(
 	objectsRoot string,
 	live *LiveSet,
 ) ([]string, map[string]struct{}, error) {
-	prefixes, err := os.ReadDir(objectsRoot)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, map[string]struct{}{}, nil
-	}
+	prefixes, err := readDirIfExists(objectsRoot)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -206,13 +195,6 @@ func (s *Store) collectableObjects(
 	return garbage, seen, nil
 }
 
-func removeEmptyObjectPrefix(directory, objectsRoot string) error {
-	if directory == objectsRoot {
-		return nil
-	}
-	return removeDirIfEmpty(directory)
-}
-
 // removeDirIfEmpty treats leftover content as success — hidden junk from SMB
 // clients may legitimately keep a directory alive.
 func removeDirIfEmpty(directory string) error {
@@ -230,9 +212,6 @@ func (s *Store) ReclaimableBytes(ctx context.Context, source string, snapshotIDs
 	skip := make(map[string]struct{}, len(snapshotIDs))
 	targetObjects := &LiveSet{}
 	for _, snapshotID := range snapshotIDs {
-		if err := validateSnapshotIdentity(source, snapshotID); err != nil {
-			return 0, err
-		}
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
@@ -260,39 +239,23 @@ func (s *Store) ReclaimableBytes(ctx context.Context, source string, snapshotIDs
 	return total, nil
 }
 
-// LiveObjects collects every object a published manifest still references.
-// Snapshots in skip count as already deleted; nil keeps them all.
+// LiveObjects collects every object a published manifest still references and
+// fails on a corrupt manifest. Snapshots in skip count as already deleted.
 func (s *Store) LiveObjects(ctx context.Context, source string, skip map[string]struct{}) (*LiveSet, error) {
-	manifests, err := s.listSnapshotManifests(source)
+	live, corrupt, err := s.ScanLive(ctx, source, skip)
 	if err != nil {
 		return nil, err
 	}
-	live := &LiveSet{}
-	for _, manifest := range manifests {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if _, skipped := skip[manifest.id]; skipped {
-			continue
-		}
-		view, err := s.OpenSnapshot(source, manifest.id)
-		if err != nil {
-			return nil, fmt.Errorf("load published snapshot %q: %w", manifest.id, err)
-		}
-		if err := addViewObjects(view, live); err != nil {
-			return nil, err
-		}
-		if live.manifestBytes, err = addChecked(live.manifestBytes, manifest.size); err != nil {
-			return nil, err
-		}
+	if len(corrupt) > 0 {
+		return nil, fmt.Errorf("load published snapshot %q: %w", corrupt[0], ErrManifestCorrupt)
 	}
 	return live, nil
 }
 
-// ScanLive builds the live set from every manifest whose seal verifies and
-// returns the ids of provably corrupt ones instead of failing on them, so one
-// bad manifest cannot hide the rest.
-func (s *Store) ScanLive(ctx context.Context, source string) (*LiveSet, []string, error) {
+// ScanLive builds the live set from every manifest not in skip whose seal
+// verifies and returns the ids of provably corrupt ones instead of failing on
+// them, so one bad manifest cannot hide the rest.
+func (s *Store) ScanLive(ctx context.Context, source string, skip map[string]struct{}) (*LiveSet, []string, error) {
 	manifests, err := s.listSnapshotManifests(source)
 	if err != nil {
 		return nil, nil, err
@@ -302,6 +265,9 @@ func (s *Store) ScanLive(ctx context.Context, source string) (*LiveSet, []string
 	for _, manifest := range manifests {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
+		}
+		if _, skipped := skip[manifest.id]; skipped {
+			continue
 		}
 		view, err := s.OpenSnapshot(source, manifest.id)
 		if err != nil {

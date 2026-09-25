@@ -21,16 +21,20 @@ func ParsePath(value string) (Path, error) {
 	if value == "" || value == "/" {
 		return Path{}, nil
 	}
-	if len(value) > maxPathBytes || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") ||
-		strings.ContainsAny(value, "\\\x00") || !utf8.ValidString(value) {
+	if len(value) > maxPathBytes {
 		return Path{}, fmt.Errorf("invalid device path")
 	}
-	for _, component := range strings.Split(value, "/") {
-		if component == "" || component == "." || component == ".." || len(component) > maxComponentBytes {
+	for component := range strings.SplitSeq(value, "/") {
+		if !validComponent(component) {
 			return Path{}, fmt.Errorf("invalid device path component")
 		}
 	}
 	return Path{relative: value}, nil
+}
+
+func validComponent(name string) bool {
+	return name != "" && name != "." && name != ".." && len(name) <= maxComponentBytes &&
+		!strings.ContainsAny(name, "/\\\x00") && utf8.ValidString(name)
 }
 
 func (p Path) String() string { return p.relative }
@@ -44,8 +48,7 @@ func (p Path) Name() string {
 }
 
 func (p Path) Child(name string) (Path, error) {
-	if name == "" || strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." ||
-		len(name) > maxComponentBytes || !utf8.ValidString(name) {
+	if !validComponent(name) {
 		return Path{}, fmt.Errorf("invalid device filename")
 	}
 	if p.relative == "" {

@@ -6,29 +6,28 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"strconv"
-	"strings"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/events"
+	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/model"
 )
 
-func (s *Service) reserveRestore(app context.Context, udid string, opts RestoreOptions) (*runReservation, *restorePlan, error) {
+func (s *Service) reserveRestore(ctx context.Context, udid string, opts RestoreOptions) (*runReservation, *restorePlan, error) {
 	// The snapshot's source is the only thing admission needs; everything else —
 	// the device row, the large object manifest, the keybag — is read once, under
 	// the leases, so no part of the plan can go stale between the two.
-	snapshot, err := s.lookupSnapshot(app, opts.SnapshotID)
+	snapshot, err := s.lookupSnapshot(ctx, opts.SnapshotID)
 	if err != nil {
 		return nil, nil, err
 	}
-	run, err := s.reserveRun(app, runKindRestore, udid,
+	run, err := s.reserveRun(runKindRestore, udid,
 		deviceWriteResource(udid), snapshotReadResource(snapshot.SourceUDID))
 	if err != nil {
 		return nil, nil, err
 	}
-	plan, err := s.buildRestorePlan(app, udid, opts)
+	plan, err := s.buildRestorePlan(ctx, udid, opts)
 	if err != nil {
 		s.discardRun(run)
 		return nil, nil, err
@@ -42,8 +41,10 @@ func (s *Service) reserveRestore(app context.Context, udid string, opts RestoreO
 	return run, plan, nil
 }
 
-func (s *Service) StartRestore(udid string, opts RestoreOptions) (string, error) {
-	run, plan, err := s.reserveRestore(s.app, udid, opts)
+// StartRestore admits a restore on the request's ctx; the run itself lives as
+// long as the app.
+func (s *Service) StartRestore(ctx context.Context, udid string, opts RestoreOptions) (string, error) {
+	run, plan, err := s.reserveRestore(ctx, udid, opts)
 	if err != nil {
 		return "", err
 	}
@@ -53,7 +54,7 @@ func (s *Service) StartRestore(udid string, opts RestoreOptions) (string, error)
 }
 
 func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOutcome, error) {
-	ctx, app, udid := run.ctx, run.app, run.udid
+	ctx, udid := run.ctx, run.udid
 	dev, opts := plan.device, plan.opts
 	slog.DebugContext(ctx, "restore: starting", "device", dev.Name, "udid", udid,
 		"source", plan.snapshot.SourceUDID, "snapshot_id", opts.SnapshotID,
@@ -63,11 +64,8 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	// A phone on Setup Assistant's "Restore from Mac or PC" screen is paired but
 	// unactivated, and mb2's AFC sync lock errors out until it is activated.
 	// Finder activates first; so do we.
-	if code, actErr := s.activateIfNeeded(run, dev.Name); actErr != nil {
-		if ctx.Err() != nil {
-			return runOutcome{}, domain.ErrCancelled
-		}
-		return runOutcome{errorCode: code}, actErr
+	if code, err := s.activateIfNeeded(run, dev.Name); err != nil {
+		return runOutcome{errorCode: code}, err
 	}
 
 	restoreErr := s.engine.RestoreSnapshot(ctx, engine.RestoreSnapshotRequest{
@@ -80,25 +78,15 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 		Password: opts.Password, SystemFiles: opts.SystemFiles, Reboot: opts.Reboot,
 		SettingsFromBackup: opts.SettingsFromBackup, RemoveItemsNotRestored: opts.RemoveItemsNotRestored,
 	}, s.progressSink(run, "", StageRestoring, plan.snapshot.SizeBytes))
+	fctx := context.WithoutCancel(ctx)
+	if restoreErr != nil {
+		slog.DebugContext(fctx, "restore: engine failed", "device", dev.Name, "error", restoreErr)
+		return runOutcome{errorCode: engineErrorCode(restoreErr)}, fmt.Errorf("restore failed: %w", restoreErr)
+	}
 	// A restore the engine reports as done is already applied and irreversible,
 	// so a late cancel can't turn it into a cancellation. beginCommit still
 	// latches the commit phase so CancelRun stops offering a dead cancel.
-	if restoreErr == nil {
-		_ = s.beginCommit(run)
-	}
-	fctx := context.WithoutCancel(ctx)
-	if restoreErr != nil && ctx.Err() != nil && app.Err() != nil {
-		return runOutcome{}, restoreErr
-	}
-	if restoreErr != nil && ctx.Err() != nil {
-		slog.DebugContext(fctx, "restore: cancelled", "device", dev.Name, "udid", udid)
-		return runOutcome{}, domain.ErrCancelled
-	}
-	if restoreErr != nil {
-		errorCode := engineErrorCode(restoreErr)
-		slog.DebugContext(fctx, "restore: engine failed", "device", dev.Name, "error", restoreErr)
-		return runOutcome{errorCode: errorCode}, fmt.Errorf("restore failed: %w", restoreErr)
-	}
+	_ = s.beginCommit(run)
 	slog.DebugContext(fctx, "restore: done", "device", dev.Name)
 	return runOutcome{}, nil
 }
@@ -154,16 +142,16 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 		}
 		return nil, fmt.Errorf("open selected object snapshot: %w", err)
 	}
-	info, err := inspectBackupView(view)
+	info, err := iosbackup.Inspect(view)
 	if err != nil {
 		return nil, &domain.ValidationError{Code: "backup_not_restorable", Message: "the selected backup is not confirmed complete and can't be restored"}
 	}
-	encrypted, snapshotIOS := info.encrypted, info.iosVersion
+	encrypted, snapshotIOS := info.Encrypted, info.IOSVersion
 	if encrypted && opts.Password == "" {
 		return nil, &domain.ValidationError{Code: "backup_password_required", Message: "this backup is encrypted — its password is required"}
 	}
 	if encrypted {
-		valid, verifyErr := verifySnapshotPassword(view, opts.Password)
+		valid, verifyErr := iosbackup.VerifyPassword(view, opts.Password)
 		switch {
 		case verifyErr != nil:
 			slog.WarnContext(ctx, "backup password preflight unavailable; the device enforces",
@@ -175,30 +163,9 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 	}
 	// iOS refuses to apply a backup made on a newer iOS; fail before the run
 	// starts instead of minutes into it.
-	if newerIOSVersion(snapshotIOS, device.IOSVersion) {
+	if iosbackup.NewerVersion(snapshotIOS, device.IOSVersion) {
 		return nil, &domain.ValidationError{Code: "backup_ios_too_new",
 			Message: fmt.Sprintf("this backup was made on iOS %s, newer than the phone's iOS %s — update the phone first", snapshotIOS, device.IOSVersion)}
 	}
 	return &restorePlan{device: device, snapshot: snapshot, opts: opts}, nil
-}
-
-// newerIOSVersion reports a strictly newer than b; unknown versions never block.
-func newerIOSVersion(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	as, bs := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(as) || i < len(bs); i++ {
-		av, bv := 0, 0
-		if i < len(as) {
-			av, _ = strconv.Atoi(as[i])
-		}
-		if i < len(bs) {
-			bv, _ = strconv.Atoi(bs[i])
-		}
-		if av != bv {
-			return av > bv
-		}
-	}
-	return false
 }

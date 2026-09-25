@@ -35,7 +35,7 @@ func (h *Handler) getPairingState(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, pairingStateResponse{
-		MuxerReady: h.svc.MuxerReady(),
+		MuxerReady: h.svc.MuxerReady(c.Request().Context()),
 		USBDevices: usb,
 	})
 }
@@ -50,7 +50,7 @@ func (h *Handler) startPairing(c *echo.Context) error {
 	if udid == "" {
 		return newPublicError(http.StatusBadRequest, "udid_required", nil)
 	}
-	runID, err := h.svc.StartTrustFlow(udid)
+	runID, err := h.svc.StartTrustFlow(c.Request().Context(), udid)
 	if err != nil {
 		return err
 	}

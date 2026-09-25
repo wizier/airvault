@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/wizier/airvault/internal/domain"
@@ -31,7 +32,12 @@ func (s *Service) ListPairableUSB(ctx context.Context) ([]engine.USBDevice, erro
 	out := make([]engine.USBDevice, 0, len(all))
 	for _, d := range all {
 		udid := string(d.DeviceID)
-		if dev, gerr := s.store.Device.GetByUDID(ctx, udid); gerr == nil && dev.Paired {
+		dev, err := s.store.Device.GetByUDID(ctx, udid)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			slog.WarnContext(ctx, "pairing: read device", "udid", udid, "error", err)
+			continue
+		}
+		if err == nil && dev.Paired {
 			continue
 		}
 		out = append(out, d)
@@ -69,8 +75,8 @@ func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.Pairin
 
 // StartTrustFlow reserves the device before returning 202, then supervises one
 // runtime pairing run: contention is refused at admission, not discovered later.
-func (s *Service) StartTrustFlow(udid string) (string, error) {
-	ctx := s.app
+// Admission runs on the request's ctx, the pairing run as long as the app.
+func (s *Service) StartTrustFlow(ctx context.Context, udid string) (string, error) {
 	if domain.ValidateSource(udid) != nil {
 		return "", &domain.ValidationError{Code: "invalid_udid", Message: "a valid udid is required"}
 	}
@@ -78,17 +84,10 @@ func (s *Service) StartTrustFlow(udid string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	found := false
-	for _, device := range usb {
-		if string(device.DeviceID) == udid {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.ContainsFunc(usb, func(device engine.USBDevice) bool { return string(device.DeviceID) == udid }) {
 		return "", domain.ErrDeviceOffline
 	}
-	return s.launchCommand(ctx, runKindPairing, udid,
+	return s.launchCommand(s.app, runKindPairing, udid,
 		func(ctx context.Context, runID string) error { return s.executeTrustFlow(ctx, runID, udid) },
 		deviceWriteResource(udid))
 }

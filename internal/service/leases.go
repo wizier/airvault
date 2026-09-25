@@ -40,19 +40,10 @@ func newOperationManager() *operationManager {
 	return &operationManager{resources: make(map[string]*resourceState)}
 }
 
-// operationLease releases all resources together; Release is idempotent.
-type operationLease struct {
-	release func()
-}
-
-func (l *operationLease) Release() {
-	l.release()
-}
-
 // acquire takes every request or none and never waits, so a caller already
 // holding a lease can take another without risking deadlock. holder names the
-// operation in the rejection a later caller reads.
-func (c *operationManager) acquire(holder string, requests ...resourceRequest) (*operationLease, error) {
+// operation in the rejection a later caller reads. release is idempotent.
+func (c *operationManager) acquire(holder string, requests ...resourceRequest) (release func(), err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, req := range requests {
@@ -80,7 +71,7 @@ func (c *operationManager) acquire(holder string, requests ...resourceRequest) (
 			state.readers++
 		}
 	}
-	return &operationLease{release: sync.OnceFunc(func() { c.release(requests) })}, nil
+	return sync.OnceFunc(func() { c.release(requests) }), nil
 }
 
 // busyWith explains the rejection: a writer is named, readers are only counted

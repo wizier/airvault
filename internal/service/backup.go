@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/model"
@@ -43,16 +42,17 @@ func (s *Service) awaitReachable(ctx context.Context, udid string) bool {
 	}
 }
 
-// StartBackup is the single launch API. HTTP returns the run id immediately.
-func (s *Service) StartBackup(udid string) (string, error) {
+// StartBackup is the single launch API. HTTP returns the run id immediately;
+// admission runs on the request's ctx, the run itself as long as the app.
+func (s *Service) StartBackup(ctx context.Context, udid string) (string, error) {
 	// Both leases key on the request's udid, so admission needs no lookup: the
 	// device row is read once, under the lease that protects it.
-	run, err := s.reserveRun(s.app, runKindBackup, udid,
+	run, err := s.reserveRun(runKindBackup, udid,
 		deviceReadResource(udid), snapshotWriteResource(udid))
 	if err != nil {
 		return "", err
 	}
-	device, err := s.pairedDevice(s.app, udid)
+	device, err := s.pairedDevice(ctx, udid)
 	if err != nil {
 		s.discardRun(run)
 		return "", err
@@ -68,13 +68,10 @@ func (s *Service) StartBackup(udid string) (string, error) {
 }
 
 func (s *Service) executeBackup(run *runReservation, device *model.Device) (runOutcome, error) {
-	ctx, app, udid := run.ctx, run.app, run.udid
+	ctx, udid := run.ctx, run.udid
 	if !s.awaitReachable(ctx, udid) {
-		if ctx.Err() != nil {
-			if app.Err() != nil {
-				return runOutcome{}, ctx.Err()
-			}
-			return runOutcome{}, domain.ErrCancelled
+		if err := ctx.Err(); err != nil {
+			return runOutcome{}, err
 		}
 		return runOutcome{errorCode: "device_never_came_online"},
 			errors.New("backup: the phone didn't come online — make sure it's on Wi-Fi and awake")
@@ -83,15 +80,11 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 
 	snapshot, baseSnapshotID, err := s.prepareSnapshot(ctx, run)
 	if err != nil {
-		if ctx.Err() != nil {
-			return s.finalizeCancelledBackup(ctx, app, device, nil, err)
-		}
-		reason := "couldn't prepare an immutable backup snapshot"
-		return runOutcome{}, fmt.Errorf("%s: %w", reason, err)
+		return runOutcome{}, fmt.Errorf("couldn't prepare an immutable backup snapshot: %w", err)
 	}
-	if ctx.Err() != nil {
+	if err := ctx.Err(); err != nil {
 		// The engine has not started, so no staging data or pooled objects exist.
-		return s.finalizeCancelledBackup(ctx, app, device, nil, ctx.Err())
+		return runOutcome{}, err
 	}
 	slog.DebugContext(ctx, "backup: starting", "device", device.Name, "udid", udid)
 	request := engine.BuildSnapshotRequest{
@@ -107,20 +100,18 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	finalCtx := context.WithoutCancel(ctx)
 
 	if ctx.Err() != nil {
-		return s.finalizeCancelledBackup(ctx, app, device, snapshot, engineErr)
+		return s.discardCancelledSnapshot(ctx, snapshot, engineErr)
 	}
 
 	if engineErr == nil {
 		view, openErr := s.objects.OpenStaging(udid, snapshot.ID)
 		if openErr != nil {
 			engineErr = fmt.Errorf("open completed object snapshot: %w", openErr)
-		} else if ctx.Err() != nil {
-			return s.finalizeCancelledBackup(ctx, app, device, snapshot, ctx.Err())
 		} else if candidate, validationErr := snapshotProjection(&view.View, udid, snapshot.ID); validationErr != nil {
 			engineErr = fmt.Errorf("backup snapshot validation failed: %w", validationErr)
 		} else {
 			if !s.beginCommit(run) {
-				return s.finalizeCancelledBackup(ctx, app, device, snapshot, ctx.Err())
+				return s.discardCancelledSnapshot(ctx, snapshot, nil)
 			}
 			candidate.StartedAt = snapshot.StartedAt
 			projection = candidate
@@ -182,23 +173,11 @@ func incrementalStage(baseSnapshotID string) RunStage {
 	return StageCalculating
 }
 
-func (s *Service) finalizeCancelledBackup(
-	ctx, app context.Context,
-	device *model.Device,
-	snapshot *model.Backup,
-	cause error,
-) (runOutcome, error) {
-	finalCtx := context.WithoutCancel(ctx)
+// discardCancelledSnapshot drops the staging a cancelled run left behind;
+// completeRun classifies the returned error.
+func (s *Service) discardCancelledSnapshot(ctx context.Context, snapshot *model.Backup, cause error) (runOutcome, error) {
 	if cause == nil {
 		cause = ctx.Err()
 	}
-	var snapshotErr error
-	if snapshot != nil {
-		snapshotErr = s.discardSnapshot(finalCtx, snapshot)
-	}
-	if app.Err() != nil {
-		return runOutcome{}, errors.Join(cause, snapshotErr)
-	}
-	slog.DebugContext(finalCtx, "backup: cancelled", "device", device.Name, "udid", device.UDID)
-	return runOutcome{}, errors.Join(domain.ErrCancelled, cause, snapshotErr)
+	return runOutcome{}, errors.Join(cause, s.discardSnapshot(ctx, snapshot))
 }

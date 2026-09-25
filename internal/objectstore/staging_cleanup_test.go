@@ -152,7 +152,7 @@ func TestPublishSyncsContentsBeforeFinalRename(t *testing.T) {
 	stagingPath, finalPath := stageTestManifest(t, store, source, genC, entries)
 
 	injected := errors.New("injected content sync failure")
-	store.syncFor = func() error { return injected }
+	store.syncContents = func() error { return injected }
 	if _, err := store.Publish(openTestStaging(t, store, source, genC)); !errors.Is(err, injected) {
 		t.Fatalf("Publish error = %v, want injected sync failure", err)
 	}
@@ -171,7 +171,7 @@ func TestFinishPublicationCompletesDurabilityAfterFinalRename(t *testing.T) {
 
 	injected := errors.New("injected directory sync failure")
 	snapshotSyncs := 0
-	store.syncDirFor = func(directory string) error {
+	store.syncDir = func(directory string) error {
 		if filepath.Base(directory) == "snapshots" {
 			snapshotSyncs++
 			if snapshotSyncs == 1 {

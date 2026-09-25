@@ -71,7 +71,7 @@ func collectAll(t *testing.T, store *Store, source string) (int64, error) {
 	if err := store.CollectLive(source, live); err != nil {
 		return 0, err
 	}
-	return live.Footprint()
+	return live.Footprint(), nil
 }
 
 func manifestFileBytes(t *testing.T, store *Store, source string, snapshotIDs ...string) int64 {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/wizier/airvault/internal/engine"
@@ -160,49 +161,52 @@ func TestCopyCancellationClosesInFlightFile(t *testing.T) {
 }
 
 func TestManagerLimitsConcurrentSessionsPerDevice(t *testing.T) {
-	var mu sync.Mutex
-	opened := 0
-	opener := fakeOpener{open: func(context.Context) engine.AFCSession {
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		opened := 0
+		opener := fakeOpener{open: func(context.Context) engine.AFCSession {
+			mu.Lock()
+			opened++
+			mu.Unlock()
+			return &fakeSession{}
+		}}
+		manager := New(opener)
+		var sessions []*Session
+		for range maxConcurrentSessions {
+			session, err := manager.Open(context.Background(), "device", Media())
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessions = append(sessions, session)
+		}
+		openedFourth := make(chan *Session, 1)
+		go func() {
+			session, _ := manager.Open(context.Background(), "device", Media())
+			openedFourth <- session
+		}()
+		synctest.Wait()
+		select {
+		case <-openedFourth:
+			t.Fatal("fourth session bypassed the limiter")
+		default:
+		}
+		_ = sessions[0].Close()
+		select {
+		case session := <-openedFourth:
+			if session == nil {
+				t.Fatal("fourth session did not open")
+			}
+			_ = session.Close()
+		case <-time.After(time.Second):
+			t.Fatal("fourth session stayed blocked")
+		}
+		for _, session := range sessions[1:] {
+			_ = session.Close()
+		}
 		mu.Lock()
-		opened++
-		mu.Unlock()
-		return &fakeSession{}
-	}}
-	manager := New(opener)
-	var sessions []*Session
-	for range maxConcurrentSessions {
-		session, err := manager.Open(context.Background(), "device", Media())
-		if err != nil {
-			t.Fatal(err)
+		defer mu.Unlock()
+		if opened != maxConcurrentSessions+1 {
+			t.Fatalf("opened = %d", opened)
 		}
-		sessions = append(sessions, session)
-	}
-	openedFourth := make(chan *Session, 1)
-	go func() {
-		session, _ := manager.Open(context.Background(), "device", Media())
-		openedFourth <- session
-	}()
-	select {
-	case <-openedFourth:
-		t.Fatal("fourth session bypassed the limiter")
-	case <-time.After(30 * time.Millisecond):
-	}
-	_ = sessions[0].Close()
-	select {
-	case session := <-openedFourth:
-		if session == nil {
-			t.Fatal("fourth session did not open")
-		}
-		_ = session.Close()
-	case <-time.After(time.Second):
-		t.Fatal("fourth session stayed blocked")
-	}
-	for _, session := range sessions[1:] {
-		_ = session.Close()
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if opened != maxConcurrentSessions+1 {
-		t.Fatalf("opened = %d", opened)
-	}
+	})
 }

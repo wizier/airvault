@@ -37,10 +37,9 @@ type runReservation struct {
 	id      string
 	kind    string
 	udid    string
-	app     context.Context
 	ctx     context.Context
 	cancel  context.CancelFunc
-	lease   *operationLease
+	release func()
 	started time.Time
 }
 
@@ -48,36 +47,36 @@ type runReservation struct {
 // no rejection loses the holder it names. A site that wants another level, or
 // none, acquires directly and says why.
 func (s *Service) acquireFor(ctx context.Context, kind, udid string,
-	requests ...resourceRequest) (*operationLease, error) {
-	lease, err := s.ops.acquire(kind, requests...)
+	requests ...resourceRequest) (func(), error) {
+	release, err := s.ops.acquire(kind, requests...)
 	if err != nil {
 		return nil, rejectOperation(ctx, kind, udid, err)
 	}
-	return lease, nil
+	return release, nil
 }
 
 // reserveRun acquires the run's resources and nothing else. The run stays
 // invisible until announceRun, so validation may reject the request without
-// ever producing a run, a terminal event or a sticky error.
-func (s *Service) reserveRun(app context.Context, kind, udid string,
-	requests ...resourceRequest) (*runReservation, error) {
+// ever producing a run, a terminal event or a sticky error. The run lives as
+// long as the app, not the request that admitted it.
+func (s *Service) reserveRun(kind, udid string, requests ...resourceRequest) (*runReservation, error) {
 	id := uuid.NewString()
-	runCtx := airlog.WithJobID(app, id)
-	lease, err := s.acquireFor(runCtx, kind, udid, requests...)
+	runCtx := airlog.WithJobID(s.app, id)
+	release, err := s.acquireFor(runCtx, kind, udid, requests...)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(runCtx)
 	return &runReservation{
 		id: id, kind: kind, udid: udid,
-		app: app, ctx: ctx, cancel: cancel, lease: lease, started: time.Now(),
+		ctx: ctx, cancel: cancel, release: release, started: time.Now(),
 	}, nil
 }
 
 // discardRun releases a reservation that was never announced.
 func (s *Service) discardRun(run *runReservation) {
 	run.cancel()
-	run.lease.Release()
+	run.release()
 }
 
 // announceRun publishes the reserved run. From here it is visible to Running(),
@@ -94,7 +93,6 @@ func (s *Service) announceRun(run *runReservation, stage RunStage) error {
 	}}
 	s.runMu.Unlock()
 	logOperationStarted(run.ctx, run.kind, run.udid)
-	s.wg.Add(1)
 	return nil
 }
 
@@ -109,7 +107,7 @@ type commandReservation struct {
 	kind    string
 	udid    string
 	ctx     context.Context
-	lease   *operationLease
+	release func()
 	started time.Time
 }
 
@@ -117,12 +115,12 @@ func (s *Service) reserveCommand(ctx context.Context, kind, udid string,
 	requests ...resourceRequest) (*commandReservation, error) {
 	id := uuid.NewString()
 	ctx = airlog.WithJobID(ctx, id)
-	lease, err := s.acquireFor(ctx, kind, udid, requests...)
+	release, err := s.acquireFor(ctx, kind, udid, requests...)
 	if err != nil {
 		return nil, err
 	}
 	command := &commandReservation{
-		id: id, kind: kind, udid: udid, ctx: ctx, lease: lease, started: time.Now(),
+		id: id, kind: kind, udid: udid, ctx: ctx, release: release, started: time.Now(),
 	}
 	logOperationStarted(ctx, kind, udid)
 	return command, nil
@@ -142,7 +140,7 @@ func (s *Service) finishCommand(command *commandReservation, runErr error) error
 		state = runStateFailed
 	}
 	logOperationFinished(fctx, command.kind, command.udid, state, command.started, runErr)
-	if runErr != nil && command.ctx.Err() != nil {
+	if state == runStateCancelled {
 		return errors.Join(domain.ErrCancelled, runErr)
 	}
 	return runErr
@@ -159,7 +157,7 @@ func (s *Service) runCommand(ctx context.Context, kind, udid string,
 	}
 	s.wg.Add(1)
 	defer s.wg.Done()
-	defer command.lease.Release()
+	defer command.release()
 	return s.finishCommand(command, execute(command.ctx))
 }
 
@@ -178,7 +176,7 @@ func (s *Service) launchCommand(ctx context.Context, kind, udid string,
 					"panic", recovered, "stack", string(debug.Stack()))
 				_ = s.finishCommand(command, fmt.Errorf("%s worker panicked", kind))
 			}
-			command.lease.Release()
+			command.release()
 		}()
 		_ = s.finishCommand(command, execute(command.ctx, command.id))
 	})
@@ -229,12 +227,6 @@ func logOperationFinished(
 	}
 	attrs = append(attrs, extra...)
 	slog.LogAttrs(ctx, level, message, attrs...)
-}
-
-func (s *Service) finishRun(run *runReservation) {
-	run.cancel()
-	run.lease.Release()
-	s.wg.Done()
 }
 
 // hideRun removes the runtime run and records the run's terminal outcome in

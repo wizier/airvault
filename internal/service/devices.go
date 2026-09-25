@@ -173,24 +173,24 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	if _, err := s.store.Device.GetByUDID(ctx, udid); err != nil {
 		return err
 	}
-	lease, err := s.acquireFor(ctx, "unpair", udid, deviceWriteResource(udid))
+	release, err := s.acquireFor(ctx, "unpair", udid, deviceWriteResource(udid))
 	if err != nil {
 		return err
 	}
-	defer lease.Release()
+	defer release()
 	// Taken up front so a busy source fails the request before the phone is
 	// touched; the removal behind the deletion inherits it.
-	var snapshots *operationLease
+	var releaseSnapshots func()
 	handedOff := false
 	if deleteBackups {
-		if snapshots, err = s.acquireFor(ctx, "unpair", udid, snapshotWriteResource(udid)); err != nil {
+		if releaseSnapshots, err = s.acquireFor(ctx, "unpair", udid, snapshotWriteResource(udid)); err != nil {
 			return err
 		}
 		// Every path that does not reach deleteBackupSource gives the lease back
 		// here; a leaked one wedges the source until restart.
 		defer func() {
 			if !handedOff {
-				snapshots.Release()
+				releaseSnapshots()
 			}
 		}()
 	}
@@ -206,7 +206,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	finalCtx := context.WithoutCancel(ctx)
 	if deleteBackups {
 		handedOff = true
-		if err := s.deleteBackupSource(finalCtx, snapshots, udid); err != nil {
+		if err := s.deleteBackupSource(finalCtx, releaseSnapshots, udid); err != nil {
 			return err
 		}
 	}
@@ -234,11 +234,11 @@ func (s *Service) reachableDevice(ctx context.Context, udid string) error {
 // absent because it is rebuilt independently from the on-disk backup catalog.
 // No device lease: nothing here touches the phone, source write covers the rest.
 func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
-	snapshots, err := s.acquireFor(ctx, "backup deletion", udid, snapshotWriteResource(udid))
+	release, err := s.acquireFor(ctx, "backup deletion", udid, snapshotWriteResource(udid))
 	if err != nil {
 		return err
 	}
-	if err := s.deleteBackupSource(ctx, snapshots, udid); err != nil {
+	if err := s.deleteBackupSource(ctx, release, udid); err != nil {
 		return err
 	}
 	// Wiping a source's history resets its status to "never", stale failure included.

@@ -4,14 +4,9 @@ package service
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/wizier/airvault/internal/config"
 	"github.com/wizier/airvault/internal/devicefs"
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
@@ -86,21 +81,10 @@ type Service struct {
 	lockObs *lockObserverMgr
 }
 
-// New builds a Service.
-func New(app context.Context, store *storage.Store, eng *engine.Engine, cfg *config.Config, bus *events.Bus) (*Service, error) {
-	objects, err := objectstore.New(cfg.BackupDir)
-	if err != nil {
-		return nil, err
-	}
-	// Upload staging lives on a mounted volume (multi-GiB .ipa files must not
-	// land in the container's writable layer); leftovers are cleared on start.
-	uploads := filepath.Join(cfg.ConfigDir, "uploads")
-	if err := os.RemoveAll(uploads); err != nil {
-		return nil, fmt.Errorf("clear upload staging: %w", err)
-	}
-	if err := os.MkdirAll(uploads, 0o755); err != nil {
-		return nil, fmt.Errorf("create upload staging: %w", err)
-	}
+// New builds a Service over resources the caller opened and closes. uploads is
+// an existing directory for staging uploaded .ipa files.
+func New(app context.Context, store *storage.Store, eng *engine.Engine,
+	objects *objectstore.Store, uploads string, bus *events.Bus) *Service {
 	s := &Service{
 		app:               app,
 		store:             store,
@@ -117,12 +101,12 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine, cfg *con
 		deviceRefreshKick: make(chan struct{}, 1),
 	}
 	s.lockObs = newLockObserverMgr(app, eng, s.screenLockSignal)
-	return s, nil
+	return s
 }
 
 // MuxerReady reports whether the device muxer is reachable.
-func (s *Service) MuxerReady() bool {
-	state, err := s.engine.ProbeMux(s.app)
+func (s *Service) MuxerReady(ctx context.Context) bool {
+	state, err := s.engine.ProbeMux(ctx)
 	return err == nil && state == engine.MuxAvailable
 }
 
@@ -179,12 +163,6 @@ func (s *Service) Wait(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
-}
-
-// Close releases process-wide resources after all service workers have joined.
-func (s *Service) Close() error {
-	engineErr := s.engine.Close()
-	return errors.Join(engineErr, s.objects.Close())
 }
 
 // CancelRun aborts the exact in-flight backup or restore. Runtime IDs are

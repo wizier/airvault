@@ -15,7 +15,7 @@ type restorePointsResponse struct {
 
 // [POST] /api/devices/:udid/backup
 func (h *Handler) startBackup(c *echo.Context) error {
-	runID, err := h.svc.StartBackup(c.Param("udid"))
+	runID, err := h.svc.StartBackup(c.Request().Context(), c.Param("udid"))
 	if err != nil {
 		return err
 	}

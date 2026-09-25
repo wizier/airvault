@@ -35,10 +35,7 @@ func (s *Service) downloadProgress(downloadID string) func(done, total int64) {
 		if total <= 0 {
 			return
 		}
-		percent := int(float64(done) * 100 / float64(total))
-		if percent > 100 {
-			percent = 100
-		}
+		percent := min(int(float64(done)*100/float64(total)), 100)
 		if percent == lastPercent {
 			return
 		}
@@ -61,7 +58,7 @@ func (s *Service) openDeviceDownload(
 	if err != nil {
 		return nil, err
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, resourceRead, "download_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), "download_failed")
 	if err != nil {
 		return nil, err
 	}

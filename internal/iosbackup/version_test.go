@@ -1,8 +1,8 @@
-package service
+package iosbackup
 
 import "testing"
 
-func TestNewerIOSVersion(t *testing.T) {
+func TestNewerVersion(t *testing.T) {
 	cases := []struct {
 		a, b string
 		want bool
@@ -18,8 +18,8 @@ func TestNewerIOSVersion(t *testing.T) {
 		{"18.5", "", false},
 	}
 	for _, c := range cases {
-		if got := newerIOSVersion(c.a, c.b); got != c.want {
-			t.Errorf("newerIOSVersion(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		if got := NewerVersion(c.a, c.b); got != c.want {
+			t.Errorf("NewerVersion(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
 }

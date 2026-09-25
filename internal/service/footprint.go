@@ -21,11 +21,8 @@ func (s *Service) cacheSourceFootprint(ctx context.Context, source string, diskB
 func (s *Service) recountSourceFootprint(ctx context.Context, source string) *objectstore.LiveSet {
 	live, err := s.objects.LiveObjects(ctx, source, nil)
 	if err == nil {
-		var footprint int64
-		if footprint, err = live.Footprint(); err == nil {
-			s.cacheSourceFootprint(ctx, source, footprint)
-			return live
-		}
+		s.cacheSourceFootprint(ctx, source, live.Footprint())
+		return live
 	}
 	slog.WarnContext(ctx, "snapshot deletion: footprint recount left to collection",
 		"source", source, "error", err)
@@ -36,10 +33,10 @@ func (s *Service) recountSourceFootprint(ctx context.Context, source string) *ob
 // releases the write lease it took ownership of. A failure leaves unreachable
 // bytes for the next startup pass, never a restore point.
 func (s *Service) reclaimInBackground(
-	ctx context.Context, lease *operationLease, source string, reclaim func() error,
+	ctx context.Context, release func(), source string, reclaim func() error,
 ) {
 	s.wg.Go(func() {
-		defer lease.Release()
+		defer release()
 		if err := reclaim(); err != nil {
 			slog.WarnContext(ctx, "deletion: reclaim deferred", "source", source, "error", err)
 		}

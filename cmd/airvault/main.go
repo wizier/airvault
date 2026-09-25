@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/handler"
 	airlog "github.com/wizier/airvault/internal/logging"
+	"github.com/wizier/airvault/internal/objectstore"
 	"github.com/wizier/airvault/internal/service"
 	"github.com/wizier/airvault/internal/storage"
 	"github.com/wizier/airvault/internal/version"
@@ -42,6 +44,10 @@ func main() {
 }
 
 func run() error {
+	// Installed first, so a signal during a long startup still unwinds through
+	// the deferred cleanup instead of killing the process.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	cfg := config.Load()
 
 	level, err := airlog.ParseLevel(cfg.LogLevel)
@@ -85,9 +91,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
-	closeDB := true
+	// Cleared by a shutdown that leaves work running, which the closes would race.
+	closeStorage := true
 	defer func() {
-		if closeDB {
+		if closeStorage {
 			_ = db.Close()
 		}
 	}()
@@ -111,6 +118,27 @@ func run() error {
 		return fmt.Errorf("sub web FS: %w", err)
 	}
 
+	objects, err := objectstore.New(cfg.BackupDir)
+	if err != nil {
+		return fmt.Errorf("opening backup object store: %w", err)
+	}
+	defer func() {
+		if closeStorage {
+			if err := objects.Close(); err != nil {
+				slog.Warn("close backup object store", "error", err)
+			}
+		}
+	}()
+	// Upload staging lives on a mounted volume (multi-GiB .ipa files must not
+	// land in the container's writable layer); leftovers are cleared on start.
+	uploads := filepath.Join(cfg.ConfigDir, "uploads")
+	if err := os.RemoveAll(uploads); err != nil {
+		return fmt.Errorf("clearing upload staging: %w", err)
+	}
+	if err := os.MkdirAll(uploads, 0o755); err != nil {
+		return fmt.Errorf("creating upload staging: %w", err)
+	}
+
 	eng, err := engine.New(engine.Config{
 		BackupRoot:  cfg.BackupDir,
 		PairingRoot: cfg.LockdownDir,
@@ -119,23 +147,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("creating device engine: %w", err)
 	}
-	bus := events.New()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	svc, err := service.New(ctx, store, eng, cfg, bus)
-	if err != nil {
-		_ = eng.Close()
-		return fmt.Errorf("opening backup object store: %w", err)
-	}
-	closeService := true
 	defer func() {
-		if closeService {
-			if err := svc.Close(); err != nil {
-				slog.Warn("close backup object store", "error", err)
-			}
+		if closeStorage {
+			_ = eng.Close()
 		}
 	}()
-	backupSources, err := svc.ReconcileBackupStore(context.Background())
+	bus := events.New()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	svc := service.New(ctx, store, eng, objects, uploads, bus)
+	backupSources, err := svc.ReconcileBackupStore(ctx)
 	if err != nil {
 		return fmt.Errorf("reconciling backup storage: %w", err)
 	}
@@ -145,7 +166,7 @@ func run() error {
 	svc.StartMaintenance(ctx, backupSources)
 	var httpShutdownIncomplete atomic.Bool
 	// Abort in-flight work and join supervised workers before the deferred
-	// db.Close. The bound is a last-resort process-exit escape, not a normal
+	// closes. The bound is a last-resort process-exit escape, not a normal
 	// cancellation path.
 	defer func() {
 		cancel()
@@ -156,21 +177,12 @@ func run() error {
 		if !workersStopped || httpShutdownIncomplete.Load() {
 			// Skip the explicit closes: they would race work still running. Process
 			// teardown closes descriptors; startup reconciliation resolves staging.
-			closeDB = false
-			closeService = false
+			closeStorage = false
 		}
 	}()
 
 	h := handler.New(credentials, svc, bus, staticFS)
 	e := h.Router()
-
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
-
-	// srvCtx is the http.Server BaseContext; cancelling it unblocks in-flight
-	// requests so shutdown doesn't burn GracefulTimeout.
-	srvCtx, srvCancel := context.WithCancel(context.Background())
-	defer srvCancel()
 
 	sc := echo.StartConfig{
 		Address:         cfg.ListenAddr,
@@ -182,37 +194,23 @@ func run() error {
 			slog.Warn("HTTP requests did not stop before shutdown deadline", "error", err)
 		},
 		BeforeServeFunc: func(s *http.Server) error {
-			configureHTTPServer(srvCtx, s)
+			configureHTTPServer(ctx, s)
 			return nil
 		},
 	}
-
-	serverDone := make(chan error, 1)
-	go func() {
-		slog.Info("server starting", "addr", sc.Address)
-		serverDone <- sc.Start(srvCtx, e)
-	}()
-
-	select {
-	case err := <-serverDone:
-		if err == nil {
-			return nil
-		}
+	slog.Info("server starting", "addr", sc.Address)
+	// Start shuts the server down gracefully once a signal cancels ctx. Transfers
+	// share ctx, so they cancel in parallel with HTTP shutdown: waiting out its
+	// deadline risks Docker killing jobs before they persist terminal state.
+	if err := sc.Start(ctx, e); err != nil {
 		return fmt.Errorf("server error: %w", err)
-	case <-done:
 	}
-
 	slog.Info("shutting down...")
-	// Cancel transfers in parallel with HTTP shutdown: waiting out the server's
-	// 10s deadline risks Docker killing jobs before they persist terminal state.
-	cancel()
-	srvCancel()
-	if err := <-serverDone; err != nil {
-		return fmt.Errorf("shutting down server: %w", err)
-	}
 	return nil
 }
 
+// configureHTTPServer makes base every request's parent, so cancelling it
+// unblocks in-flight requests and shutdown doesn't burn GracefulTimeout.
 func configureHTTPServer(base context.Context, server *http.Server) {
 	// Clear Echo's 30s whole-request deadlines: IPA uploads, SSE and device
 	// operations legitimately take minutes. Body limits and native operation

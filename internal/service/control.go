@@ -210,26 +210,22 @@ func appDocumentsRoot(bundleID string) (devicefs.Root, error) {
 // openLeasedSession opens a device filesystem session behind the reachability
 // check and a device lease; release closes the session and frees the lease.
 func (s *Service) openLeasedSession(ctx context.Context, udid string, root devicefs.Root,
-	mode resourceMode, errorCode string) (*devicefs.Session, func(), error) {
+	resource resourceRequest, errorCode string) (*devicefs.Session, func(), error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, nil, err
 	}
-	resource := deviceReadResource(udid)
-	if mode == resourceWrite {
-		resource = deviceWriteResource(udid)
-	}
 	// Direct acquire: browsing answers the user at once and retries on a click,
 	// so a refusal needs no operation event of its own.
-	lease, err := s.ops.acquire("file access", resource)
+	release, err := s.ops.acquire("file access", resource)
 	if err != nil {
 		return nil, nil, err
 	}
 	session, err := s.files.Open(ctx, udid, root)
 	if err != nil {
-		lease.Release()
+		release()
 		return nil, nil, newEngineActionError(errorCode, err)
 	}
-	return session, func() { _ = session.Close(); lease.Release() }, nil
+	return session, func() { _ = session.Close(); release() }, nil
 }
 
 // AppFiles lists one directory of an app's Documents container (house_arrest).
@@ -252,7 +248,7 @@ func (s *Service) deviceFileList(
 	if err != nil {
 		return nil, &domain.ValidationError{Code: "invalid_path", Message: err.Error()}
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, resourceRead, errorCode)
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), errorCode)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +274,7 @@ func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath 
 	if err != nil {
 		return err
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, resourceWrite, "app_file_delete_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceWriteResource(udid), "app_file_delete_failed")
 	if err != nil {
 		return err
 	}
@@ -308,19 +304,15 @@ func (s *Service) Console(ctx context.Context, udid string, onLine func(engine.C
 	}
 	defer stream.Close()
 	for ctx.Err() == nil {
-		line, nextErr := stream.Next()
-		if nextErr != nil {
-			if errors.Is(nextErr, io.EOF) || errors.Is(nextErr, io.ErrClosedPipe) || ctx.Err() != nil {
+		line, err := stream.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || ctx.Err() != nil {
 				return nil
 			}
-			err = nextErr
-			break
+			slog.WarnContext(ctx, "console: engine", "udid", udid, "error", err)
+			return newEngineActionError("console_stream_failed", err)
 		}
 		onLine(line)
-	}
-	if err != nil {
-		slog.WarnContext(ctx, "console: engine", "udid", udid, "error", err)
-		return newEngineActionError("console_stream_failed", err)
 	}
 	return nil
 }

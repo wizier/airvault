@@ -14,7 +14,7 @@ func (h *Handler) startRestore(c *echo.Context) error {
 	if err := echo.BindBody(c, &opts); err != nil {
 		return err
 	}
-	runID, err := h.svc.StartRestore(c.Param("udid"), opts)
+	runID, err := h.svc.StartRestore(c.Request().Context(), c.Param("udid"), opts)
 	if err != nil {
 		return err
 	}

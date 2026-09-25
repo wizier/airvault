@@ -3,8 +3,10 @@ package objectstore
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,7 +18,7 @@ func entriesChecksum(manifest *manifestProjection) (string, error) {
 		return "", errors.New("manifest is nil")
 	}
 	seal := newManifestEntriesSeal()
-	for _, key := range sortedManifestEntryKeys(manifest.Entries) {
+	for _, key := range slices.Sorted(maps.Keys(manifest.Entries)) {
 		seal.add(key, manifest.Entries[key])
 	}
 	return seal.checksum(), nil

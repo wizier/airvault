@@ -1,13 +1,12 @@
 package devicefs
 
 import (
+	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -117,23 +116,24 @@ func (s *Session) take() (engine.AFCSession, func()) {
 	return native, release
 }
 
-func (s *Session) current() (engine.AFCSession, error) {
+// resolve maps path onto this session's open native service.
+func (s *Session) resolve(path Path) (engine.AFCSession, string, error) {
+	physical, err := s.root.physical(path)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.native == nil {
-		return nil, io.ErrClosedPipe
+		return nil, "", io.ErrClosedPipe
 	}
-	return s.native, nil
+	return s.native, physical, nil
 }
 
-// Names returns a validated, deterministic names-only directory projection.
-// Gallery scans use it to avoid one AFC stat request per asset.
-func (s *Session) Names(path Path) ([]string, error) {
-	physical, err := s.root.physical(path)
-	if err != nil {
-		return nil, err
-	}
-	native, err := s.current()
+// Children lists a directory names-only, validated and sorted by name, case
+// folded. Gallery scans use it to avoid one AFC stat request per asset.
+func (s *Session) Children(dir Path) ([]Path, error) {
+	native, physical, err := s.resolve(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -141,80 +141,52 @@ func (s *Session) Names(path Path) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	filtered := names[:0]
+	children := make([]Path, 0, len(names))
 	for _, name := range names {
 		if name == "." || name == ".." {
 			continue
 		}
-		if _, err := path.Child(name); err != nil {
+		child, err := dir.Child(name)
+		if err != nil {
 			return nil, fmt.Errorf("invalid child name %q: %w", name, err)
 		}
-		filtered = append(filtered, name)
+		children = append(children, child)
 	}
-	sort.Slice(filtered, func(i, j int) bool {
-		left, right := filtered[i], filtered[j]
-		return lessFold(left, right)
+	slices.SortFunc(children, func(a, b Path) int {
+		return cmp.Or(
+			cmp.Compare(strings.ToLower(a.Name()), strings.ToLower(b.Name())),
+			cmp.Compare(a.Name(), b.Name()),
+		)
 	})
-	return filtered, nil
-}
-
-func lessFold(left, right string) bool {
-	leftFold, rightFold := strings.ToLower(left), strings.ToLower(right)
-	if leftFold == rightFold {
-		return left < right
-	}
-	return leftFold < rightFold
+	return children, nil
 }
 
 // List returns one whole directory, every entry statted, directories first then
 // case-insensitively by name. Browsed directories are bounded, so one pass
 // beats server-side paging state.
-func (s *Session) List(path Path) ([]Entry, error) {
-	names, err := s.Names(path)
+func (s *Session) List(dir Path) ([]Entry, error) {
+	children, err := s.Children(dir)
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]Entry, 0, len(names))
-	for _, name := range names {
-		child, err := path.Child(name)
-		if err != nil {
-			return nil, err
-		}
+	entries := make([]Entry, 0, len(children))
+	var files []Entry
+	for _, child := range children {
 		info, err := s.Stat(child)
 		if err != nil {
 			return nil, fmt.Errorf("stat %q: %w", child.String(), err)
 		}
-		entries = append(entries, info)
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		di, dj := entries[i].Kind == EntryDirectory, entries[j].Kind == EntryDirectory
-		if di != dj {
-			return di
+		if info.Kind == EntryDirectory {
+			entries = append(entries, info)
+		} else {
+			files = append(files, info)
 		}
-		return lessFold(entries[i].Name, entries[j].Name)
-	})
-	return entries, nil
-}
-
-// ListingRevision is an order-sensitive fingerprint of a string listing, used
-// as the opaque stable-pagination token for both directory and gallery scans.
-func ListingRevision(names []string) string {
-	digest := sha256.New()
-	var length [4]byte
-	for _, name := range names {
-		binary.BigEndian.PutUint32(length[:], uint32(len(name)))
-		_, _ = digest.Write(length[:])
-		_, _ = digest.Write([]byte(name))
 	}
-	return fmt.Sprintf("%x", digest.Sum(nil))
+	return append(entries, files...), nil
 }
 
 func (s *Session) Stat(path Path) (Entry, error) {
-	physical, err := s.root.physical(path)
-	if err != nil {
-		return Entry{}, err
-	}
-	native, err := s.current()
+	native, physical, err := s.resolve(path)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -242,11 +214,7 @@ func (s *Session) Remove(path Path) error {
 	if path.String() == "" {
 		return fmt.Errorf("cannot remove the device root")
 	}
-	physical, err := s.root.physical(path)
-	if err != nil {
-		return err
-	}
-	native, err := s.current()
+	native, physical, err := s.resolve(path)
 	if err != nil {
 		return err
 	}
@@ -259,11 +227,7 @@ func (s *Session) ReadFile(path Path) ([]byte, error) {
 	if path.String() == "" {
 		return nil, fmt.Errorf("cannot read the device root as a file")
 	}
-	physical, err := s.root.physical(path)
-	if err != nil {
-		return nil, err
-	}
-	native, err := s.current()
+	native, physical, err := s.resolve(path)
 	if err != nil {
 		return nil, err
 	}

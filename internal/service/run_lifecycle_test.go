@@ -14,7 +14,7 @@ import (
 // newTestService builds a Service with only the fields the run-lifecycle phase
 // machine touches (the event bus and the live-run map).
 func newTestService() *Service {
-	return &Service{bus: events.New(), runs: map[string]*activeRun{},
+	return &Service{app: context.Background(), bus: events.New(), runs: map[string]*activeRun{},
 		lastRunError: map[runIdentity]string{}}
 }
 
@@ -23,7 +23,7 @@ func newTestService() *Service {
 func registerRun(s *Service) *runReservation {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &runReservation{id: "run-1", udid: "udid-1", kind: runKindBackup,
-		app: context.Background(), ctx: ctx, cancel: cancel}
+		ctx: ctx, cancel: cancel}
 	s.runs[run.udid] = &activeRun{
 		run:      run,
 		progress: RunProgress{RunID: run.id, UDID: run.udid, Stage: StageBackingUp},
@@ -36,10 +36,7 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 	_, eventsCh, _, _ := s.bus.Subscribe(0)
 	run := registerRun(s)
 
-	err := errors.New("unclassified native failure")
-	if got := s.completeRun(run, runOutcome{}, err); !errors.Is(got, err) {
-		t.Fatalf("completeRun() = %v, want %v", got, err)
-	}
+	s.completeRun(run, runOutcome{}, errors.New("unclassified native failure"))
 	event := <-eventsCh
 	if event.Type != events.BackupFailed {
 		t.Fatalf("event type = %q, want %q", event.Type, events.BackupFailed)
@@ -61,16 +58,14 @@ func TestLastRunErrorLifecycle(t *testing.T) {
 	s.lastRunError[runIdentity{"udid-1", runKindRestore}] = "restore_failed"
 
 	run := registerRun(s)
-	_ = s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("native failure"))
+	s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("native failure"))
 	want := map[string]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
 	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after failure lastRunErrors = %v, want %v", got, want)
 	}
 
 	run = registerRun(s)
-	if err := s.completeRun(run, runOutcome{}, nil); err != nil {
-		t.Fatalf("completeRun(success) = %v", err)
-	}
+	s.completeRun(run, runOutcome{}, nil)
 	want = map[string]string{runKindRestore: "restore_failed"}
 	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after success lastRunErrors = %v, want %v", got, want)

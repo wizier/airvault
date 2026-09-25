@@ -591,7 +591,7 @@ func TestStartupMaintenanceSkipsBusySourceAndCollectsOnNextPass(t *testing.T) {
 
 	// A busy source is left to its owner: the one-shot pass skips it without
 	// touching the pool and does not retry.
-	lease, err := svc.ops.acquire("test", snapshotWriteResource(source))
+	release, err := svc.ops.acquire("test", snapshotWriteResource(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestStartupMaintenanceSkipsBusySourceAndCollectsOnNextPass(t *testing.T) {
 	if _, err := os.Stat(pooled); err != nil {
 		t.Fatalf("busy source was swept instead of being deferred: %v", err)
 	}
-	lease.Release()
+	release()
 
 	// The next startup pass finds the source free and reclaims the orphan the
 	// agreeing catalog/manifest IDs cannot rule out.

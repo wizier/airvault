@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -73,12 +75,17 @@ func (g *galleryIndex) remove(udid string) {
 var imageExts = map[string]bool{".heic": true, ".heif": true, ".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".dng": true}
 var videoExts = map[string]bool{".mov": true, ".mp4": true, ".m4v": true}
 
-func assetPaths(assets []GalleryAsset) []string {
-	paths := make([]string, len(assets))
-	for i, asset := range assets {
-		paths[i] = asset.Path
+// galleryRevision is an order-sensitive fingerprint of the asset paths, the
+// opaque token that keeps pagination on one scan.
+func galleryRevision(assets []GalleryAsset) string {
+	digest := sha256.New()
+	var length [4]byte
+	for _, asset := range assets {
+		binary.BigEndian.PutUint32(length[:], uint32(len(asset.Path)))
+		_, _ = digest.Write(length[:])
+		_, _ = digest.Write([]byte(asset.Path))
 	}
-	return paths
+	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
 // GalleryPage returns a stable page from one indexed camera-roll revision.
@@ -93,16 +100,9 @@ func (s *Service) GalleryPage(ctx context.Context, udid string, offset, limit in
 	if err != nil {
 		return nil, 0, "", err
 	}
-	assets := entry.assets
-	total := len(assets)
-	if offset > total {
-		offset = total
-	}
-	end := total
-	if limit < total-offset {
-		end = offset + limit
-	}
-	return assets[offset:end], total, entry.revision, nil
+	total := len(entry.assets)
+	offset = min(offset, total)
+	return entry.assets[offset:min(offset+limit, total)], total, entry.revision, nil
 }
 
 func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (galleryEntry, error) {
@@ -121,7 +121,7 @@ func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (gal
 	if err != nil {
 		return galleryEntry{}, newEngineActionError("gallery_failed", err)
 	}
-	entry := galleryEntry{assets: assets, at: time.Now(), revision: devicefs.ListingRevision(assetPaths(assets))}
+	entry := galleryEntry{assets: assets, at: time.Now(), revision: galleryRevision(assets)}
 	s.gallery.put(udid, entry)
 	return entry, nil
 }
@@ -130,56 +130,50 @@ func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (gal
 // albums, then lists every album names-only (never one stat per asset). Results
 // are grouped in deterministic descending path order.
 func (s *Service) enumerateCameraRoll(ctx context.Context, udid string) ([]GalleryAsset, error) {
-	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), resourceRead, "gallery_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "gallery_failed")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	dcim, err := devicefs.ParsePath("DCIM")
-	if err != nil {
-		return nil, err
-	}
-	albumNames, err := session.Names(dcim)
+	dcim, _ := devicefs.ParsePath("DCIM") // a valid constant
+	albums, err := session.Children(dcim)
 	if err != nil {
 		return nil, err
 	}
 	var assets []GalleryAsset
-	for _, album := range albumNames {
-		albumPath, pathErr := dcim.Child(album)
-		if pathErr != nil {
-			return nil, fmt.Errorf("gallery album path %q: %w", album, pathErr)
-		}
-		entry, statErr := session.Stat(albumPath)
+	for _, album := range albums {
+		entry, statErr := session.Stat(album)
 		if statErr != nil {
 			// One odd DCIM child must not sink the whole scan; skip and go on.
-			slog.WarnContext(ctx, "gallery: skipping album", "udid", udid, "album", album, "error", statErr)
+			slog.WarnContext(ctx, "gallery: skipping album", "udid", udid, "album", album.Name(), "error", statErr)
 			continue
 		}
 		if entry.Kind != devicefs.EntryDirectory {
 			continue
 		}
-		names, err := session.Names(albumPath)
+		files, err := session.Children(album)
 		if err != nil {
-			slog.WarnContext(ctx, "gallery: skipping album", "udid", udid, "album", album, "error", err)
+			slog.WarnContext(ctx, "gallery: skipping album", "udid", udid, "album", album.Name(), "error", err)
 			continue
 		}
-		assets = append(assets, groupAlbum(album, names)...)
+		assets = append(assets, groupAlbum(files)...)
 	}
 	// AFC does not expose capture dates without one stat per asset. Path order is
 	// deterministic and usually close to capture order, but is not labelled as
 	// chronological in the API.
-	sort.Slice(assets, func(i, j int) bool { return assets[i].Path > assets[j].Path })
+	slices.SortFunc(assets, func(a, b GalleryAsset) int { return strings.Compare(b.Path, a.Path) })
 	return assets, nil
 }
 
-// groupAlbum turns a DCIM album's raw filenames into assets: an image with a
+// groupAlbum turns a DCIM album's files into assets: an image with a
 // same-stem .MOV is a Live Photo; a lone .MOV is a video; .AAE edit sidecars
 // and everything else are dropped.
-func groupAlbum(album string, names []string) []GalleryAsset {
-	type item struct{ image, video string }
+func groupAlbum(files []devicefs.Path) []GalleryAsset {
+	type item struct{ image, video devicefs.Path }
 	byStem := map[string]*item{}
 	order := []string{}
-	for _, name := range names {
+	for _, file := range files {
+		name := file.Name()
 		ext := strings.ToLower(path.Ext(name))
 		if !imageExts[ext] && !videoExts[ext] {
 			continue
@@ -192,26 +186,26 @@ func groupAlbum(album string, names []string) []GalleryAsset {
 			order = append(order, stem)
 		}
 		if imageExts[ext] {
-			it.image = name
+			it.image = file
 		} else {
-			it.video = name
+			it.video = file
 		}
 	}
 	out := make([]GalleryAsset, 0, len(order))
 	for _, stem := range order {
 		it := byStem[stem]
 		switch {
-		case it.image != "":
+		case it.image.String() != "":
 			out = append(out, GalleryAsset{
-				Path: "DCIM/" + album + "/" + it.image,
-				Name: it.image,
+				Path: it.image.String(),
+				Name: it.image.Name(),
 				Kind: "photo",
-				Live: it.video != "",
+				Live: it.video.String() != "",
 			})
-		case it.video != "":
+		case it.video.String() != "":
 			out = append(out, GalleryAsset{
-				Path: "DCIM/" + album + "/" + it.video,
-				Name: it.video,
+				Path: it.video.String(),
+				Name: it.video.Name(),
 				Kind: "video",
 			})
 		}
@@ -226,7 +220,7 @@ func (s *Service) MediaStat(ctx context.Context, udid, rawPath string) (devicefs
 	if err != nil {
 		return devicefs.Entry{}, err
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), resourceRead, "stat_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "stat_failed")
 	if err != nil {
 		return devicefs.Entry{}, err
 	}
@@ -253,19 +247,15 @@ func readThumbInSession(session *devicefs.Session, dcimPath string) ([]byte, err
 	if err != nil {
 		return nil, &domain.ValidationError{Code: "invalid_thumbnail_path", Message: "invalid thumbnail path"}
 	}
-	names, err := session.Names(thumbDir)
+	thumbs, err := session.Children(thumbDir)
 	if err != nil {
 		return nil, err
 	}
-	code := pickThumb(names)
-	if code == "" {
+	thumb := pickThumb(thumbs)
+	if thumb.String() == "" {
 		return nil, domain.ErrNotFound
 	}
-	thumbPath, err := thumbDir.Child(code)
-	if err != nil {
-		return nil, domain.ErrNotFound
-	}
-	return session.ReadFile(thumbPath)
+	return session.ReadFile(thumb)
 }
 
 // sessionDead reports a transport-level failure: the AFC session died (e.g. a
@@ -281,7 +271,7 @@ func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []strin
 		return map[string][]byte{}, nil
 	}
 	return thumbBatch(ctx, func() (*devicefs.Session, func(), error) {
-		return s.openLeasedSession(ctx, udid, devicefs.Media(), resourceRead, "thumb_failed")
+		return s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "thumb_failed")
 	}, dcimPaths)
 }
 
@@ -328,11 +318,11 @@ func thumbBatch(ctx context.Context, open func() (*devicefs.Session, func(), err
 }
 
 // pickThumb chooses the largest thumbnail JPEG (highest size-code) in a V2 dir.
-func pickThumb(names []string) string {
-	best := ""
-	for _, n := range names {
-		if strings.HasSuffix(strings.ToLower(n), ".jpg") && n > best {
-			best = n
+func pickThumb(thumbs []devicefs.Path) devicefs.Path {
+	var best devicefs.Path
+	for _, thumb := range thumbs {
+		if strings.HasSuffix(strings.ToLower(thumb.Name()), ".jpg") && thumb.Name() > best.Name() {
+			best = thumb
 		}
 	}
 	return best

@@ -10,6 +10,7 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path"
@@ -79,26 +80,17 @@ func (v *View) SizeBytes() int64 { return v.manifest.SizeBytes }
 // contents were finalized. It rebuilds created_at after SQLite is lost.
 func (v *View) CreatedUnix() int64 { return v.manifest.CreatedUnix }
 
-func (v *View) entry(logicalPath string) (manifestEntry, bool) {
-	logicalPath, err := cleanLogicalPath(logicalPath)
-	if err != nil || logicalPath == "" {
-		return manifestEntry{}, false
-	}
-	entry, ok := v.manifest.Entries[logicalPath]
-	return entry, ok
-}
-
 // FileSize returns the size of a regular file in the snapshot.
 func (v *View) FileSize(logicalPath string) (int64, bool) {
-	entry, ok := v.entry(logicalPath)
-	if !ok || entry.Kind != entryFile || entry.Size < 0 {
+	entry, ok := v.manifest.Entries[logicalPath]
+	if !ok || entry.Kind != entryFile {
 		return 0, false
 	}
 	return entry.Size, true
 }
 
 func (v *View) Open(logicalPath string) (*os.File, error) {
-	entry, ok := v.entry(logicalPath)
+	entry, ok := v.manifest.Entries[logicalPath]
 	if !ok || entry.Kind != entryFile {
 		return nil, fs.ErrNotExist
 	}
@@ -209,7 +201,7 @@ func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
 }
 
 func validateManifestHeader(relative string, manifest *manifestProjection) error {
-	if manifest == nil || manifest.Version != formatVersion {
+	if manifest.Version != formatVersion {
 		return fmt.Errorf("manifest %q uses an unsupported format", relative)
 	}
 	if err := domain.ValidateSource(manifest.SourceUDID); err != nil {
@@ -235,16 +227,11 @@ type manifestEntryFacts struct {
 // inspectManifestEntries validates the entry graph, totals file sizes and builds
 // the seal in one sorted pass.
 func inspectManifestEntries(relative string, manifest *manifestProjection) (manifestEntryFacts, error) {
-	if manifest == nil {
-		return manifestEntryFacts{}, errors.New("manifest is nil")
-	}
-	keys := sortedManifestEntryKeys(manifest.Entries)
 	seal := newManifestEntriesSeal()
 	var snapshotSize int64
-	for _, logicalPath := range keys {
+	for _, logicalPath := range slices.Sorted(maps.Keys(manifest.Entries)) {
 		entry := manifest.Entries[logicalPath]
-		clean, err := cleanLogicalPath(logicalPath)
-		if err != nil || clean == "" || clean != logicalPath {
+		if !validLogicalPath(logicalPath) {
 			return manifestEntryFacts{}, fmt.Errorf("manifest %q has invalid logical path %q", relative, logicalPath)
 		}
 		if strings.Count(logicalPath, "/")+1 > maxLogicalDepth {
@@ -302,15 +289,6 @@ func validLowerHex(value string, length int) bool {
 	return true
 }
 
-func sortedManifestEntryKeys(entries map[string]manifestEntry) []string {
-	keys := make([]string, 0, len(entries))
-	for key := range entries {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
-}
-
 // manifestEntriesSeal is SHA-256 over a length-prefixed, little-endian encoding
 // of the entries in sorted-key order, which Rust's seal_entry reproduces
 // byte-for-byte. Changing the layout makes every existing store unreadable.
@@ -346,16 +324,9 @@ func (seal *manifestEntriesSeal) checksum() string {
 	return fmt.Sprintf("%x", seal.digest.Sum(nil))
 }
 
-func cleanLogicalPath(value string) (string, error) {
-	if value == "" {
-		return "", nil
-	}
-	if strings.ContainsAny(value, "\\\x00\u2028\u2029") || strings.HasPrefix(value, "/") || len(value) > 4096 {
-		return "", fmt.Errorf("invalid logical path %q", value)
-	}
-	clean := path.Clean(value)
-	if clean != value || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", fmt.Errorf("invalid logical path %q", value)
-	}
-	return clean, nil
+// validLogicalPath accepts only a non-empty, already-clean relative path.
+func validLogicalPath(value string) bool {
+	return value != "" && len(value) <= 4096 && !strings.HasPrefix(value, "/") &&
+		!strings.ContainsAny(value, "\\\x00\u2028\u2029") &&
+		path.Clean(value) == value && value != "." && value != ".." && !strings.HasPrefix(value, "../")
 }

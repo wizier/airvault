@@ -3,19 +3,24 @@ package service
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 // A backup launched for an unlisted phone waits for its next presence signal.
 func TestAwaitReachableWakesOnPresence(t *testing.T) {
-	s := &Service{live: newDeviceRuntimeStore()}
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		s.live.publish(s.live.applyPresence(map[string]string{"phone": "wifi"}))
-	}()
-	if !s.awaitReachable(context.Background(), "phone") {
-		t.Fatal("awaitReachable missed the phone coming online")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := &Service{live: newDeviceRuntimeStore()}
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			presence := map[string]string{"phone": "wifi"}
+			s.live.applyPresence(presence)
+			s.live.publish(presence)
+		}()
+		if !s.awaitReachable(context.Background(), "phone") {
+			t.Fatal("awaitReachable missed the phone coming online")
+		}
+	})
 }
 
 func TestAwaitReachableCancelled(t *testing.T) {

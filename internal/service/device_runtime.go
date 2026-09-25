@@ -74,9 +74,9 @@ func (s *deviceRuntimeStore) snapshot() map[string]deviceRuntime {
 	return out
 }
 
-// applyPresence replaces raw muxer evidence and returns the resulting
-// connection projection. Pairing/registration policy is intentionally absent.
-func (s *deviceRuntimeStore) applyPresence(presence map[string]string) map[string]string {
+// applyPresence replaces raw muxer evidence. Pairing/registration policy is
+// intentionally absent.
+func (s *deviceRuntimeStore) applyPresence(presence map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for udid := range s.devices {
@@ -92,7 +92,6 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) map[strin
 		}
 		r.presence = transport
 	}
-	return s.connectionsLocked()
 }
 
 func (s *deviceRuntimeStore) applyScreenLock(
@@ -139,14 +138,6 @@ func (s *deviceRuntimeStore) applyActivation(udid, state string) bool {
 	return true
 }
 
-func (s *deviceRuntimeStore) connectionsLocked() map[string]string {
-	out := make(map[string]string, len(s.devices))
-	for udid, r := range s.devices {
-		out[udid] = r.presence
-	}
-	return out
-}
-
 // publish commits a validated projection and returns pure transitions. The
 // Service layer decides which logs, database writes and domain events follow.
 func (s *deviceRuntimeStore) publish(next map[string]string) []connectionTransition {
@@ -175,10 +166,7 @@ func (s *deviceRuntimeStore) publish(next map[string]string) []connectionTransit
 		}
 	}
 	slices.SortFunc(transitions, func(a, b connectionTransition) int {
-		if byDevice := cmp.Compare(a.udid, b.udid); byDevice != 0 {
-			return byDevice
-		}
-		return cmp.Compare(a.to, b.to)
+		return cmp.Or(cmp.Compare(a.udid, b.udid), cmp.Compare(a.to, b.to))
 	})
 	return transitions
 }

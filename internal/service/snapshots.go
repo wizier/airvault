@@ -10,9 +10,9 @@ import (
 
 // deleteBackupSource unpublishes every restore point of one device at once and
 // hands the lease to the background removal that reclaims the tree.
-func (s *Service) deleteBackupSource(ctx context.Context, lease *operationLease, source string) error {
+func (s *Service) deleteBackupSource(ctx context.Context, release func(), source string) error {
 	finalCtx := context.WithoutCancel(ctx)
-	defer s.reclaimInBackground(finalCtx, lease, source, func() error {
+	defer s.reclaimInBackground(finalCtx, release, source, func() error {
 		return s.objects.RemoveSourceTree(source)
 	})
 	if err := s.objects.UnpublishSource(source); err != nil {
@@ -25,15 +25,21 @@ func (s *Service) deleteBackupSource(ctx context.Context, lease *operationLease,
 	return nil
 }
 
-// requireSourceSnapshot confirms the catalog snapshot exists and belongs to
-// udid; a foreign snapshot id surfaces as ErrNotFound.
-func (s *Service) requireSourceSnapshot(ctx context.Context, udid, snapshotID string) error {
-	snapshot, err := s.store.Backup.Get(ctx, snapshotID)
-	if err != nil {
-		return err
+// requireSourceSnapshots confirms a non-empty selection whose every catalog
+// snapshot exists and belongs to udid; a foreign snapshot id surfaces as
+// ErrNotFound.
+func (s *Service) requireSourceSnapshots(ctx context.Context, udid string, snapshotIDs []string) error {
+	if len(snapshotIDs) == 0 {
+		return &domain.ValidationError{Code: "snapshot_required", Message: "select at least one restore point"}
 	}
-	if snapshot.SourceUDID != udid {
-		return domain.ErrNotFound
+	for _, snapshotID := range snapshotIDs {
+		snapshot, err := s.store.Backup.Get(ctx, snapshotID)
+		if err != nil {
+			return err
+		}
+		if snapshot.SourceUDID != udid {
+			return domain.ErrNotFound
+		}
 	}
 	return nil
 }
@@ -42,10 +48,7 @@ func (s *Service) requireSourceSnapshot(ctx context.Context, udid, snapshotID st
 // rows and the footprint recount are synchronous; object collection runs in the
 // background and keeps every object a surviving manifest still points at.
 func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs []string) error {
-	if len(snapshotIDs) == 0 {
-		return &domain.ValidationError{Code: "snapshot_required", Message: "select at least one restore point"}
-	}
-	lease, err := s.acquireFor(ctx, "snapshot deletion", udid, snapshotWriteResource(udid))
+	release, err := s.acquireFor(ctx, "snapshot deletion", udid, snapshotWriteResource(udid))
 	if err != nil {
 		return err
 	}
@@ -54,13 +57,11 @@ func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs 
 	handedOff := false
 	defer func() {
 		if !handedOff {
-			lease.Release()
+			release()
 		}
 	}()
-	for _, snapshotID := range snapshotIDs {
-		if err := s.requireSourceSnapshot(ctx, udid, snapshotID); err != nil {
-			return err
-		}
+	if err := s.requireSourceSnapshots(ctx, udid, snapshotIDs); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -90,7 +91,7 @@ func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs 
 	live := s.recountSourceFootprint(finalCtx, udid)
 	s.bus.Emit(events.BackupCatalog, map[string]any{"udid": udid})
 	handedOff = true
-	s.reclaimInBackground(finalCtx, lease, udid, func() error {
+	s.reclaimInBackground(finalCtx, release, udid, func() error {
 		// A failed recount left no live set, so the collection reads its own.
 		if live == nil {
 			return s.collectSource(finalCtx, udid)
@@ -104,20 +105,15 @@ func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs 
 // together would free — objects no kept snapshot references. Distinct from
 // their summed sizes, which count shared, non-reclaimable data too.
 func (s *Service) SnapshotsReclaimable(ctx context.Context, udid string, snapshotIDs []string) (int64, error) {
-	if len(snapshotIDs) == 0 {
-		return 0, &domain.ValidationError{Code: "snapshot_required", Message: "select at least one restore point"}
-	}
 	// Direct acquire: the estimate answers the user at once, so a refusal needs
 	// no operation event of its own.
-	lease, err := s.ops.acquire("reclaim estimate", snapshotReadResource(udid))
+	release, err := s.ops.acquire("reclaim estimate", snapshotReadResource(udid))
 	if err != nil {
 		return 0, err
 	}
-	defer lease.Release()
-	for _, snapshotID := range snapshotIDs {
-		if err := s.requireSourceSnapshot(ctx, udid, snapshotID); err != nil {
-			return 0, err
-		}
+	defer release()
+	if err := s.requireSourceSnapshots(ctx, udid, snapshotIDs); err != nil {
+		return 0, err
 	}
 	return s.objects.ReclaimableBytes(ctx, udid, snapshotIDs)
 }

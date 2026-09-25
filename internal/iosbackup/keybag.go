@@ -1,4 +1,4 @@
-package service
+package iosbackup
 
 import (
 	"crypto/aes"
@@ -123,12 +123,12 @@ func verifyBackupPassword(keybagData []byte, password string) (bool, error) {
 	return false, nil
 }
 
-// verifySnapshotPassword checks the password against the snapshot's keybag.
-func verifySnapshotPassword(view *objectstore.View, password string) (bool, error) {
+// VerifyPassword checks the password against the snapshot's keybag.
+func VerifyPassword(view *objectstore.View, password string) (bool, error) {
 	var manifest struct {
 		BackupKeyBag []byte `plist:"BackupKeyBag"`
 	}
-	if err := readViewPlist(view, "Manifest.plist", &manifest); err != nil {
+	if err := readPlist(view, "Manifest.plist", &manifest); err != nil {
 		return false, err
 	}
 	if len(manifest.BackupKeyBag) == 0 {

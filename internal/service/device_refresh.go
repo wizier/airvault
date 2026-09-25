@@ -3,9 +3,11 @@ package service
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/model"
@@ -43,9 +45,14 @@ func (s *Service) refreshRegisteredDevices(ctx context.Context) error {
 	for _, discovered := range found {
 		udid := string(discovered.DeviceID)
 		existing, getErr := s.store.Device.GetByUDID(ctx, udid)
+		if getErr != nil && !errors.Is(getErr, domain.ErrNotFound) {
+			// Treating it as unknown would overwrite the stored row with a blank one.
+			slog.Warn("refresh: read device", "udid", udid, "error", getErr)
+			continue
+		}
 		known := getErr == nil
-		device, keep := mergeDiscovered(existing, discovered, now)
-		if !keep {
+		device := mergeDiscovered(existing, discovered, now)
+		if device == nil {
 			continue // not ours (yet) — the pairing flow registers it
 		}
 		if err := s.store.Device.Upsert(ctx, device); err != nil {
@@ -72,10 +79,11 @@ func (s *Service) refreshRegisteredDevices(ctx context.Context) error {
 
 // mergeDiscovered applies only fields proven by this lockdown pass. Transient
 // probe failures preserve prior identity/pairing; a definitive unpaired verdict
-// clears trust-dependent flags.
-func mergeDiscovered(existing *model.Device, discovered engine.DeviceInfo, now int64) (*model.Device, bool) {
+// clears trust-dependent flags. Nil means an unregistered device that is not
+// paired.
+func mergeDiscovered(existing *model.Device, discovered engine.DeviceInfo, now int64) *model.Device {
 	if existing == nil && discovered.PairingState != engine.PairingStatePaired {
-		return nil, false
+		return nil
 	}
 
 	udid := string(discovered.DeviceID)
@@ -102,5 +110,5 @@ func mergeDiscovered(existing *model.Device, discovered engine.DeviceInfo, now i
 		// Preserve the last confirmed pairing and flag values.
 	}
 	device.LastSeenAt = &now
-	return &device, true
+	return &device
 }

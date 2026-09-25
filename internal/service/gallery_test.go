@@ -45,19 +45,32 @@ func TestGalleryIndexExpiresPaginationRevision(t *testing.T) {
 	}
 }
 
+func mediaPaths(t *testing.T, dir string, names ...string) []devicefs.Path {
+	t.Helper()
+	paths := make([]devicefs.Path, 0, len(names))
+	for _, name := range names {
+		path, err := devicefs.ParsePath(dir + "/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
 func TestGroupAlbumRecognizesLivePhotosVideosAndProRAW(t *testing.T) {
-	assets := groupAlbum("100APPLE", []string{
+	assets := groupAlbum(mediaPaths(t, "DCIM/100APPLE",
 		"IMG_0001.HEIC",
 		"IMG_0001.MOV",
 		"IMG_0002.MOV",
 		"IMG_0003.DNG",
 		"IMG_0003.AAE",
 		"notes.txt",
-	})
+	))
 	if len(assets) != 3 {
 		t.Fatalf("assets = %#v, want 3", assets)
 	}
-	if assets[0].Kind != "photo" || !assets[0].Live || assets[0].Name != "IMG_0001.HEIC" {
+	if assets[0].Kind != "photo" || !assets[0].Live || assets[0].Path != "DCIM/100APPLE/IMG_0001.HEIC" {
 		t.Fatalf("live photo = %#v", assets[0])
 	}
 	if assets[1].Kind != "video" || assets[1].Name != "IMG_0002.MOV" {
@@ -69,7 +82,8 @@ func TestGroupAlbumRecognizesLivePhotosVideosAndProRAW(t *testing.T) {
 }
 
 func TestPickThumbIsCaseInsensitive(t *testing.T) {
-	if got := pickThumb([]string{"5005.jpg", "5008.JPG", "metadata.plist"}); got != "5008.JPG" {
+	thumbs := mediaPaths(t, "PhotoData/Thumbnails/V2/DCIM/100APPLE/IMG_0001.HEIC", "5005.jpg", "5008.JPG", "metadata.plist")
+	if got := pickThumb(thumbs).Name(); got != "5008.JPG" {
 		t.Fatalf("pickThumb = %q", got)
 	}
 }
