@@ -5,7 +5,7 @@
   import EmptyState from '../lib/components/EmptyState.svelte';
   import DeviceTile from '../lib/components/DeviceTile.svelte';
   import OrphanBackups from '../lib/components/OrphanBackups.svelte';
-  import PairModal from '../lib/components/PairModal.svelte';
+  import PairWizard from '../lib/components/PairWizard.svelte';
   import Icon from '../lib/components/Icon.svelte';
 
   // Ref-counted subscribe (Nav holds statusStore); SSE keeps it fresh while mounted.
@@ -87,5 +87,5 @@
 </div>
 
 {#if pairOpen}
-  <PairModal onclose={() => (pairOpen = false)} />
+  <PairWizard onclose={() => (pairOpen = false)} />
 {/if}

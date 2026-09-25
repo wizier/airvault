@@ -1,4 +1,4 @@
-import { apiUrl } from './client';
+import { apiUrl, devicePath } from './client';
 
 export type ConsoleLevel = 'notice' | 'info' | 'debug' | 'error' | 'fault';
 
@@ -13,5 +13,5 @@ export interface ConsoleLine {
 }
 
 export function consoleUrl(udid: string): string {
-  return apiUrl(`/devices/${encodeURIComponent(udid)}/console`);
+  return apiUrl(`${devicePath(udid)}/console`);
 }

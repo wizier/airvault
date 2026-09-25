@@ -59,6 +59,11 @@ export function formatBytes(n?: number): string {
   return `${v.toFixed(digits)} ${units[i]}`;
 }
 
+/** A file's size and, when known, its modified date: "2.4 MB · Mar 3, 2025". */
+export function fileFacts(f: { size?: number; modified?: number }): string {
+  return f.modified ? `${formatBytes(f.size)} · ${formatDate(f.modified)}` : formatBytes(f.size);
+}
+
 /** Human-readable transfer rate like "12.3 MB/s". Empty string for 0/unknown
  *  so callers can hide the speed line gracefully. */
 export function formatSpeed(bytesPerSec?: number): string {

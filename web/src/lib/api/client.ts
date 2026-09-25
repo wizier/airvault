@@ -100,6 +100,11 @@ export function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
+/** API path of one device; endpoints append to it. */
+export function devicePath(udid: string): string {
+  return `/devices/${encodeURIComponent(udid)}`;
+}
+
 function cookieValue(name: string): string | undefined {
   const prefix = `${encodeURIComponent(name)}=`;
   const entry = document.cookie

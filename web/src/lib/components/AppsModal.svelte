@@ -7,10 +7,11 @@
   import { appIcons, cachedAppIcons, installApp, uninstallApp, type DeviceApp, type InstallProgress } from '../api/apps';
   import { errMsg } from '../api/client';
   import { appFileSource } from '../api/files';
-  import { createBatchLoader } from '../batch-loader';
+  import { createBatchLoader, nearViewport } from '../batch-loader.svelte';
   import { liveRun } from '../events.svelte';
   import { deviceAppsResources } from '../stores.svelte';
   import FileBrowser from './FileBrowser.svelte';
+  import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
 
   let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
@@ -30,7 +31,7 @@
   let installState = $state<InstallProgress | null>(null);
   let note = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
-  // Uninstall: inline two-step confirm avoids a blocking native dialog.
+  // Uninstall: an inline two-step confirm on the row.
   let confirmUninstall = $state<string | null>(null);
   let uninstalling = $state<string | null>(null);
   const appMutationActive = $derived(installing || uninstalling !== null);
@@ -83,7 +84,6 @@
   }
 
   async function doUninstall(bundleId: string) {
-    if (writeBusy) return;
     uninstalling = bundleId;
     note = null;
     try {
@@ -95,11 +95,6 @@
     } finally {
       uninstalling = null;
     }
-  }
-
-  function openFiles(app: DeviceApp) {
-    if (readBusy) return;
-    filesApp = app;
   }
 
   // Each open subscribes/refetches; app.catalog invalidates this same resource
@@ -116,9 +111,6 @@
 
   // PNG data URLs by bundle id; '' marks an app the phone has no icon for.
   let icons = $state<Record<string, string>>(untrack(() => ({ ...cachedAppIcons(udid) })));
-  let scroller = $state<HTMLElement | null>(null);
-  let iconIO = $state<IntersectionObserver | null>(null);
-  const rowBundles = new WeakMap<Element, string>();
   const iconLoader = createBatchLoader<string>({
     batchSize: 30,
     debounceMs: 120,
@@ -128,34 +120,9 @@
     },
   });
 
-  // Registers a row with the icon observer; detach forgets it.
-  function rowIcon(bundleId: string) {
-    return (el: Element) => {
-      const io = iconIO;
-      if (!io) return;
-      rowBundles.set(el, bundleId);
-      io.observe(el);
-      return () => io.unobserve(el);
-    };
-  }
-
-  // Rows entering the observer margin queue their icon.
-  $effect(() => {
-    if (!scroller) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const bundleId = rowBundles.get(entry.target);
-          if (bundleId && entry.isIntersecting && icons[bundleId] === undefined) iconLoader.queue(bundleId);
-        }
-      },
-      { root: scroller, rootMargin: '600px 0px' },
-    );
-    iconIO = io;
-    return () => {
-      io.disconnect();
-      iconIO = null;
-    };
+  // Rows coming near the viewport queue their icon.
+  const rows = nearViewport('600px 0px', (bundleId, near) => {
+    if (near && icons[bundleId] === undefined) iconLoader.queue(bundleId);
   });
 
   // Closing the modal cancels icon batches still in flight.
@@ -229,17 +196,14 @@
       {/if}
     </div>
 
-    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200" bind:this={scroller}>
+    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200" {@attach rows.root}>
       {#if loading}
         <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
           <span class="loading loading-spinner loading-sm"></span>
           Asking the phone…
         </p>
       {:else if error}
-        <div role="alert" class="alert alert-error alert-soft m-3">
-          <Icon name="alert" size={16} />
-          <span class="text-sm">{error}</span>
-        </div>
+        <ErrorLine {error} variant="alert" className="m-3" />
       {:else if visible.length === 0}
         <p class="p-4 text-sm text-base-content/50">
           {search ? 'Nothing matches the search' : 'No apps reported'}
@@ -247,7 +211,7 @@
       {:else}
         <ul class="divide-y divide-base-300/60">
           {#each visible as app (app.bundleId)}
-            <li class="flex items-center gap-3 px-4 py-2" {@attach rowIcon(app.bundleId)}>
+            <li class="flex items-center gap-3 px-4 py-2" {@attach rows.item(app.bundleId)}>
               {#if icons[app.bundleId]}
                 <img
                   src={icons[app.bundleId]}
@@ -276,7 +240,7 @@
                     disabled={readBusy}
                     title={readBusy ? 'The device is busy' : 'Browse files'}
                     aria-label={`Browse ${app.name} files`}
-                    onclick={() => openFiles(app)}
+                    onclick={() => (filesApp = app)}
                   >
                     <Icon name="folder" size={15} />
                   </button>

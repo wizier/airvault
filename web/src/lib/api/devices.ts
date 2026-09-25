@@ -1,4 +1,4 @@
-import { apiUrl, request } from './client';
+import { apiUrl, devicePath, request } from './client';
 
 export type Connection = 'wifi' | 'usb' | 'offline';
 
@@ -88,7 +88,7 @@ export async function unpairDevice(udid: string, options: UnpairOptions = {}): P
   if (options.deleteBackups) query.set('deleteBackups', 'true');
   const encodedQuery = query.toString();
   const suffix = encodedQuery ? `?${encodedQuery}` : '';
-  await request<void>(`/devices/${encodeURIComponent(udid)}/pairing${suffix}`, { method: 'DELETE' });
+  await request<void>(`${devicePath(udid)}/pairing${suffix}`, { method: 'DELETE' });
 }
 
 export async function changeBackupPassword(
@@ -97,7 +97,7 @@ export async function changeBackupPassword(
   newPassword: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  await request<void>(`/devices/${encodeURIComponent(udid)}/backup-password`, {
+  await request<void>(`${devicePath(udid)}/backup-password`, {
     method: 'POST',
     body: { old: oldPassword, new: newPassword },
     signal,
@@ -105,20 +105,20 @@ export async function changeBackupPassword(
 }
 
 export async function powerDevice(udid: string, action: PowerAction): Promise<void> {
-  await request<void>(`/devices/${encodeURIComponent(udid)}/power`, {
+  await request<void>(`${devicePath(udid)}/power`, {
     method: 'POST',
     body: { action },
   });
 }
 
 export function getHardwareInfo(udid: string, signal?: AbortSignal): Promise<HardwareInfo> {
-  return request<HardwareInfo>(`/devices/${encodeURIComponent(udid)}/hardware`, { signal });
+  return request<HardwareInfo>(`${devicePath(udid)}/hardware`, { signal });
 }
 
 export function getDeviceBattery(udid: string, signal?: AbortSignal): Promise<BatteryState> {
-  return request<BatteryState>(`/devices/${encodeURIComponent(udid)}/battery`, { signal });
+  return request<BatteryState>(`${devicePath(udid)}/battery`, { signal });
 }
 
 export function wallpaperUrl(udid: string, screen: 'home' | 'lock'): string {
-  return apiUrl(`/devices/${encodeURIComponent(udid)}/wallpaper?screen=${screen}`);
+  return apiUrl(`${devicePath(udid)}/wallpaper?screen=${screen}`);
 }

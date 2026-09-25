@@ -15,7 +15,6 @@
     busyLabel,
     cancelLabel = 'Cancel',
     confirmClass = 'btn-error',
-    errorClass = 'mt-3',
     failureCode,
     onconfirm,
     onclose,
@@ -27,7 +26,6 @@
     busyLabel: string;
     cancelLabel?: string;
     confirmClass?: string;
-    errorClass?: string;
     failureCode: ErrorTextKey;
     onconfirm: () => Promise<void>;
     onclose: () => void;
@@ -62,7 +60,7 @@
   <div class="modal-box">
     <h3 class="text-lg font-bold">{title}</h3>
     {@render children()}
-    <ErrorLine {error} className={errorClass} />
+    <ErrorLine {error} className="mt-3" />
     <div class="modal-action">
       <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => dialog.close()}>{cancelLabel}</button>
       <button type="button" class={`btn ${confirmClass}`} disabled={busy} onclick={confirm}>

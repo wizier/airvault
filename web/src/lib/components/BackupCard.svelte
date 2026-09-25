@@ -56,7 +56,6 @@
   );
 
   async function backup() {
-    if (busy || isRunning) return;
     busy = true;
     actionError = null;
     try {
@@ -320,7 +319,6 @@
     confirmLabel={isRestore ? 'Stop restore' : 'Discard attempt'}
     busyLabel="Cancelling…"
     cancelLabel="Keep running"
-    errorClass=""
     failureCode="backup_cancel_failed"
     onconfirm={() => cancelCurrentRun(runId)}
     onclose={() => (cancelAskedFor = null)}

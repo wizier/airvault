@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { errMsg } from '../api/client';
   import { downloadFile, type AFCEntry, type FileSource } from '../api/files';
-  import { formatBytes, formatDate } from '../format';
+  import { fileFacts } from '../format';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import PreviewImage, { isPreviewableImage } from './PreviewImage.svelte';
@@ -109,12 +109,6 @@
   }
 </script>
 
-{#snippet fileFacts(entry: AFCEntry)}
-  <p class="truncate text-xs text-base-content/50">
-    {formatBytes(entry.size)}{entry.modified ? ` · ${formatDate(entry.modified)}` : ''}
-  </p>
-{/snippet}
-
 <dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
   <div class="modal-box flex h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden">
     <div class="flex shrink-0 items-start justify-between gap-3">
@@ -138,7 +132,7 @@
         </button>
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium">{p.name}</p>
-          {@render fileFacts(p)}
+          <p class="truncate text-xs text-base-content/50">{fileFacts(p)}</p>
         </div>
         <button
           type="button"
@@ -183,10 +177,7 @@
             Asking the phone…
           </p>
         {:else if error}
-          <div role="alert" class="alert alert-error alert-soft m-3">
-            <Icon name="alert" size={16} />
-            <span class="text-sm">{error}</span>
-          </div>
+          <ErrorLine {error} variant="alert" className="m-3" />
         {:else}
           <ul class="divide-y divide-base-300/60">
             {#if path !== ''}
@@ -224,14 +215,14 @@
                     <Icon name="image" size={18} class="shrink-0 text-primary/80" />
                     <div class="min-w-0 flex-1">
                       <p class="truncate text-sm">{entry.name}</p>
-                      {@render fileFacts(entry)}
+                      <p class="truncate text-xs text-base-content/50">{fileFacts(entry)}</p>
                     </div>
                   </button>
                 {:else}
                   <Icon name="file" size={18} class="shrink-0 text-base-content/40" />
                   <div class="min-w-0 flex-1">
                     <p class="truncate text-sm">{entry.name}</p>
-                    {@render fileFacts(entry)}
+                    <p class="truncate text-xs text-base-content/50">{fileFacts(entry)}</p>
                   </div>
                 {/if}
 

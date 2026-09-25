@@ -1,4 +1,4 @@
-import { request } from './client';
+import { devicePath, request } from './client';
 import type { AcceptedRun } from './runs';
 
 /** Phase of a run, as the server names it (see Go service.Stage*). Labels for
@@ -60,23 +60,23 @@ interface RestoreRequest {
 }
 
 export function startBackup(udid: string): Promise<AcceptedRun> {
-  return request<AcceptedRun>(`/devices/${encodeURIComponent(udid)}/backup`, { method: 'POST' });
+  return request<AcceptedRun>(`${devicePath(udid)}/backup`, { method: 'POST' });
 }
 
 export async function listRestorePoints(udid: string, signal?: AbortSignal): Promise<RestorePoint[]> {
-  const response = await request<RestorePointsResponse>(`/devices/${encodeURIComponent(udid)}/backups`, { signal });
+  const response = await request<RestorePointsResponse>(`${devicePath(udid)}/backups`, { signal });
   return response.restorePoints;
 }
 
 export async function deleteDeviceBackups(udid: string): Promise<void> {
-  await request<void>(`/devices/${encodeURIComponent(udid)}/backups?all=true`, {
+  await request<void>(`${devicePath(udid)}/backups?all=true`, {
     method: 'DELETE',
   });
 }
 
 export async function deleteSnapshots(udid: string, snapshotIds: string[]): Promise<void> {
   const query = new URLSearchParams(snapshotIds.map((id) => ['id', id]));
-  await request<void>(`/devices/${encodeURIComponent(udid)}/backups?${query}`, {
+  await request<void>(`${devicePath(udid)}/backups?${query}`, {
     method: 'DELETE',
   });
 }
@@ -90,7 +90,7 @@ export async function snapshotsReclaimable(
 ): Promise<number> {
   const query = new URLSearchParams(snapshotIds.map((id) => ['id', id]));
   const response = await request<{ reclaimableBytes: number }>(
-    `/devices/${encodeURIComponent(udid)}/backups/reclaimable?${query}`,
+    `${devicePath(udid)}/backups/reclaimable?${query}`,
     { signal },
   );
   return response.reclaimableBytes;
@@ -102,7 +102,7 @@ export async function listRestoreSources(signal?: AbortSignal): Promise<RestoreS
 }
 
 export function startRestore(udid: string, options: RestoreRequest): Promise<AcceptedRun> {
-  return request<AcceptedRun>(`/devices/${encodeURIComponent(udid)}/restore`, {
+  return request<AcceptedRun>(`${devicePath(udid)}/restore`, {
     method: 'POST',
     body: options,
   });

@@ -7,8 +7,8 @@
   import { ApiError, errMsg } from '../api/client';
   import { galleryPage, mediaThumbsBatch, type GalleryAsset } from '../api/gallery';
   import { deviceFileSource, downloadFile, type FileStat } from '../api/files';
-  import { createBatchLoader } from '../batch-loader';
-  import { formatBytes, formatDate } from '../format';
+  import { createBatchLoader, nearViewport } from '../batch-loader.svelte';
+  import { fileFacts } from '../format';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import PreviewImage, { isPreviewableImage } from './PreviewImage.svelte';
@@ -34,8 +34,6 @@
   let thumbs = $state<Record<string, string>>({});
   const MAX_THUMBS = 600; // 5 × PAGE — thumbs beyond this are evicted once off-screen
   const near = new Set<string>(); // paths inside the tile observer's margin
-  let tileIO = $state<IntersectionObserver | null>(null);
-  const tilePaths = new WeakMap<Element, string>();
   const thumbLoader = createBatchLoader<string>({
     batchSize: 30,
     debounceMs: 120,
@@ -48,9 +46,15 @@
     },
   });
 
-  function queueThumb(path: string): void {
-    if (thumbs[path] === undefined) thumbLoader.queue(path);
-  }
+  // Tiles coming near the viewport join `near` and queue their thumbs.
+  const tiles = nearViewport('1200px 0px', (path, isNear) => {
+    if (isNear) {
+      near.add(path);
+      if (thumbs[path] === undefined) thumbLoader.queue(path);
+    } else {
+      near.delete(path);
+    }
+  });
 
   // Evict thumbs of tiles far off-screen, oldest-fetched first.
   function trimThumbs(): void {
@@ -70,23 +74,8 @@
     thumbs = {};
   }
 
-  // Registers a grid tile with the approach observer; detach forgets it.
-  function tileThumb(path: string) {
-    return (el: Element) => {
-      const io = tileIO;
-      if (!io) return;
-      tilePaths.set(el, path);
-      io.observe(el);
-      return () => {
-        io.unobserve(el);
-        near.delete(path);
-      };
-    };
-  }
-
   let lightbox = $state<GalleryAsset | null>(null);
-  let lbStat = $state<FileStat | null>(null);
-  let statCtrl: AbortController | null = null;
+  let lbStat = $state<Promise<FileStat>>();
   let saving = $state(false);
   let saveError = $state<string | null>(null);
   const saveCtrl = new AbortController();
@@ -149,36 +138,22 @@
     } catch (err) {
       if (ctrl.signal.aborted) return;
       if (err instanceof ApiError && err.code === 'gallery_revision_changed') void load();
-      // No automatic retry: the next scroll to the end or Retry pulls again.
+      // No automatic retry: only Retry pulls again.
       else moreError = errMsg(err, 'gallery_failed');
     } finally {
       if (pageCtrl === ctrl) {
         pageCtrl = null;
         loadingMore = false;
-        // The observer fires only on transitions; if the sentinel never left
-        // view after a short append, re-arm the next pull here.
-        if (sentinelVisible && !moreError) scheduleMore();
       }
     }
   }
 
   function openLightbox(a: GalleryAsset): void {
     lightbox = a;
-    // Date + size come from a single on-demand stat; aborting it drops a stale
-    // response once the user has stepped to another photo.
-    lbStat = null;
+    // Size + date come from a single on-demand stat; {#await} ignores the
+    // answer for a photo the user has already stepped past.
+    lbStat = media.stat(a.path);
     saveError = null;
-    statCtrl?.abort();
-    const ctrl = new AbortController();
-    statCtrl = ctrl;
-    media
-      .stat(a.path, ctrl.signal)
-      .then((s) => {
-        if (!ctrl.signal.aborted) lbStat = s;
-      })
-      .catch(() => {
-        /* leave date/size out of the info line */
-      });
   }
 
   // Step to the previous/next asset in the roll (prefetch a page near the end).
@@ -202,12 +177,6 @@
     }
   }
 
-  function closeLightbox(): void {
-    statCtrl?.abort();
-    statCtrl = null;
-    lightbox = null;
-  }
-
   // Photo facts derived purely from the asset (no extra device calls).
   function assetType(a: GalleryAsset): string {
     if (a.kind === 'video') return 'Video';
@@ -224,65 +193,24 @@
     return () => {
       pageCtrl?.abort();
       pageCtrl = null;
-      statCtrl?.abort();
       saveCtrl.abort();
       resetThumbs();
     };
   });
 
-  // Tiles entering the observer margin join `near` and queue their thumbs.
-  $effect(() => {
-    if (!scroller) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const path = tilePaths.get(entry.target);
-          if (!path) continue;
-          if (entry.isIntersecting) {
-            near.add(path);
-            queueThumb(path);
-          } else {
-            near.delete(path);
-          }
-        }
-      },
-      { root: scroller, rootMargin: '1200px 0px' },
-    );
-    tileIO = io;
-    return () => {
-      io.disconnect();
-      tileIO = null;
-      near.clear();
-    };
-  });
-
-  let sentinelVisible = false;
-  let moreTimer = 0;
-
-  function scheduleMore(): void {
-    clearTimeout(moreTimer);
-    moreTimer = window.setTimeout(() => {
-      if (sentinelVisible) void loadMore();
-    });
-  }
-
   // Infinite scroll: pull the next page when the sentinel nears the grid's
-  // visible box.
+  // visible box. A fresh observer per page reports the sentinel's current
+  // state, so a short page that leaves it in view pulls the next one too.
   $effect(() => {
-    if (!sentinel || !scroller) return;
+    if (!sentinel || !scroller || loadingMore || moreError || assets.length >= total) return;
     const io = new IntersectionObserver(
-      (entries) => {
-        sentinelVisible = entries[0].isIntersecting;
-        if (sentinelVisible) void loadMore();
+      ([entry]) => {
+        if (entry.isIntersecting) void loadMore();
       },
       { root: scroller, rootMargin: '600px' },
     );
     io.observe(sentinel);
-    return () => {
-      io.disconnect();
-      sentinelVisible = false;
-      clearTimeout(moreTimer);
-    };
+    return () => io.disconnect();
   });
 
   function hideBroken(e: Event): void {
@@ -324,17 +252,14 @@
       </div>
     </div>
 
-    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200 p-1" bind:this={scroller}>
+    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200 p-1" bind:this={scroller} {@attach tiles.root}>
       {#if loading}
         <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
           <span class="loading loading-spinner loading-sm"></span>
           Reading the camera roll…
         </p>
       {:else if error}
-        <div role="alert" class="alert alert-error alert-soft m-3">
-          <Icon name="alert" size={16} />
-          <span class="text-sm">{error}</span>
-        </div>
+        <ErrorLine {error} variant="alert" className="m-3" />
       {:else if assets.length === 0}
         <p class="p-4 text-sm text-base-content/50">Nothing here.</p>
       {:else}
@@ -345,7 +270,7 @@
               class="group relative aspect-square overflow-hidden rounded bg-base-300"
               title={a.name}
               onclick={() => openLightbox(a)}
-              {@attach tileThumb(a.path)}
+              {@attach tiles.item(a.path)}
             >
               <!-- Placeholder shows until this tile's batch fills thumbs[path]. -->
               <Icon name="image" size={22} class="absolute inset-0 m-auto text-base-content/20" />
@@ -391,14 +316,14 @@
       {@const a = lightbox}
       <div class="absolute inset-0 z-10 flex flex-col gap-2 rounded-2xl bg-base-100 p-3">
         <div class="flex shrink-0 items-center justify-between gap-2">
-          <button type="button" class="btn btn-ghost btn-sm" onclick={closeLightbox}>
+          <button type="button" class="btn btn-ghost btn-sm" onclick={() => (lightbox = null)}>
             <Icon name="arrowLeft" size={16} /> Back
           </button>
           <button
             type="button"
             class="btn btn-square btn-ghost btn-sm"
             aria-label="Close"
-            onclick={closeLightbox}
+            onclick={() => (lightbox = null)}
           >
             <Icon name="x" size={16} />
           </button>
@@ -450,13 +375,10 @@
             <p class="truncate text-xs text-base-content/60">
               {assetType(a)}{assetFormat(a) ? ` · ${assetFormat(a)}` : ''}
             </p>
-            {#if lbStat && (lbStat.modified || lbStat.size > 0)}
-              <p class="truncate text-xs text-base-content/50">
-                {lbStat.modified ? formatDate(lbStat.modified) : ''}{lbStat.modified && lbStat.size > 0
-                  ? ' · '
-                  : ''}{lbStat.size > 0 ? formatBytes(lbStat.size) : ''}
-              </p>
-            {/if}
+            <!-- A failed stat leaves size and date out; the empty catch keeps it handled. -->
+            {#await lbStat then stat}
+              <p class="truncate text-xs text-base-content/50">{fileFacts(stat!)}</p>
+            {:catch}{/await}
             <ErrorLine error={saveError} size="xs" />
           </div>
           <button type="button" class="btn btn-primary btn-sm shrink-0" disabled={saving} onclick={() => save(a)}>

@@ -5,7 +5,6 @@
   import { untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { snapshotsReclaimable, type RestorePoint } from '../api/backups';
-  import { isAbortError } from '../api/client';
   import type { Device } from '../api/devices';
   import { blockedReason } from '../device-ui';
   import { liveRun } from '../events.svelte';
@@ -14,6 +13,7 @@
   import { now } from '../clock';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import EmptyState from './EmptyState.svelte';
+  import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -22,7 +22,7 @@
   }: {
     device: Device;
     /** Open the restore flow with this snapshot preselected. */
-    onrestore?: (snapshotId: string) => void;
+    onrestore: (snapshotId: string) => void;
   } = $props();
 
   const udid = $derived(device.udid);
@@ -40,10 +40,7 @@
   let selecting = $state(false);
   const selected = new SvelteSet<string>();
   let pending = $state<RestorePoint[]>([]);
-  let reclaimable = $state<number | null>(null);
-  let reclaiming = $state(false);
-  let reclaimError = $state(false);
-  let reclaimCtrl: AbortController | null = null;
+  let reclaim = $state<Promise<number>>();
 
   // The selection acts only on listed points — a refresh may have dropped some.
   const selectedPoints = $derived(restorePoints.filter((point) => selected.has(point.snapshotId)));
@@ -70,34 +67,9 @@
   }
 
   function askDelete(targets: RestorePoint[]) {
-    reclaimCtrl?.abort();
-    const ctrl = new AbortController();
-    reclaimCtrl = ctrl;
     pending = targets;
-    reclaimable = null;
-    reclaiming = true;
-    reclaimError = false;
     // Honest "space freed": data no kept restore point still references.
-    snapshotsReclaimable(udid, targets.map((point) => point.snapshotId), ctrl.signal)
-      .then((bytes) => {
-        if (reclaimCtrl === ctrl) reclaimable = bytes;
-      })
-      .catch((error) => {
-        if (!isAbortError(error) && reclaimCtrl === ctrl) reclaimError = true;
-      })
-      .finally(() => {
-        if (reclaimCtrl === ctrl) {
-          reclaimCtrl = null;
-          reclaiming = false;
-        }
-      });
-  }
-
-  function closeDeleteDialog() {
-    reclaimCtrl?.abort();
-    reclaimCtrl = null;
-    reclaiming = false;
-    pending = [];
+    reclaim = snapshotsReclaimable(udid, targets.map((point) => point.snapshotId));
   }
 
   async function confirmDelete() {
@@ -133,10 +105,7 @@
   </div>
 
   {#if pointsError}
-    <div role="alert" class="alert alert-error alert-soft">
-      <Icon name="alert" size={16} />
-      <span>{pointsError}</span>
-    </div>
+    <ErrorLine error={pointsError} variant="alert" />
   {:else if !pointsLoaded}
     <div class="flex items-center gap-3 rounded-box bg-base-100 p-4 text-sm text-base-content/60 shadow-sm">
       <span class="loading loading-spinner loading-sm"></span>
@@ -201,7 +170,7 @@
                     type="button"
                     class="btn btn-ghost btn-xs"
                     disabled={!!restoreBlocked}
-                    onclick={() => onrestore?.(point.snapshotId)}
+                    onclick={() => onrestore(point.snapshotId)}
                     title={restoreBlocked ?? 'Restore this snapshot onto the phone'}
                     aria-label="Restore this snapshot"
                   >
@@ -236,7 +205,7 @@
     cancelLabel={pending.length > 1 ? 'Keep them' : 'Keep it'}
     failureCode="snapshot_delete_failed"
     onconfirm={confirmDelete}
-    onclose={closeDeleteDialog}
+    onclose={() => (pending = [])}
   >
     <p class="py-3 text-sm text-base-content/70">
       {#if pending.length > 1}
@@ -252,15 +221,13 @@
     </p>
     <p class="flex items-center gap-1.5 rounded-box bg-base-200 p-3 text-sm">
       <Icon name="info" size={14} />
-      {#if reclaiming}
+      {#await reclaim}
         <span class="text-base-content/60">Calculating space freed…</span>
-      {:else if reclaimable !== null}
-        <span>Frees about <span class="font-medium tabular-nums">{formatBytes(reclaimable)}</span> on disk</span>
-      {:else if reclaimError}
+      {:then bytes}
+        <span>Frees about <span class="font-medium tabular-nums">{formatBytes(bytes)}</span> on disk</span>
+      {:catch}
         <span class="text-base-content/60">Space could not be calculated right now</span>
-      {:else}
-        <span class="text-base-content/60">No reclaim estimate is available.</span>
-      {/if}
+      {/await}
     </p>
   </ConfirmDialog>
 {/if}

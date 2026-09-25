@@ -1,4 +1,4 @@
-import { request, uploadForm } from './client';
+import { devicePath, request, uploadForm } from './client';
 
 export interface DeviceApp {
   bundleId: string;
@@ -20,7 +20,7 @@ export interface InstallProgress {
 
 /** User apps installed on the device (the endpoint never lists system apps). */
 export async function listApps(udid: string, signal?: AbortSignal): Promise<DeviceApp[]> {
-  const response = await request<ListAppsResponse>(`/devices/${encodeURIComponent(udid)}/apps`, { signal });
+  const response = await request<ListAppsResponse>(`${devicePath(udid)}/apps`, { signal });
   return response.apps;
 }
 
@@ -33,11 +33,11 @@ export async function installApp(
 ): Promise<void> {
   const form = new FormData();
   form.append('ipa', file);
-  await uploadForm(`/devices/${encodeURIComponent(udid)}/apps/install`, form, onUploadProgress, onDeviceProgress);
+  await uploadForm(`${devicePath(udid)}/apps/install`, form, onUploadProgress, onDeviceProgress);
 }
 
 export async function uninstallApp(udid: string, bundleId: string): Promise<void> {
-  await request<void>(`/devices/${encodeURIComponent(udid)}/apps/${encodeURIComponent(bundleId)}`, {
+  await request<void>(`${devicePath(udid)}/apps/${encodeURIComponent(bundleId)}`, {
     method: 'DELETE',
   });
 }
@@ -53,7 +53,7 @@ export async function appIcons(
   bundleIds: string[],
   signal?: AbortSignal,
 ): Promise<Record<string, string>> {
-  const response = await request<AppIconsResponse>(`/devices/${encodeURIComponent(udid)}/apps/icons`, {
+  const response = await request<AppIconsResponse>(`${devicePath(udid)}/apps/icons`, {
     method: 'POST',
     body: { bundleIds },
     signal,

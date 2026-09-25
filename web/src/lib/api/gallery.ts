@@ -1,5 +1,4 @@
-import { request } from './client';
-import { mediaBase } from './files';
+import { devicePath, request } from './client';
 
 // One camera-roll item. live marks a photo with a paired .MOV (Live Photo).
 export interface GalleryAsset {
@@ -25,7 +24,7 @@ interface GalleryPageOptions {
 export async function galleryPage(udid: string, options: GalleryPageOptions): Promise<GalleryPage> {
   const q = new URLSearchParams({ offset: String(options.offset), limit: String(options.limit) });
   if (options.revision) q.set('revision', options.revision);
-  return request<GalleryPage>(`${mediaBase(udid)}/gallery?${q}`, { signal: options.signal });
+  return request<GalleryPage>(`${devicePath(udid)}/media/gallery?${q}`, { signal: options.signal });
 }
 
 interface ThumbBatchResponse {
@@ -39,7 +38,7 @@ export async function mediaThumbsBatch(
   paths: string[],
   signal?: AbortSignal,
 ): Promise<Record<string, string>> {
-  const response = await request<ThumbBatchResponse>(`${mediaBase(udid)}/thumbs`, {
+  const response = await request<ThumbBatchResponse>(`${devicePath(udid)}/media/thumbs`, {
     method: 'POST',
     body: { paths },
     signal,

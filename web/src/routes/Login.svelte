@@ -1,7 +1,7 @@
 <script lang="ts">
   import { push } from 'svelte-spa-router';
   import Logo from '../lib/components/Logo.svelte';
-  import Icon from '../lib/components/Icon.svelte';
+  import ErrorLine from '../lib/components/ErrorLine.svelte';
   import { login } from '../lib/api/session';
   import { errMsg } from '../lib/api/client';
 
@@ -49,12 +49,7 @@
         {@attach (node) => node.focus()}
       />
 
-      {#if error}
-        <div role="alert" class="alert alert-error alert-soft">
-          <Icon name="alert" size={16} />
-          <span>{error}</span>
-        </div>
-      {/if}
+      <ErrorLine {error} variant="alert" />
 
       <button type="submit" class="btn btn-primary" disabled={busy || !token.trim()}>
         {#if busy}<span class="loading loading-spinner loading-sm"></span>{/if}

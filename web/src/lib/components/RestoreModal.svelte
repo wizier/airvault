@@ -45,7 +45,6 @@
   let password = $state('');
   // Standard restore follows Finder's effective behavior. Advanced controls
   // are phrased as exceptions, so every enabled switch is deliberate.
-  let advancedOpen = $state(false);
   let keepCurrentSettings = $state(false);
   let skipSystemFiles = $state(false);
   let keepItemsNotInBackup = $state(false);
@@ -264,7 +263,7 @@
       </div>
     {/if}
 
-    <details bind:open={advancedOpen} class="collapse collapse-arrow mt-3 border border-base-300 bg-base-100">
+    <details class="collapse collapse-arrow mt-3 border border-base-300 bg-base-100">
       <summary class="collapse-title flex items-center justify-between gap-3 pr-10 font-medium">
         <span>Advanced restore options</span>
         <span class="text-sm font-normal {overrideCount === 0 ? 'text-base-content/60' : 'text-warning'}">

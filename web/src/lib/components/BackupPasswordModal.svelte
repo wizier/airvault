@@ -57,7 +57,6 @@
   }
 
   async function submit() {
-    if (busy) return;
     if (validationError) {
       failureCode = validationError;
       return;

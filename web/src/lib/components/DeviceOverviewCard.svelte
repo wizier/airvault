@@ -194,7 +194,6 @@
     confirmLabel={restart ? 'Restart' : 'Shut down'}
     busyLabel="Asking…"
     confirmClass={restart ? 'btn-warning' : 'btn-error'}
-    errorClass=""
     failureCode="power_request_failed"
     onconfirm={() => power(action)}
     onclose={() => (powerAsked = null)}
