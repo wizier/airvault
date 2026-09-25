@@ -32,11 +32,7 @@ func writeTestManifest(t *testing.T, root, source, snapshotID string, entries ma
 		Version: formatVersion, SourceUDID: source,
 		SnapshotID: snapshotID, CreatedUnix: 1, SizeBytes: sizeBytes, Entries: entries,
 	}
-	seal, err := entriesChecksum(&manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest.EntriesSHA256 = seal
+	manifest.EntriesSHA256 = entriesChecksum(entries)
 	dir := filepath.Join(root, source, "snapshots")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -115,9 +111,9 @@ func newTestStore(t *testing.T) (*Store, string) {
 	return store, source
 }
 
-// copy.jpg shares obj2 with photo.jpg: the size counts both entries even
-// though the pool stores their content once.
-func TestSnapshotSizeCountsDuplicateContent(t *testing.T) {
+// copy.jpg shares obj2 with photo.jpg: a snapshot's size counts both entries,
+// while the footprint counts the pooled content once, plus the manifests.
+func TestSizeCountsEntriesButFootprintCountsPooledContent(t *testing.T) {
 	store, source := newTestStore(t)
 	viewA, err := store.OpenSnapshot(source, genA)
 	if err != nil {
@@ -126,14 +122,7 @@ func TestSnapshotSizeCountsDuplicateContent(t *testing.T) {
 	if got := viewA.SizeBytes(); got != 200 {
 		t.Fatalf("SizeBytes(gA) = %d, want 200", got)
 	}
-}
-
-func TestCollectReportsObjectsPlusManifests(t *testing.T) {
-	store, source := newTestStore(t)
 	manifests := manifestFileBytes(t, store, source, genA, genB)
-	if manifests <= 0 {
-		t.Fatalf("manifest bytes = %d, want > 0", manifests)
-	}
 	got, err := collectAll(t, store, source)
 	if err != nil {
 		t.Fatal(err)
@@ -146,41 +135,26 @@ func TestCollectReportsObjectsPlusManifests(t *testing.T) {
 
 func TestReclaimableExcludesSharedObjects(t *testing.T) {
 	store, source := newTestStore(t)
-	// Deleting gA while gB survives frees only obj2 (50); gB still references obj1.
-	got, err := store.ReclaimableBytes(context.Background(), source, []string{genA})
-	if err != nil {
-		t.Fatal(err)
+	reclaimable := func(ids ...string) int64 {
+		t.Helper()
+		got, err := store.ReclaimableBytes(context.Background(), source, ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
 	}
-	if got != 50 {
-		t.Fatalf("ReclaimableBytes(gA | survivors gA,gB) = %d, want 50", got)
-	}
-	// Deleting the newest snapshot frees its new objects (70 + 30).
-	got, err = store.ReclaimableBytes(context.Background(), source, []string{genB})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 100 {
-		t.Fatalf("ReclaimableBytes(gB | survivors gA,gB) = %d, want 100", got)
-	}
-	// Deleting both together frees everything, the shared obj1 included — more
-	// than the two single-deletion answers add up to.
-	got, err = store.ReclaimableBytes(context.Background(), source, []string{genA, genB})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 250 {
-		t.Fatalf("ReclaimableBytes(gA,gB | no survivors) = %d, want 250", got)
+	// gB still references obj1, so deleting gA frees only obj2; deleting gB frees
+	// its new objects; deleting both frees the shared obj1 too, more than the two
+	// single-deletion answers add up to.
+	if a, b, both := reclaimable(genA), reclaimable(genB), reclaimable(genA, genB); a != 50 || b != 100 || both != 250 {
+		t.Fatalf("reclaimable gA=%d gB=%d both=%d, want 50, 100, 250", a, b, both)
 	}
 	if err := store.RemoveSnapshot(source, genB); err != nil {
 		t.Fatal(err)
 	}
 	// With no other published survivor, everything gA references is reclaimable.
-	got, err = store.ReclaimableBytes(context.Background(), source, []string{genA})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 150 {
-		t.Fatalf("ReclaimableBytes(gA | survivors gA) = %d, want 150", got)
+	if got := reclaimable(genA); got != 150 {
+		t.Fatalf("reclaimable gA alone = %d, want 150", got)
 	}
 }
 

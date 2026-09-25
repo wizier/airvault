@@ -118,23 +118,15 @@ mod tests {
     use super::{OperationRegistry, RegisterError};
 
     #[test]
-    fn a_device_runs_one_transfer_at_a_time() {
+    fn a_transfer_needs_a_free_device_and_a_fresh_id() {
         let registry = OperationRegistry::default();
         let _lease = registry
-            .register_transfer("op-1".into(), "udid".into())
+            .register_transfer("op".into(), "udid".into())
             .unwrap();
         assert!(matches!(
             registry.register_transfer("op-2".into(), "udid".into()),
             Err(RegisterError::DeviceBusy)
         ));
-    }
-
-    #[test]
-    fn a_duplicate_operation_id_is_rejected() {
-        let registry = OperationRegistry::default();
-        let _lease = registry
-            .register_transfer("op".into(), "udid".into())
-            .unwrap();
         assert!(matches!(
             registry.register_transfer("op".into(), "other-udid".into()),
             Err(RegisterError::DuplicateOperation)

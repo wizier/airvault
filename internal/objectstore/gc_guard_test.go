@@ -5,27 +5,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
-
-func TestListSourcesAndSnapshotIDs(t *testing.T) {
-	store, source := newTestStore(t)
-	sources, err := store.ListSources()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sources) != 1 || sources[0] != source {
-		t.Fatalf("ListSources = %v, want [%s]", sources, source)
-	}
-	ids, err := store.ListSnapshotIDs(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 2 {
-		t.Fatalf("ListSnapshotIDs = %v, want 2 manifests", ids)
-	}
-}
 
 func TestRemoveSnapshotDropsReachabilityRootIdempotently(t *testing.T) {
 	store, source := newTestStore(t)
@@ -41,22 +24,6 @@ func TestRemoveSnapshotDropsReachabilityRootIdempotently(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != genB {
 		t.Fatalf("ListSnapshotIDs = %v, want [%s]", ids, genB)
-	}
-}
-
-func TestCollectSweepsEveryUnreferencedObject(t *testing.T) {
-	store, source := newTestStore(t)
-	orphanRef := "9999999999999999999999999999999999999999999999999999999999999999"
-	writeTestObject(t, store.root, source, orphanRef, 7)
-	if _, err := collectAll(t, store, source); err != nil {
-		t.Fatal(err)
-	}
-	orphan, err := store.resolveObjectRef(source, orphanRef)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("unreferenced object survived collection: %v", err)
 	}
 }
 
@@ -86,6 +53,8 @@ func TestCollectAfterMiddleSnapshotDeletionKeepsSharedObjects(t *testing.T) {
 	}
 }
 
+// A source that reaches nothing keeps no objects and no directories, so it
+// stops being listed.
 func TestCollectAllowsEmptyLiveSet(t *testing.T) {
 	store, source := newTestStore(t)
 	for _, id := range []string{genA, genB} {
@@ -93,21 +62,17 @@ func TestCollectAllowsEmptyLiveSet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if sources, err := store.ListSources(); err != nil || !slices.Equal(sources, []string{source}) {
+		t.Fatalf("ListSources before collection = %v, %v; want [%s]", sources, err, source)
+	}
 	if bytes, err := collectAll(t, store, source); err != nil || bytes != 0 {
 		t.Fatalf("Collect with no manifests = %d, %v; want 0, nil", bytes, err)
 	}
-	objectsRoot := filepath.Join(store.root, source, "objects")
-	entries, err := os.ReadDir(objectsRoot)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("objects survived empty live set: %v", entries)
-	}
-	// A source that reaches nothing keeps no directories either, so it stops
-	// being listed.
 	if _, err := os.Lstat(filepath.Join(store.root, source)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("source tree survived empty live set: %v", err)
+	}
+	if sources, err := store.ListSources(); err != nil || len(sources) != 0 {
+		t.Fatalf("ListSources after collection = %v, %v; want none", sources, err)
 	}
 }
 

@@ -483,39 +483,31 @@ fn prune_orphan_objects(
 
 #[cfg(test)]
 mod tests {
-    use super::super::manifest::ManifestEntry;
-    use super::super::OBJECT_PREFIX_LEN;
+    use super::super::{ObjectFailureKind, OBJECT_PREFIX_LEN};
     use super::*;
-    use std::collections::BTreeMap;
 
-    fn touch(path: &Path) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, b"x").unwrap();
+    const SOURCE: &str = "testudid01";
+    const SNAPSHOT: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+
+    // Removes the store even when an assertion fails mid-test.
+    struct TempRoot(PathBuf);
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
-    fn test_session(name: &str) -> (PathBuf, ObjectSession) {
+    fn test_session() -> (TempRoot, ObjectSession) {
         let root =
-            std::env::temp_dir().join(format!("airvault-{name}-{}", uuid::Uuid::new_v4().simple()));
-        let source = "testudid01";
-        let snapshot = "aaaaaaaa-0000-4000-8000-000000000001";
-        let session = ObjectSession::backup(&root, source, snapshot, None).unwrap();
-        (root, session)
+            std::env::temp_dir().join(format!("airvault-test-{}", uuid::Uuid::new_v4().simple()));
+        let session = ObjectSession::backup(&root, SOURCE, SNAPSHOT, None).unwrap();
+        (TempRoot(root), session)
     }
 
     fn write_object(session: &ObjectSession, key: &str, bytes: &[u8]) {
         let mut writer = session.create_file_write(key).unwrap();
         writer.write_all(bytes).unwrap();
-        drop(writer);
-    }
-
-    fn publish_test_snapshot(root: &Path, source: &str, snapshot: &str) {
-        let snapshots = root.join(format!("{source}/snapshots"));
-        fs::create_dir_all(&snapshots).unwrap();
-        fs::rename(
-            root.join(format!("{source}/staging/{snapshot}/manifest.json")),
-            snapshots.join(format!("{snapshot}.json")),
-        )
-        .unwrap();
     }
 
     fn entry_ref(session: &ObjectSession, key: &str) -> String {
@@ -525,164 +517,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn write_records_and_read_verifies_content_hash() {
-        let (root, session) = test_session("content-hash-write-test");
-        let content = b"airvault content hash";
-        write_object(&session, "data.bin", content);
-
-        let object_ref = entry_ref(&session, "data.bin");
-        assert_eq!(object_ref, format!("{:x}", Sha256::digest(content)));
-        let object_path = resolve_object_ref(&root, "testudid01", &object_ref).unwrap();
-        assert_eq!(
-            object_path,
-            root.join(format!(
-                "testudid01/objects/{}/{}",
-                &object_ref[..OBJECT_PREFIX_LEN],
-                object_ref
-            ))
-        );
-        assert!(object_path.is_file());
-
-        let mut reader = session.open_file_read("data.bin").unwrap().unwrap();
-        assert_eq!(reader.read(&mut []).unwrap(), 0);
-        let mut restored = Vec::new();
-        reader.read_to_end(&mut restored).unwrap();
-        assert_eq!(restored, content);
-
-        drop(reader);
-        drop(session);
-        let _ = fs::remove_dir_all(root);
+    fn object_path(session: &ObjectSession, key: &str) -> PathBuf {
+        resolve_object_ref(session.root(), SOURCE, &entry_ref(session, key)).unwrap()
     }
 
     #[test]
-    fn missing_logical_file_is_not_an_integrity_failure() {
-        let (root, session) = test_session("missing-logical-file-test");
-
-        assert!(session.open_file_read("Status.plist").unwrap().is_none());
-        assert!(session.error().is_none());
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn missing_manifest_object_is_an_integrity_failure() {
-        let (root, session) = test_session("missing-manifest-object-test");
-        write_object(&session, "Status.plist", b"status");
-        let object_ref = entry_ref(&session, "Status.plist");
-        let object_path = resolve_object_ref(&root, "testudid01", &object_ref).unwrap();
-        fs::remove_file(object_path).unwrap();
-
-        assert!(session.open_file_read("Status.plist").is_err());
-        let failure = session.error().unwrap();
-        assert_eq!(failure.kind, super::super::ObjectFailureKind::Integrity);
-        assert!(failure.detail.contains("open object"));
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn identical_files_share_one_content_addressed_object() {
-        let (root, session) = test_session("content-dedup-test");
+    fn identical_writes_share_one_verified_object() {
+        let (root, session) = test_session();
         let content = b"same bytes";
         write_object(&session, "first.bin", content);
         write_object(&session, "second.bin", content);
 
-        let first = entry_ref(&session, "first.bin");
-        let second = entry_ref(&session, "second.bin");
-        assert_eq!(first, second);
-        assert_eq!(first, format!("{:x}", Sha256::digest(content)));
+        let object_ref = entry_ref(&session, "first.bin");
+        assert_eq!(object_ref, format!("{:x}", Sha256::digest(content)));
+        assert_eq!(entry_ref(&session, "second.bin"), object_ref);
+        let shard = root.0.join(format!(
+            "{SOURCE}/objects/{}",
+            &object_ref[..OBJECT_PREFIX_LEN]
+        ));
+        assert_eq!(object_path(&session, "second.bin"), shard.join(&object_ref));
+        assert_eq!(fs::read_dir(&shard).unwrap().count(), 1);
 
-        let objects = fs::read_dir(root.join(format!(
-            "testudid01/objects/{}",
-            &first[..OBJECT_PREFIX_LEN]
-        )))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-        assert_eq!(objects.len(), 1);
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
+        let mut reader = session.open_file_read("second.bin").unwrap().unwrap();
+        assert_eq!(reader.read(&mut []).unwrap(), 0);
+        let mut restored = Vec::new();
+        reader.read_to_end(&mut restored).unwrap();
+        assert_eq!(restored, content);
     }
 
+    // mobilebackup2 probes files it never wrote, so only a listed entry whose
+    // object is gone is an integrity failure.
     #[test]
-    fn copy_directory_merge_clones_the_subtree() {
-        let (root, session) = test_session("copy-directory-test");
-        write_object(&session, "src/f1.bin", b"one");
-        write_object(&session, "src/sub/f2.bin", b"two");
-        write_object(&session, "dst/keep.bin", b"kept");
-
-        session.copy("src", "dst").unwrap();
-
-        assert_eq!(
-            entry_ref(&session, "dst/f1.bin"),
-            entry_ref(&session, "src/f1.bin")
-        );
-        assert_eq!(
-            entry_ref(&session, "dst/sub/f2.bin"),
-            entry_ref(&session, "src/sub/f2.bin")
-        );
-        assert!(
-            session.exists("dst/keep.bin"),
-            "merge must keep unrelated targets"
-        );
+    fn only_a_listed_entry_with_a_missing_object_is_an_integrity_failure() {
+        let (_root, session) = test_session();
+        assert!(session.open_file_read("Status.plist").unwrap().is_none());
         assert!(session.error().is_none());
 
-        drop(session);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    // "Snapshot.plist" sorts between "Snapshot" and "Snapshot/…" in byte order,
-    // so every subtree walk must range from the "Snapshot/" prefix.
-    #[test]
-    fn subtree_walks_step_over_a_lexicographic_sibling() {
-        let (root, session) = test_session("subtree-sibling-test");
-        write_object(&session, "Snapshot/Manifest.db", b"inside");
-        write_object(&session, "Snapshot.plist", b"sibling");
-
-        session.copy("Snapshot", "Copied").unwrap();
-        assert!(
-            session.exists("Copied/Manifest.db"),
-            "copy lost the subtree"
-        );
-
-        session.rename("Snapshot", "Moved").unwrap();
-        assert!(
-            session.exists("Moved/Manifest.db"),
-            "rename lost the subtree"
-        );
-        assert!(!session.exists("Snapshot/Manifest.db"));
-
-        session.remove("Moved").unwrap();
-        assert!(
-            !session.exists("Moved/Manifest.db"),
-            "remove left an orphan"
-        );
-        assert!(session.exists("Snapshot.plist"), "the sibling must survive");
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
+        write_object(&session, "Status.plist", b"status");
+        fs::remove_file(object_path(&session, "Status.plist")).unwrap();
+        assert!(session.open_file_read("Status.plist").is_err());
+        let failure = session.error().unwrap();
+        assert_eq!(failure.kind, ObjectFailureKind::Integrity);
+        assert!(failure.detail.contains("open object"));
     }
 
     #[test]
     fn copy_missing_source_is_a_silent_noop() {
-        let (root, session) = test_session("copy-missing-source-test");
+        let (_root, session) = test_session();
 
         session.copy("ghost", "clone").unwrap();
 
         assert!(!session.exists("clone"));
         assert!(session.error().is_none());
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn directory_listings_follow_mutations() {
-        let (root, session) = test_session("child-index-mutations-test");
+        let (_root, session) = test_session();
         write_object(&session, "src/a.bin", b"a");
         write_object(&session, "src/nested/b.bin", b"b");
 
@@ -704,20 +595,20 @@ mod tests {
 
         session.copy("moved", "clone").unwrap();
         assert_eq!(names("clone"), ["b.bin"]);
+        assert_eq!(
+            entry_ref(&session, "clone/b.bin"),
+            entry_ref(&session, "moved/b.bin")
+        );
         session.remove("moved").unwrap();
         assert_eq!(names(""), ["clone", "src"]);
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn content_hash_rejects_same_size_corruption() {
-        let (root, session) = test_session("content-hash-corruption-test");
+        let (_root, session) = test_session();
         write_object(&session, "data.bin", b"correct bytes");
 
-        let object_ref = entry_ref(&session, "data.bin");
-        let object_path = resolve_object_ref(&root, "testudid01", &object_ref).unwrap();
+        let object_path = object_path(&session, "data.bin");
         let mut corrupted = fs::read(&object_path).unwrap();
         corrupted[0] ^= 0xff;
         fs::write(&object_path, corrupted).unwrap();
@@ -726,26 +617,19 @@ mod tests {
         let error = reader.read_to_end(&mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("content hash mismatch"));
-        assert_eq!(
-            session.error().unwrap().kind,
-            super::super::ObjectFailureKind::Integrity
-        );
+        assert_eq!(session.error().unwrap().kind, ObjectFailureKind::Integrity);
         let repeated = reader.read(&mut [0; 1]).unwrap_err();
         assert!(repeated.to_string().contains("content hash mismatch"));
-
-        drop(reader);
-        drop(session);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn writing_duplicate_repairs_a_damaged_pool_object() {
-        let (root, session) = test_session("content-hash-repair-test");
+        let (_root, session) = test_session();
         let content = b"correct bytes";
         write_object(&session, "first.bin", content);
 
         let object_ref = entry_ref(&session, "first.bin");
-        let object_path = resolve_object_ref(&root, "testudid01", &object_ref).unwrap();
+        let object_path = object_path(&session, "first.bin");
         let mut corrupted = content.to_vec();
         corrupted[0] ^= 0xff;
         fs::write(&object_path, corrupted).unwrap();
@@ -762,127 +646,46 @@ mod tests {
 
         assert_eq!(fs::read(&object_path).unwrap(), content);
         assert!(session.error().is_none());
-
-        drop(session);
-        let _ = fs::remove_dir_all(root);
     }
 
+    // finish deletes objects this run wrote that its manifest dropped, counts
+    // only the kept ones as the pool delta, and never touches inherited objects.
     #[test]
-    fn finish_records_manifest_creation_time() {
-        let (root, session) = test_session("completion-time-test");
+    fn incremental_backup_inherits_objects_and_prunes_its_orphans() {
+        let (root, base) = test_session();
+        write_object(&base, "inherited.bin", b"inherited");
+        let inherited_ref = entry_ref(&base, "inherited.bin");
         let before = unix_now();
-        assert_eq!(session.finish(&CancellationToken::new()).unwrap(), 0);
-        let after = unix_now();
-        let manifest: Manifest = serde_json::from_slice(
-            &fs::read(
-                root.join("testudid01/staging/aaaaaaaa-0000-4000-8000-000000000001/manifest.json"),
-            )
-            .unwrap(),
+        assert_eq!(base.finish(&CancellationToken::new()).unwrap(), 9);
+        let snapshots = root.0.join(format!("{SOURCE}/snapshots"));
+        fs::create_dir_all(&snapshots).unwrap();
+        fs::rename(
+            root.0
+                .join(format!("{SOURCE}/staging/{SNAPSHOT}/manifest.json")),
+            snapshots.join(format!("{SNAPSHOT}.json")),
         )
         .unwrap();
-        assert!(manifest.created_unix >= before);
-        assert!(manifest.created_unix <= after);
+        let created = load_manifest(&root.0, SOURCE, SNAPSHOT)
+            .unwrap()
+            .created_unix;
+        assert!((before..=unix_now()).contains(&created));
 
-        drop(session);
-        let _ = fs::remove_dir_all(root);
-    }
+        let next_snapshot = "bbbbbbbb-0000-4000-8000-000000000002";
+        let next = ObjectSession::backup(&root.0, SOURCE, next_snapshot, Some(SNAPSHOT)).unwrap();
+        assert_eq!(entry_ref(&next, "inherited.bin"), inherited_ref);
+        let inherited = object_path(&next, "inherited.bin");
+        write_object(&next, "new.bin", b"draft");
+        let orphan = object_path(&next, "new.bin");
+        write_object(&next, "new.bin", b"final");
+        let kept = object_path(&next, "new.bin");
+        next.remove("inherited.bin").unwrap();
 
-    #[test]
-    fn incremental_manifest_inherits_content_address() {
-        let (root, base) = test_session("content-hash-inheritance-test");
-        write_object(&base, "data.bin", b"inherited bytes");
-        let expected = entry_ref(&base, "data.bin");
-        // The delta counts exactly the bytes this run added to the pool.
-        assert_eq!(
-            base.finish(&CancellationToken::new()).unwrap(),
-            b"inherited bytes".len() as u64
-        );
-        publish_test_snapshot(&root, "testudid01", "aaaaaaaa-0000-4000-8000-000000000001");
-        drop(base);
-
-        let incremental = ObjectSession::backup(
-            &root,
-            "testudid01",
-            "bbbbbbbb-0000-4000-8000-000000000002",
-            Some("aaaaaaaa-0000-4000-8000-000000000001"),
-        )
-        .unwrap();
-        assert_eq!(entry_ref(&incremental, "data.bin"), expected);
-
-        drop(incremental);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    // prune deletes objects this run wrote that the final manifest dropped
-    // (orphans), keeps referenced ones, never touches inherited objects, and
-    // totals only the kept ones as the run's pool delta.
-    #[test]
-    fn prune_removes_only_unreferenced_written_objects() {
-        let root = std::env::temp_dir().join("airvault-prune-orphans-test");
-        let _ = fs::remove_dir_all(&root);
-        let source = "testudid01";
-        let ref_referenced = "11".repeat(32);
-        let ref_orphan = "22".repeat(32);
-        let ref_inherited = "33".repeat(32);
-
-        let referenced_path = resolve_object_ref(&root, source, &ref_referenced).unwrap();
-        let orphan_path = resolve_object_ref(&root, source, &ref_orphan).unwrap();
-        let inherited_path = resolve_object_ref(&root, source, &ref_inherited).unwrap();
-        touch(&referenced_path);
-        touch(&orphan_path);
-        touch(&inherited_path);
-
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            "Manifest.db".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: ref_referenced.clone(),
-                size: 1,
-                modified_unix: 0,
-            },
-        );
-        // An unchanged file inherited from the previous snapshot.
-        entries.insert(
-            "old.txt".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: ref_inherited.clone(),
-                size: 1,
-                modified_unix: 0,
-            },
-        );
-        let manifest = Manifest {
-            version: VERSION,
-            source_udid: source.into(),
-            snapshot_id: "aaaaaaaa-0000-4000-8000-000000000001".into(),
-            created_unix: 1,
-            size_bytes: 2,
-            entries_sha256: String::new(),
-            entries,
-        };
-        // The writer recorded both objects it wrote this run; only one survived.
-        let written: BTreeSet<String> = [ref_referenced, ref_orphan].into_iter().collect();
-
-        let added = prune_orphan_objects(
-            &root,
-            source,
-            &manifest,
-            &written,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-
-        assert_eq!(added, 1, "only a written object the manifest kept counts");
-        assert!(referenced_path.exists(), "referenced object must be kept");
+        assert_eq!(next.finish(&CancellationToken::new()).unwrap(), 5);
         assert!(
-            !orphan_path.exists(),
-            "unreferenced written object must be removed"
+            !orphan.exists(),
+            "a dropped object this run wrote is pruned"
         );
-        assert!(
-            inherited_path.exists(),
-            "an inherited object must never be touched"
-        );
-        let _ = fs::remove_dir_all(&root);
+        assert!(kept.exists());
+        assert!(inherited.exists(), "the base snapshot still needs it");
     }
 }

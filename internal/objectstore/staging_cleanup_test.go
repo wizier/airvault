@@ -35,21 +35,16 @@ func TestReconcileStagingClearsEnvelopeOfUnreadableManifest(t *testing.T) {
 
 func TestDiscardStagingLeavesPooledOrphanForMarkAndSweep(t *testing.T) {
 	store, source := newTestStore(t)
-	staged := filepath.Join(store.root, source, "staging", genC, "objects", "random.tmp")
-	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(staged, make([]byte, 40), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestObject(t, store.root, source, obj3, 40)
 	pooled, err := store.resolveObjectRef(source, obj3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(pooled), 0o755); err != nil {
+	staged := filepath.Join(store.root, source, "staging", genC, "objects", "random.tmp")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Link(staged, pooled); err != nil {
+	if err := os.Link(pooled, staged); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,52 +88,30 @@ func openTestStaging(t *testing.T, store *Store, source, snapshotID string) *Sta
 	return staging
 }
 
-func TestPublishUsesContentAddressedObjectsFromSharedPool(t *testing.T) {
+// Publication references pooled content-addressed objects, clears the staging
+// envelope and returns a view identical to the final manifest read back.
+func TestPublishCommitsStagedManifestOverSharedPool(t *testing.T) {
 	store, source := newTestStore(t)
 	entries := map[string]manifestEntry{
 		"inherited": {Kind: entryFile, ObjectRef: obj1, Size: 100},
 		"new":       {Kind: entryFile, ObjectRef: obj3, Size: 40},
 	}
 	stagingPath, _ := stageTestManifest(t, store, source, genC, entries)
-	pooled, err := store.resolveObjectRef(source, obj3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(pooled), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(pooled, make([]byte, 40), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Publish(openTestStaging(t, store, source, genC)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.OpenSnapshot(source, genC); err != nil {
-		t.Fatalf("open published snapshot: %v", err)
-	}
-	if info, err := os.Stat(pooled); err != nil || info.Size() != 40 {
-		t.Fatalf("published object: info=%v error=%v", info, err)
-	}
-	if _, err := os.Stat(filepath.Dir(stagingPath)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("staging directory survived publication: %v", err)
-	}
-}
-
-func TestPublishReturnsViewBackedByFinalManifest(t *testing.T) {
-	store, source := newTestStore(t)
-	entries := map[string]manifestEntry{"inherited": {Kind: entryFile, ObjectRef: obj1, Size: 100}}
-	stageTestManifest(t, store, source, genC, entries)
+	writeTestObject(t, store.root, source, obj3, 40)
 	published, err := store.Publish(openTestStaging(t, store, source, genC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := store.OpenSnapshot(source, genC)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open published snapshot: %v", err)
 	}
 	if published.CreatedUnix() != reopened.CreatedUnix() || published.SizeBytes() != reopened.SizeBytes() {
 		t.Fatalf("published view diverges from final manifest: (%d,%d) vs (%d,%d)",
 			published.CreatedUnix(), published.SizeBytes(), reopened.CreatedUnix(), reopened.SizeBytes())
+	}
+	if _, err := os.Stat(filepath.Dir(stagingPath)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("staging directory survived publication: %v", err)
 	}
 	// Completing an already-completed publication is a safe no-op (recovery).
 	if err := store.FinishPublication(published); err != nil {

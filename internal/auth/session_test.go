@@ -21,34 +21,23 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSessionRejectsTampering(t *testing.T) {
+func TestSessionRejectsTamperedExpiredAndForeignValues(t *testing.T) {
 	c := testCreds('a')
 	value, _ := c.IssueSession()
 	payload, sig, _ := strings.Cut(value, ".")
+	expired, _ := c.issueSessionAt(time.Now().Add(-2 * sessionTTL))
+	foreign, _ := testCreds('b').IssueSession()
 	cases := map[string]string{
 		"flipped signature": payload + "." + sig[:len(sig)-1] + "x",
 		"forged expiry":     "99999999999." + sig,
 		"missing separator": payload + sig,
 		"empty":             "",
+		"expired":           expired,
+		"foreign secret":    foreign,
 	}
-	for name, tampered := range cases {
-		if c.ValidSession(tampered) {
-			t.Errorf("%s: tampered value should be rejected", name)
+	for name, rejected := range cases {
+		if c.ValidSession(rejected) {
+			t.Errorf("%s: session value should be rejected", name)
 		}
-	}
-}
-
-func TestSessionRejectsExpired(t *testing.T) {
-	c := testCreds('a')
-	value, _ := c.issueSessionAt(time.Now().Add(-2 * sessionTTL))
-	if c.validSessionAt(value, time.Now()) {
-		t.Fatal("expired session should be rejected")
-	}
-}
-
-func TestSessionRejectsForeignSecret(t *testing.T) {
-	value, _ := testCreds('a').IssueSession()
-	if testCreds('b').ValidSession(value) {
-		t.Fatal("a session signed by a different token must not validate")
 	}
 }

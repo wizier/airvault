@@ -198,24 +198,19 @@ fn not_cancelled(cancel: &CancellationToken) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::ErrorKind;
+
     use super::*;
 
     #[test]
     fn io_errors_have_stable_failure_kinds() {
-        let storage_full = std::io::Error::new(std::io::ErrorKind::StorageFull, "disk full");
-        assert_eq!(
-            ObjectFailure::from_io("write object", &storage_full).kind,
-            ObjectFailureKind::StorageFull
-        );
-        let quota = std::io::Error::new(std::io::ErrorKind::QuotaExceeded, "quota exceeded");
-        assert_eq!(
-            ObjectFailure::from_io("write object", &quota).kind,
-            ObjectFailureKind::StorageFull
-        );
-        let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
-        assert_eq!(
-            ObjectFailure::from_io("write object", &denied).kind,
-            ObjectFailureKind::Internal
-        );
+        let cases = [
+            (ErrorKind::StorageFull, ObjectFailureKind::StorageFull),
+            (ErrorKind::QuotaExceeded, ObjectFailureKind::StorageFull),
+            (ErrorKind::PermissionDenied, ObjectFailureKind::Internal),
+        ];
+        for (io_kind, expected) in cases {
+            assert_eq!(ObjectFailure::from_io_kind(io_kind, "write").kind, expected);
+        }
     }
 }

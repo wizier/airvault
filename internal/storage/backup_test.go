@@ -45,30 +45,10 @@ func insertTestSnapshot(t *testing.T, store *Store, id string) {
 	}
 }
 
-func cachedFootprint(t *testing.T, store *Store) *int64 {
-	t.Helper()
-	summary, err := store.Backup.SummaryBySource(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return summary[footprintTestSource].DiskBytes
-}
-
-// A delta needs a measured base. Applied to a source with no cached size it must
-// leave the size unknown, not seed one that is short by everything already there.
-func TestAddSourceFootprintLeavesAnUnknownSizeUnknown(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore(t)
-	insertTestSnapshot(t, store, "eeeeeeee-0000-4000-8000-00000000000a")
-
-	if err := store.Backup.AddSourceFootprint(ctx, footprintTestSource, 512); err != nil {
-		t.Fatal(err)
-	}
-	if got := cachedFootprint(t, store); got != nil {
-		t.Fatalf("footprint = %d, want unknown", *got)
-	}
-}
-
+// Re-adopting a source starts its size from nothing, so no cached footprint may
+// outlive the source's snapshots. A delta then needs a measured base: applied to
+// an unknown size it must leave it unknown, not seed one short by everything
+// already on disk.
 func TestNoCachedFootprintOutlivesItsSnapshots(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -84,13 +64,15 @@ func TestNoCachedFootprintOutlivesItsSnapshots(t *testing.T) {
 	if err := store.Backup.DropUnreferencedFootprints(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Re-adopting the source starts from nothing, so a leftover row would shift a
-	// size that no longer describes anything.
 	insertTestSnapshot(t, store, id)
 	if err := store.Backup.AddSourceFootprint(ctx, footprintTestSource, 512); err != nil {
 		t.Fatal(err)
 	}
-	if got := cachedFootprint(t, store); got != nil {
+	summary, err := store.Backup.SummaryBySource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summary[footprintTestSource].DiskBytes; got != nil {
 		t.Fatalf("footprint = %d, want unknown", *got)
 	}
 }

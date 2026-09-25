@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -11,28 +10,29 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
+// testDownload announces size bytes, writes body and then returns err.
 type testDownload struct {
-	*bytes.Reader
+	body string
+	size int64
+	err  error
 }
 
-func (d *testDownload) Size() int64 { return int64(d.Reader.Size()) }
-func (d *testDownload) Close()      {}
-func (d *testDownload) CopyTo(_ context.Context, destination io.Writer) error {
-	_, err := io.Copy(destination, d)
-	return err
+func (d testDownload) Size() int64 { return d.size }
+func (d testDownload) Close()      {}
+func (d testDownload) CopyTo(_ context.Context, destination io.Writer) error {
+	_, _ = io.WriteString(destination, d.body)
+	return d.err
 }
 
 func TestStreamDeviceDownloadWritesCompleteAttachment(t *testing.T) {
-	payload := []byte("phone file contents")
-	download := &testDownload{Reader: bytes.NewReader(payload)}
+	const payload = "phone file contents"
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/download", nil)
-	context := echo.New().NewContext(request, recorder)
+	context := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/download", nil), recorder)
 
-	if err := streamDeviceDownload(context, download, "camera file.heic"); err != nil {
+	if err := streamDeviceDownload(context, testDownload{body: payload, size: int64(len(payload))}, "camera file.heic"); err != nil {
 		t.Fatal(err)
 	}
-	if got := recorder.Body.Bytes(); !bytes.Equal(got, payload) {
+	if got := recorder.Body.String(); got != payload {
 		t.Fatalf("body = %q, want %q", got, payload)
 	}
 	if got, want := recorder.Header().Get("Content-Length"), "19"; got != want {
@@ -43,22 +43,11 @@ func TestStreamDeviceDownloadWritesCompleteAttachment(t *testing.T) {
 	}
 }
 
-type failingDownload struct{}
-
-func (d *failingDownload) Size() int64 { return 10 }
-func (d *failingDownload) Close()      {}
-func (d *failingDownload) CopyTo(_ context.Context, destination io.Writer) error {
-	_, _ = destination.Write([]byte("short"))
-	return io.ErrUnexpectedEOF
-}
-
+// A source that ends short must surface as an error, not a finished download.
 func TestStreamDeviceDownloadReportsTruncatedSource(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/download", nil)
-	context := echo.New().NewContext(request, recorder)
-
-	err := streamDeviceDownload(context, &failingDownload{}, "file.bin")
-	if err != io.ErrUnexpectedEOF {
+	context := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/download", nil), httptest.NewRecorder())
+	download := testDownload{body: "short", size: 10, err: io.ErrUnexpectedEOF}
+	if err := streamDeviceDownload(context, download, "file.bin"); err != io.ErrUnexpectedEOF {
 		t.Fatalf("error = %v, want unexpected EOF", err)
 	}
 }

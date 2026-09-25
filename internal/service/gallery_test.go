@@ -11,38 +11,27 @@ import (
 	"github.com/wizier/airvault/internal/engine"
 )
 
-func TestGalleryIndexIsOnlyAddressableByPageRevision(t *testing.T) {
+// A cached scan is served only to the pagination session it was built for, and
+// only until it expires.
+func TestGalleryIndexServesOnlyItsLivePageRevision(t *testing.T) {
 	index := newGalleryIndex()
-	entry := galleryEntry{
+	index.put("phone", galleryEntry{
 		assets:   []GalleryAsset{{Path: "DCIM/100APPLE/IMG_0001.HEIC"}},
 		at:       time.Now(),
 		revision: "page-session",
+	})
+	for _, other := range []string{"", "another-session"} {
+		if _, ok := index.revision("phone", other); ok {
+			t.Fatalf("revision %q reused the gallery index", other)
+		}
 	}
-	index.put("phone", entry)
-
-	if _, ok := index.revision("phone", ""); ok {
-		t.Fatal("an unversioned request must not reuse the gallery index")
-	}
-	got, ok := index.revision("phone", entry.revision)
-	if !ok || len(got.assets) != 1 {
+	if got, ok := index.revision("phone", "page-session"); !ok || len(got.assets) != 1 {
 		t.Fatalf("revision lookup = %#v, %v", got, ok)
 	}
-	if _, ok := index.revision("phone", "another-session"); ok {
-		t.Fatal("a different pagination session reused the gallery index")
-	}
-}
 
-func TestGalleryIndexExpiresPaginationRevision(t *testing.T) {
-	index := newGalleryIndex()
-	index.put("phone", galleryEntry{
-		at:       time.Now().Add(-galleryCacheTTL),
-		revision: "expired-session",
-	})
-	if _, ok := index.revision("phone", "expired-session"); ok {
-		t.Fatal("expired gallery pagination revision remained readable")
-	}
-	if len(index.byID) != 0 {
-		t.Fatalf("expired gallery entry was not removed: %#v", index.byID)
+	index.put("phone", galleryEntry{at: time.Now().Add(-galleryCacheTTL), revision: "expired-session"})
+	if _, ok := index.revision("phone", "expired-session"); ok || len(index.byID) != 0 {
+		t.Fatalf("expired revision readable=%v, entries left %#v", ok, index.byID)
 	}
 }
 

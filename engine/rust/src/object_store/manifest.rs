@@ -239,35 +239,46 @@ mod tests {
         format!("{:x}", digest.finalize())
     }
 
-    fn single_file_manifest() -> Manifest {
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            "Manifest.db".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: "11".repeat(32),
-                size: 100,
-                modified_unix: 0,
-            },
-        );
-        let mut manifest = Manifest {
-            version: VERSION,
-            source_udid: "testudid01".into(),
-            snapshot_id: "aaaaaaaa-0000-4000-8000-000000000001".into(),
-            created_unix: 1,
-            size_bytes: 100,
-            entries_sha256: String::new(),
-            entries,
-        };
-        manifest.entries_sha256 = entries_checksum(&manifest.entries);
-        manifest
+    fn file(object_ref: &str, size: i64, modified_unix: i64) -> ManifestEntry {
+        ManifestEntry {
+            kind: EntryKind::File,
+            object_ref: object_ref.into(),
+            size,
+            modified_unix,
+        }
+    }
+
+    fn dir() -> ManifestEntry {
+        ManifestEntry {
+            kind: EntryKind::Directory,
+            object_ref: String::new(),
+            size: 0,
+            modified_unix: 0,
+        }
+    }
+
+    fn entry_map<const N: usize>(
+        list: [(&str, ManifestEntry); N],
+    ) -> BTreeMap<String, ManifestEntry> {
+        list.into_iter()
+            .map(|(key, entry)| (key.to_string(), entry))
+            .collect()
     }
 
     // A flipped object reference keeps the same size (so the size check passes),
     // yet would silently restore a different object — the seal must catch it.
     #[test]
     fn manifest_checksum_detects_object_ref_tampering() {
-        let mut manifest = single_file_manifest();
+        let entries = entry_map([("Manifest.db", file(&"11".repeat(32), 100, 0))]);
+        let mut manifest = Manifest {
+            version: VERSION,
+            source_udid: "testudid01".into(),
+            snapshot_id: "aaaaaaaa-0000-4000-8000-000000000001".into(),
+            created_unix: 1,
+            size_bytes: 100,
+            entries_sha256: entries_checksum(&entries),
+            entries,
+        };
         validate_manifest("testudid01", &manifest).expect("untampered manifest validates");
 
         manifest.entries.get_mut("Manifest.db").unwrap().object_ref = "22".repeat(32);
@@ -276,76 +287,34 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_invalid_content_address() {
-        let entries = BTreeMap::from([(
-            "file".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: "not-a-sha256".into(),
-                size: 1,
-                modified_unix: 0,
-            },
-        )]);
-        let error = inspect_manifest_entries(&entries, || false).unwrap_err();
-        assert!(error.contains("invalid object reference"));
-    }
-
-    #[test]
-    fn manifest_requires_explicit_directory_parents() {
-        let entries = BTreeMap::from([(
-            "missing/file".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: "11".repeat(32),
-                size: 1,
-                modified_unix: 0,
-            },
-        )]);
-
-        let error = inspect_manifest_entries(&entries, || false).unwrap_err();
-        assert!(error.contains("missing parent directory"), "got: {error}");
-
-        let entries = BTreeMap::from([
+    fn manifest_rejects_malformed_entries() {
+        let object = "11".repeat(32);
+        let too_deep = vec!["a"; MAX_LOGICAL_DEPTH + 1].join("/");
+        let cases = [
             (
-                "parent".to_string(),
-                ManifestEntry {
-                    kind: EntryKind::File,
-                    object_ref: "11".repeat(32),
-                    size: 1,
-                    modified_unix: 0,
-                },
+                entry_map([("file", file("not-a-sha256", 1, 0))]),
+                "invalid object reference",
             ),
             (
-                "parent/child".to_string(),
-                ManifestEntry {
-                    kind: EntryKind::File,
-                    object_ref: "22".repeat(32),
-                    size: 1,
-                    modified_unix: 0,
-                },
+                entry_map([("missing/file", file(&object, 1, 0))]),
+                "missing parent directory",
             ),
-        ]);
-        let error = inspect_manifest_entries(&entries, || false).unwrap_err();
-        assert!(error.contains("is not a directory"), "got: {error}");
-    }
-
-    #[test]
-    fn manifest_rejects_excessive_logical_depth() {
-        let key = std::iter::repeat_n("a", MAX_LOGICAL_DEPTH + 1)
-            .collect::<Vec<_>>()
-            .join("/");
-        let entries = BTreeMap::from([(
-            key,
-            ManifestEntry {
-                kind: EntryKind::Directory,
-                object_ref: String::new(),
-                size: 0,
-                modified_unix: 0,
-            },
-        )]);
-
-        let error = inspect_manifest_entries(&entries, || false).unwrap_err();
-        assert!(error.contains("exceeds 128 components"), "got: {error}");
+            (
+                entry_map([
+                    ("parent", file(&object, 1, 0)),
+                    ("parent/child", file(&object, 1, 0)),
+                ]),
+                "is not a directory",
+            ),
+            (
+                entry_map([(too_deep.as_str(), dir())]),
+                "exceeds 128 components",
+            ),
+        ];
+        for (entries, expected) in cases {
+            let error = inspect_manifest_entries(&entries, || false).unwrap_err();
+            assert!(error.contains(expected), "got: {error}");
+        }
     }
 
     // Golden vectors shared with Go (TestEntriesChecksumMatchesRustVector): both
@@ -353,51 +322,16 @@ mod tests {
     // pins byte-wise key order ("B" < "a" < UTF-8 "а").
     #[test]
     fn manifest_seal_matches_go_golden() {
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            "A<&".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: "11".repeat(32),
-                size: 7,
-                modified_unix: 9,
-            },
-        );
         assert_eq!(
-            entries_checksum(&entries),
+            entries_checksum(&entry_map([("A<&", file(&"11".repeat(32), 7, 9))])),
             "98bcef975d7c1daa1f331dd9aad8555d15335fcd07c17062ce24380e999aa176"
         );
-
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            "a".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: "11".repeat(32),
-                size: 1,
-                modified_unix: 2,
-            },
-        );
-        entries.insert(
-            "B".to_string(),
-            ManifestEntry {
-                kind: EntryKind::Directory,
-                object_ref: String::new(),
-                size: 0,
-                modified_unix: 0,
-            },
-        );
-        entries.insert(
-            "а".to_string(),
-            ManifestEntry {
-                kind: EntryKind::File,
-                object_ref: "22".repeat(32),
-                size: 3,
-                modified_unix: 4,
-            },
-        );
         assert_eq!(
-            entries_checksum(&entries),
+            entries_checksum(&entry_map([
+                ("a", file(&"11".repeat(32), 1, 2)),
+                ("B", dir()),
+                ("а", file(&"22".repeat(32), 3, 4)),
+            ])),
             "42077a9ba0fdb9f9027e23b72e0bb7bfc192a161fc5b8a80127ec3b43cb5a621"
         );
     }

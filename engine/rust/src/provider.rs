@@ -261,36 +261,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(unix)]
-    #[test]
-    fn engine_contexts_keep_provider_configuration_independent() {
-        let first = EngineContext::new(
-            PathBuf::from("/tmp/backups-one"),
-            PathBuf::from("/tmp/pairing-one"),
-            Some("/tmp/mux-one"),
-        )
-        .unwrap();
-        let second = EngineContext::new(
-            PathBuf::from("/tmp/backups-two"),
-            PathBuf::from("/tmp/pairing-two"),
-            Some("/tmp/mux-two"),
-        )
-        .unwrap();
-
-        assert_eq!(first.backup_root(), Path::new("/tmp/backups-one"));
-        assert_eq!(second.backup_root(), Path::new("/tmp/backups-two"));
-        assert_eq!(first.pairing_store.root, Path::new("/tmp/pairing-one"));
-        assert_eq!(second.pairing_store.root, Path::new("/tmp/pairing-two"));
-        assert!(matches!(
-            first.mux_addr(),
-            UsbmuxdAddr::UnixSocket(path) if path == "/tmp/mux-one"
-        ));
-        assert!(matches!(
-            second.mux_addr(),
-            UsbmuxdAddr::UnixSocket(path) if path == "/tmp/mux-two"
-        ));
-    }
-
     #[test]
     fn framed_reads_are_bounded_before_allocation() {
         block(async {

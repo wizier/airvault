@@ -25,6 +25,8 @@ import (
 
 const cleanupTestSnapshot = "cccccccc-0000-4000-8000-000000000003"
 
+var brokenManifest = []byte(`{"broken":true}`)
+
 func newSnapshotCleanupService(t *testing.T) (*Service, string) {
 	t.Helper()
 	db, err := sqlx.Open("sqlite", filepath.Join(t.TempDir(), "catalog.db"))
@@ -59,23 +61,12 @@ func newSnapshotCleanupService(t *testing.T) (*Service, string) {
 	return svc, root
 }
 
-func writeUnpublishedStagingState(t *testing.T, root, source string) (string, string) {
+func writeUnpublishedStagingState(t *testing.T, root, source string) string {
 	t.Helper()
 	stagingDir := filepath.Join(root, source, "staging", cleanupTestSnapshot)
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stagingDir, "manifest.json.tmp"), []byte(`{"incomplete":true}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	objectDir := filepath.Join(stagingDir, "objects")
-	if err := os.MkdirAll(objectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(objectDir, "random.tmp"), []byte("unfinished"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return stagingDir, objectDir
+	writeTestFile(t, filepath.Join(stagingDir, "manifest.json.tmp"), []byte(`{"incomplete":true}`))
+	writeTestFile(t, filepath.Join(stagingDir, "objects", "random.tmp"), []byte("unfinished"))
+	return stagingDir
 }
 
 // The minimum an iOS backup must contain to pass validation. Constant, so the
@@ -160,6 +151,31 @@ func requireCleanupPathAbsent(t *testing.T, path string) {
 	}
 }
 
+func requirePathsPresent(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("path %s was removed: %v", path, err)
+		}
+	}
+}
+
+func requireNotCataloged(t *testing.T, svc *Service, snapshotID string) {
+	t.Helper()
+	if _, err := svc.store.Backup.Get(context.Background(), snapshotID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("snapshot %s is in the catalog: %v", snapshotID, err)
+	}
+}
+
+func reconcileStore(t *testing.T, svc *Service) []string {
+	t.Helper()
+	sources, err := svc.ReconcileBackupStore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sources
+}
+
 func pendingCleanupSnapshot(source string) *model.Backup {
 	startedAt := int64(1_699_999_000)
 	return &model.Backup{
@@ -170,29 +186,19 @@ func pendingCleanupSnapshot(source string) *model.Backup {
 func TestStartupDiscardsUnpublishedAttemptAndNextSnapshotStartsFresh(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0003"
-	stagingDir, objectDir := writeUnpublishedStagingState(t, root, source)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	stagingDir := writeUnpublishedStagingState(t, root, source)
+	reconcileStore(t, svc)
 
 	fresh, baseSnapshotID, err := svc.prepareSnapshot(context.Background(), &runReservation{udid: source})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.ID == cleanupTestSnapshot {
-		t.Fatalf("prepareSnapshot reused interrupted snapshot %s", fresh.ID)
+	if fresh.ID == cleanupTestSnapshot || baseSnapshotID != "" {
+		t.Fatalf("prepareSnapshot = (%s, base %q), want a fresh snapshot with no base", fresh.ID, baseSnapshotID)
 	}
-	if baseSnapshotID != "" {
-		t.Fatalf("base snapshot = %q, want none", baseSnapshotID)
-	}
-	if _, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("unpublished snapshot entered the catalog: %v", err)
-	}
-	if _, err := svc.store.Backup.Get(context.Background(), fresh.ID); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("fresh mutable snapshot entered the catalog: %v", err)
-	}
+	requireNotCataloged(t, svc, cleanupTestSnapshot)
+	requireNotCataloged(t, svc, fresh.ID)
 	requireCleanupPathAbsent(t, stagingDir)
-	requireCleanupPathAbsent(t, objectDir)
 }
 
 func TestStartupRecoversPublishedAttemptAsIncrementalBase(t *testing.T) {
@@ -203,19 +209,14 @@ func TestStartupRecoversPublishedAttemptAsIncrementalBase(t *testing.T) {
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	reconcileStore(t, svc)
 
 	fresh, baseSnapshotID, err := svc.prepareSnapshot(context.Background(), &runReservation{udid: source})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.ID == cleanupTestSnapshot {
-		t.Fatalf("prepareSnapshot reused published snapshot %s", fresh.ID)
-	}
-	if baseSnapshotID != cleanupTestSnapshot {
-		t.Fatalf("base snapshot = %q, want recovered %q", baseSnapshotID, cleanupTestSnapshot)
+	if fresh.ID == cleanupTestSnapshot || baseSnapshotID != cleanupTestSnapshot {
+		t.Fatalf("prepareSnapshot = (%s, base %q), want a fresh snapshot on base %s", fresh.ID, baseSnapshotID, cleanupTestSnapshot)
 	}
 	requireCleanupPathAbsent(t, stagingDir)
 	recovered, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
@@ -225,127 +226,50 @@ func TestStartupRecoversPublishedAttemptAsIncrementalBase(t *testing.T) {
 	if recovered.CreatedAt == 0 {
 		t.Fatalf("recovered snapshot has no creation time: %+v", recovered)
 	}
-	for _, path := range publishedPaths {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("published data was removed at %s: %v", path, err)
-		}
-	}
+	requirePathsPresent(t, publishedPaths...)
 }
 
 // Deleting a device never reads a manifest and never asks the collector what it
 // recognises: whatever the source left behind, the tree goes.
 func TestDeleteBackupSourceRemovesSourceWhateverItLeftBehind(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		source   string
-		leftover func(t *testing.T, root, source string)
-	}{
-		{
-			name:   "unpublished staging",
-			source: "testphoneudid0002",
-			leftover: func(t *testing.T, root, source string) {
-				writeUnpublishedStagingState(t, root, source)
-			},
-		},
-		{
-			// A collection refuses a pool it cannot recognise; the tree goes anyway.
-			name:   "unrecognised object pool",
-			source: "testphoneudid0013",
-			leftover: func(t *testing.T, root, source string) {
-				objectsRoot := filepath.Join(root, source, "objects")
-				if err := os.MkdirAll(objectsRoot, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				stray := filepath.Join(objectsRoot, "not-an-object-prefix")
-				if err := os.WriteFile(stray, []byte("junk"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name:   "unreadable manifest",
-			source: "testphoneudid0010",
-			leftover: func(t *testing.T, root, source string) {
-				manifestPath := filepath.Join(root, source, "snapshots", cleanupTestSnapshot+".json")
-				if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(manifestPath, []byte(`{"broken":true}`), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			svc, root := newSnapshotCleanupService(t)
-			test.leftover(t, root, test.source)
-
-			lease, err := svc.ops.acquire("test", snapshotWriteResource(test.source))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := svc.deleteBackupSource(context.Background(), lease, test.source); err != nil {
-				t.Fatal(err)
-			}
-			// Reclamation runs in the background and owns the write lease.
-			svc.wg.Wait()
-			requireCleanupPathAbsent(t, filepath.Join(root, test.source))
-			if _, err := svc.ops.acquire("test", snapshotWriteResource(test.source)); err != nil {
-				t.Fatalf("write lease was not released after reclamation: %v", err)
-			}
-		})
-	}
-}
-
-func TestDeletingTheLastSnapshotRemovesRowObjectsAndSourceTree(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
-	const source = "testphoneudid0012"
-	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	const source = "testphoneudid0002"
+	writeUnpublishedStagingState(t, root, source)
+	writeTestFile(t, filepath.Join(root, source, "objects", "not-an-object-prefix"), []byte("junk"))
+	writeTestFile(t, filepath.Join(root, source, "snapshots", cleanupTestSnapshot+".json"), brokenManifest)
 
-	if err := svc.DeleteSnapshots(context.Background(), source, []string{cleanupTestSnapshot}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("catalog row survived snapshot deletion: %v", err)
-	}
-	// Object collection runs in the background and owns the write lease. Nothing
-	// is reachable afterwards, so it takes manifest, objects and directories
-	// alike and the source stops being listed at every later startup.
-	svc.wg.Wait()
-	requireCleanupPathAbsent(t, filepath.Join(root, source))
-	sources, err := svc.objects.ListSources()
+	lease, err := svc.ops.acquire("test", snapshotWriteResource(source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sources) != 0 {
-		t.Fatalf("emptied source is still listed: %v", sources)
+	if err := svc.deleteBackupSource(context.Background(), lease, source); err != nil {
+		t.Fatal(err)
 	}
+	// Reclamation runs in the background and owns the write lease.
+	svc.wg.Wait()
+	requireCleanupPathAbsent(t, filepath.Join(root, source))
 	if _, err := svc.ops.acquire("test", snapshotWriteResource(source)); err != nil {
-		t.Fatalf("write lease was not released after background collection: %v", err)
+		t.Fatalf("write lease was not released after reclamation: %v", err)
 	}
 }
 
-func TestDeleteSnapshotsRefreshesUsageCacheBeforeCollection(t *testing.T) {
+func TestDeleteSnapshotsRecountsUsageThenEmptiesTheSource(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0014"
 	const keptID = "eeeeeeee-0000-4000-8000-000000000005"
 	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	writePublishedSnapshot(t, root, source, keptID)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	keptPaths := writePublishedSnapshot(t, root, source, keptID)
+	reconcileStore(t, svc)
 
 	if err := svc.DeleteSnapshots(context.Background(), source, []string{cleanupTestSnapshot}); err != nil {
 		t.Fatal(err)
 	}
+	requireNotCataloged(t, svc, cleanupTestSnapshot)
 	kept, err := svc.store.Backup.Get(context.Background(), keptID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestInfo, err := os.Stat(filepath.Join(root, source, "snapshots", keptID+".json"))
+	manifestInfo, err := os.Stat(keptPaths[len(keptPaths)-1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,6 +282,20 @@ func TestDeleteSnapshotsRefreshesUsageCacheBeforeCollection(t *testing.T) {
 	svc.wg.Wait()
 	if got := sourceFootprint(t, svc, source); got == nil || *got != want {
 		t.Fatalf("footprint after collection = %v, want %d", got, want)
+	}
+
+	// With the last snapshot gone nothing is reachable: collection takes manifest,
+	// objects and directories alike, so the source stops being listed.
+	if err := svc.DeleteSnapshots(context.Background(), source, []string{keptID}); err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+	requireCleanupPathAbsent(t, filepath.Join(root, source))
+	if sources, err := svc.objects.ListSources(); err != nil || len(sources) != 0 {
+		t.Fatalf("emptied source is still listed: %v, %v", sources, err)
+	}
+	if _, err := svc.ops.acquire("test", snapshotWriteResource(source)); err != nil {
+		t.Fatalf("write lease was not released after background collection: %v", err)
 	}
 }
 
@@ -421,60 +359,41 @@ func TestReconcileKeepsOneOwnerOfADuplicatedSnapshotID(t *testing.T) {
 	writePublishedSnapshot(t, root, kept, cleanupTestSnapshot)
 	copied := writePublishedSnapshot(t, root, ignored, cleanupTestSnapshot)
 
-	sources, err := svc.ReconcileBackupStore(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sources) != 2 {
-		t.Fatalf("sources = %v, want both", sources)
-	}
-	row, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row.SourceUDID != kept {
-		t.Fatalf("snapshot owner = %s, want %s", row.SourceUDID, kept)
-	}
-	// The copy stays on disk, so collection keeps its objects reachable.
-	for _, path := range copied {
-		if _, err := os.Lstat(path); err != nil {
-			t.Fatalf("ignored copy was removed: %v", err)
+	// Every restart keeps the same owner, never flipping to the copy.
+	for pass := range 2 {
+		if sources := reconcileStore(t, svc); len(sources) != 2 {
+			t.Fatalf("pass %d: sources = %v, want both", pass, sources)
+		}
+		row, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.SourceUDID != kept {
+			t.Fatalf("pass %d: snapshot owner = %s, want %s", pass, row.SourceUDID, kept)
 		}
 	}
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if row, err = svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); err != nil {
-		t.Fatal(err)
-	}
-	if row.SourceUDID != kept {
-		t.Fatalf("owner after the second pass = %s, want %s", row.SourceUDID, kept)
-	}
+	// The copy stays on disk, so collection keeps its objects reachable.
+	requirePathsPresent(t, copied...)
 }
 
-func TestReconcileRebuildsCatalogAndBackupOnlyDeviceFromSnapshots(t *testing.T) {
+// Reconcile rebuilds the catalog from manifests, returns every source for the
+// background scrub, keeps a surviving source's footprint across restarts and
+// forgets a snapshot whose manifest disappeared.
+func TestReconcileKeepsCatalogInStepWithManifests(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0005"
-	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
+	paths := writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
+	manifestPath := paths[len(paths)-1]
 
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
+	if sources := reconcileStore(t, svc); len(sources) != 1 || sources[0] != source {
+		t.Fatalf("reconcile sources = %v, want [%s]", sources, source)
 	}
 	backup, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if backup.SizeBytes <= 0 {
-		t.Fatalf("rebuilt backup = %+v", backup)
-	}
-	if backup.TransferredBytes != nil {
-		t.Fatalf("rebuilt transfer history = %d, want unknown", *backup.TransferredBytes)
-	}
-	if backup.StartedAt != nil {
-		t.Fatalf("rebuilt start time = %d, want unknown", *backup.StartedAt)
-	}
-	if backup.CreatedAt != 1_700_000_000 {
-		t.Fatalf("rebuilt creation time = %v, want manifest creation time", backup.CreatedAt)
+	if backup.SizeBytes <= 0 || backup.CreatedAt != fixtureCreatedUnix || backup.TransferredBytes != nil || backup.StartedAt != nil {
+		t.Fatalf("rebuilt backup = %+v, want manifest size and creation time, unknown runtime facts", backup)
 	}
 	devices, err := svc.DeviceList(context.Background())
 	if err != nil {
@@ -484,75 +403,35 @@ func TestReconcileRebuildsCatalogAndBackupOnlyDeviceFromSnapshots(t *testing.T) 
 		t.Fatalf("backup-only devices = %+v", devices)
 	}
 
-	// Footprint is background maintenance, not part of catalog reconcile: drive one
-	// scrub pass and let the sweep settle before asserting the cached size.
+	// Footprint is background maintenance, not part of catalog reconcile.
 	svc.scrub(context.Background(), []string{source})
 	svc.wg.Wait()
-	devices, err = svc.DeviceList(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestInfo, err := os.Stat(filepath.Join(root, source, "snapshots", cleanupTestSnapshot+".json"))
+	manifestInfo, err := os.Stat(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The footprint counts live objects plus the published manifest itself.
-	if want := backup.SizeBytes + manifestInfo.Size(); devices[0].DiskBytes == nil || *devices[0].DiskBytes != want {
-		t.Fatalf("rebuilt disk bytes = %v, want %d", devices[0].DiskBytes, want)
+	want := backup.SizeBytes + manifestInfo.Size()
+	if got := sourceFootprint(t, svc, source); got == nil || *got != want {
+		t.Fatalf("scrubbed footprint = %v, want %d", got, want)
 	}
-}
 
-func TestReconcilePreservesFootprintOfSurvivingSource(t *testing.T) {
-	svc, root := newSnapshotCleanupService(t)
-	const source = "testphoneudid0013"
-	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	svc.scrub(context.Background(), []string{source})
-	svc.wg.Wait()
-	devices, err := svc.DeviceList(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if devices[0].DiskBytes == nil {
-		t.Fatal("footprint not computed by scrub")
-	}
-	want := *devices[0].DiskBytes
-	// A restart re-runs reconcile before the async scrub. It must not blank a
-	// surviving source's footprint, or a source busy at scrub time shows an unknown
-	// size until the next restart.
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	devices, err = svc.DeviceList(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if devices[0].DiskBytes == nil || *devices[0].DiskBytes != want {
-		t.Fatalf("reconcile blanked surviving footprint = %v, want %d", devices[0].DiskBytes, want)
-	}
-}
-
-func TestReconcileReturnsEverySourceForVerification(t *testing.T) {
-	svc, root := newSnapshotCleanupService(t)
-	const source = "testphoneudid0015"
-	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	// Every source is returned for background verification, even when its
-	// catalog and manifest IDs already agree.
-	sources, err := svc.ReconcileBackupStore(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sources) != 1 || sources[0] != source {
-		t.Fatalf("first reconcile sources = %v, want [%s]", sources, source)
-	}
-	sources, err = svc.ReconcileBackupStore(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sources) != 1 || sources[0] != source {
+	// A restart re-runs reconcile before the async scrub: an unchanged source is
+	// still returned for verification and its footprint is not blanked.
+	if sources := reconcileStore(t, svc); len(sources) != 1 || sources[0] != source {
 		t.Fatalf("unchanged reconcile sources = %v, want [%s]", sources, source)
+	}
+	if got := sourceFootprint(t, svc, source); got == nil || *got != want {
+		t.Fatalf("reconcile blanked surviving footprint = %v, want %d", got, want)
+	}
+
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	reconcileStore(t, svc)
+	requireNotCataloged(t, svc, cleanupTestSnapshot)
+	if devices, err := svc.DeviceList(context.Background()); err != nil || len(devices) != 0 {
+		t.Fatalf("backup-only device survived missing manifest: %+v, %v", devices, err)
 	}
 }
 
@@ -561,17 +440,10 @@ func TestStartupMaintenanceSkipsBusySourceAndCollectsOnNextPass(t *testing.T) {
 	const source = "testphoneudid0017"
 	const abandonedID = "eeeeeeee-0000-4000-8000-000000000005"
 	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	reconcileStore(t, svc)
 	const objectRef = "9999999999999999999999999999999999999999999999999999999999999999"
 	staged := filepath.Join(root, source, "staging", abandonedID, "objects", "orphan.tmp")
-	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(staged, []byte("abandoned object"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestFile(t, staged, []byte("abandoned object"))
 	pooled := filepath.Join(root, source, "objects", objectRef[:2], objectRef)
 	if err := os.MkdirAll(filepath.Dir(pooled), 0o755); err != nil {
 		t.Fatal(err)
@@ -582,10 +454,7 @@ func TestStartupMaintenanceSkipsBusySourceAndCollectsOnNextPass(t *testing.T) {
 	// Reconcile drops the abandoned envelope but deliberately leaves its pooled
 	// hard link for GC. The catalog/manifest IDs now agree, yet the source still
 	// belongs in the complete startup pass.
-	sources, err := svc.ReconcileBackupStore(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	sources := reconcileStore(t, svc)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -597,9 +466,7 @@ func TestStartupMaintenanceSkipsBusySourceAndCollectsOnNextPass(t *testing.T) {
 	}
 	svc.StartMaintenance(ctx, sources)
 	svc.wg.Wait()
-	if _, err := os.Stat(pooled); err != nil {
-		t.Fatalf("busy source was swept instead of being deferred: %v", err)
-	}
+	requirePathsPresent(t, pooled)
 	release()
 
 	// The next startup pass finds the source free and reclaims the orphan the
@@ -613,9 +480,7 @@ func TestReclaimStopsWhenCorruptManifestCannotBeRemoved(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0019"
 	paths := writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	reconcileStore(t, svc)
 	manifestPath := paths[len(paths)-1]
 	if err := os.Remove(manifestPath); err != nil {
 		t.Fatal(err)
@@ -628,127 +493,70 @@ func TestReclaimStopsWhenCorruptManifestCannotBeRemoved(t *testing.T) {
 	if err := svc.collectSource(context.Background(), source); err == nil {
 		t.Fatal("reclaim succeeded without removing the corrupt manifest")
 	}
-	for _, objectPath := range paths[:len(paths)-1] {
-		if _, err := os.Stat(objectPath); err != nil {
-			t.Fatalf("published object was swept after manifest removal failed: %v", err)
-		}
-	}
+	requirePathsPresent(t, paths[:len(paths)-1]...)
 }
 
-func TestReconcileRemovesCatalogRowWhoseManifestDisappeared(t *testing.T) {
-	svc, root := newSnapshotCleanupService(t)
-	const source = "testphoneudid0006"
-	paths := writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(paths[len(paths)-1]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("catalog row survived missing manifest: %v", err)
-	}
-	devices, err := svc.DeviceList(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(devices) != 0 {
-		t.Fatalf("backup-only device survived missing manifest: %+v", devices)
-	}
-}
-
-func TestReconcileDropsCorruptManifestNeverAdmitted(t *testing.T) {
+// Reconcile opens only manifests new to the catalog: a corrupt newcomer is
+// never advertised and is unlinked, while bit rot in an admitted one is left
+// for the scrub, which re-verifies seals and drops it so it stops pinning objects.
+func TestCorruptManifestIsDroppedAtAdmissionOrByScrub(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0009"
+	const newcomerID = "dddddddd-0000-4000-8000-000000000004"
 	paths := writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	// Corrupt before the manifest is ever admitted: reconcile must not advertise it
-	// and must unlink it so it stops pinning objects.
-	if err := os.WriteFile(paths[len(paths)-1], []byte(`{"broken":true}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("corrupt manifest was advertised: %v", err)
-	}
-	if _, err := os.Stat(paths[len(paths)-1]); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("corrupt manifest still pins objects: %v", err)
-	}
-}
+	admittedPath := paths[len(paths)-1]
+	reconcileStore(t, svc)
 
-func TestAdmittedManifestTrustedAtReconcileThenDroppedByScrub(t *testing.T) {
-	svc, root := newSnapshotCleanupService(t)
-	const source = "testphoneudid0009"
-	paths := writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// Bit rot after admission: reconcile trusts the admitted manifest without
-	// re-reading, so the restore point survives startup...
-	if err := os.WriteFile(paths[len(paths)-1], []byte(`{"broken":true}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ReconcileBackupStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	newcomerPath := filepath.Join(root, source, "snapshots", newcomerID+".json")
+	writeTestFile(t, newcomerPath, brokenManifest)
+	writeTestFile(t, admittedPath, brokenManifest)
+	reconcileStore(t, svc)
+	requireNotCataloged(t, svc, newcomerID)
+	requireCleanupPathAbsent(t, newcomerPath)
 	if _, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); err != nil {
 		t.Fatalf("admitted snapshot dropped on trusted reconcile: %v", err)
 	}
-	// ...but the background scrub re-verifies seals and drops it so it stops
-	// pinning objects. Seal checks live at restore and here, not at startup.
+
 	svc.scrub(context.Background(), []string{source})
 	svc.wg.Wait()
-	if _, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("scrub kept bit-rotted restore point: %v", err)
-	}
-	if _, err := os.Stat(paths[len(paths)-1]); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("scrub left corrupt manifest pinning objects: %v", err)
-	}
+	requireNotCataloged(t, svc, cleanupTestSnapshot)
+	requireCleanupPathAbsent(t, admittedPath)
 }
 
 // Recovery reclaims its source through the same corrupt-tolerant pass as
 // startup: a bit-rotted sibling manifest is dropped instead of deferring the
-// collection, and the usage cache is refreshed.
-func TestPublishedRecoveryDropsCorruptSiblingAndRefreshesUsage(t *testing.T) {
+// collection, and the usage cache is refreshed. The runtime facts it records
+// survive a later catalog reconcile of the unchanged snapshot.
+func TestPublishedRecoveryDropsCorruptSiblingAndKeepsRuntimeFacts(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0007"
 	row := pendingCleanupSnapshot(source)
 	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	corruptID := "dddddddd-0000-4000-8000-000000000004"
-	corruptPath := filepath.Join(root, source, "snapshots", corruptID+".json")
-	if err := os.WriteFile(corruptPath, []byte(`{"broken":true}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	corruptPath := filepath.Join(root, source, "snapshots", "dddddddd-0000-4000-8000-000000000004.json")
+	writeTestFile(t, corruptPath, brokenManifest)
 
 	transferred := int64(1234)
 	recovered, err := svc.reconcileStagingSnapshot(context.Background(), row, &transferred)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !recovered {
+		t.Fatalf("recover published snapshot: recovered=%v error=%v", recovered, err)
 	}
-	if !recovered {
-		t.Fatal("published snapshot was not recovered")
+	requireCleanupPathAbsent(t, corruptPath)
+	if got := sourceFootprint(t, svc, source); got == nil {
+		t.Fatal("source usage should be refreshed by recovery")
+	}
+
+	if _, err := svc.reconcileCatalogFromStore(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	backup, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if backup.StartedAt == nil || *backup.StartedAt != *row.StartedAt {
+		t.Fatalf("start time = %v, want %d", backup.StartedAt, *row.StartedAt)
+	}
 	if backup.TransferredBytes == nil || *backup.TransferredBytes != transferred {
 		t.Fatalf("transferred bytes = %v, want %d", backup.TransferredBytes, transferred)
-	}
-	if _, err := os.Stat(corruptPath); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("corrupt sibling manifest survived recovery: %v", err)
-	}
-	devices, err := svc.DeviceList(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(devices) != 1 || devices[0].DiskBytes == nil {
-		t.Fatalf("source usage should be refreshed by recovery: %+v", devices)
 	}
 }
 
@@ -757,61 +565,22 @@ func TestPublishedRecoveryDropsCorruptSiblingAndRefreshesUsage(t *testing.T) {
 func TestUnreadableManifestStillClearsStagingEnvelope(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0011"
-	row := pendingCleanupSnapshot(source)
-	stagingDir, _ := writeUnpublishedStagingState(t, root, source)
-	manifestPath := filepath.Join(root, source, "snapshots", cleanupTestSnapshot+".json")
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(manifestPath, []byte(`{"broken":true}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	stagingDir := writeUnpublishedStagingState(t, root, source)
+	writeTestFile(t, filepath.Join(root, source, "snapshots", cleanupTestSnapshot+".json"), brokenManifest)
 
-	recovered, err := svc.reconcileStagingSnapshot(context.Background(), row, nil)
-	if err == nil {
-		t.Fatal("unreadable manifest was reported as reconciled")
-	}
-	if recovered {
-		t.Fatal("unreadable manifest must not count as a recovered snapshot")
+	recovered, err := svc.reconcileStagingSnapshot(context.Background(), pendingCleanupSnapshot(source), nil)
+	if err == nil || recovered {
+		t.Fatalf("unreadable manifest reconciled: recovered=%v error=%v, want an error", recovered, err)
 	}
 	requireCleanupPathAbsent(t, stagingDir)
-}
-
-func TestCatalogReconcilePreservesRuntimeFactsForUnchangedSnapshot(t *testing.T) {
-	svc, root := newSnapshotCleanupService(t)
-	const source = "testphoneudid0008"
-	row := pendingCleanupSnapshot(source)
-	writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
-	transferred := int64(4321)
-	if recovered, err := svc.reconcileStagingSnapshot(context.Background(), row, &transferred); err != nil || !recovered {
-		t.Fatalf("recover published snapshot: recovered=%v error=%v", recovered, err)
-	}
-	before, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.reconcileCatalogFromStore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	after, err := svc.store.Backup.Get(context.Background(), cleanupTestSnapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if before.StartedAt == nil || after.StartedAt == nil || *after.StartedAt != *before.StartedAt {
-		t.Fatalf("start time changed during reconciliation: before=%v after=%v", before.StartedAt, after.StartedAt)
-	}
-	if after.TransferredBytes == nil || *after.TransferredBytes != transferred {
-		t.Fatalf("transfer history changed during reconciliation: %v", after.TransferredBytes)
-	}
 }
 
 func TestCatalogReconcileMovesStaleSnapshotOwnershipToManifestSource(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const staleSource = "zsourcephone"
 	const manifestSource = "asourcephone"
-	row := pendingCleanupSnapshot(staleSource)
 	stalePaths := writePublishedSnapshot(t, root, staleSource, cleanupTestSnapshot)
-	if recovered, err := svc.reconcileStagingSnapshot(context.Background(), row, nil); err != nil || !recovered {
+	if recovered, err := svc.reconcileStagingSnapshot(context.Background(), pendingCleanupSnapshot(staleSource), nil); err != nil || !recovered {
 		t.Fatalf("recover stale catalog owner: recovered=%v error=%v", recovered, err)
 	}
 	if err := os.Remove(stalePaths[len(stalePaths)-1]); err != nil {

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestContextHandlerAddsJobID(t *testing.T) {
+func TestContextHandlerAddsJobIDOnlyFromContext(t *testing.T) {
 	var out bytes.Buffer
 	logger := newRoot(&out, slog.LevelInfo, true).With("component", "go")
 	logger.InfoContext(WithJobID(context.Background(), "job-123"), "started")
@@ -23,13 +23,9 @@ func TestContextHandlerAddsJobID(t *testing.T) {
 	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`).MatchString(got) {
 		t.Fatalf("record does not start with a full timestamp: %s", got)
 	}
-}
 
-func TestContextHandlerLeavesOrdinaryRecordAlone(t *testing.T) {
-	var out bytes.Buffer
-	logger := newRoot(&out, slog.LevelInfo, true)
+	out.Reset()
 	logger.Info("ready")
-
 	if got := out.String(); strings.Contains(got, "job_id=") {
 		t.Fatalf("ordinary record unexpectedly contains job id: %s", got)
 	}

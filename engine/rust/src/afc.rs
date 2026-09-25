@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn session_open_enters_runtime_before_constructing_timer() {
+    fn open_reports_a_bad_source_through_rc_and_detail() {
         let udid = b"test-udid";
         let context = EngineContext::new(
             PathBuf::from("/tmp/airvault-backups"),
@@ -747,18 +747,17 @@ mod tests {
         unsafe { av_buffer_free(error.detail) };
     }
 
+    // Close must win over both an idle resource and one still in flight, or a
+    // closed session keeps a device connection alive.
     #[test]
-    fn closed_slot_rejects_in_flight_resource() {
-        let slot = Slot::new(7);
-        assert_eq!(slot.take(), Some(7));
-        slot.close();
-        assert_eq!(slot.put(7), Err(7));
-    }
+    fn a_closed_slot_holds_no_resource() {
+        let idle = Slot::new(7);
+        idle.close();
+        assert_eq!(idle.take(), None);
 
-    #[test]
-    fn close_collects_idle_resource() {
-        let slot = Slot::new(7);
-        slot.close();
-        assert_eq!(slot.take(), None);
+        let in_flight = Slot::new(7);
+        assert_eq!(in_flight.take(), Some(7));
+        in_flight.close();
+        assert_eq!(in_flight.put(7), Err(7));
     }
 }

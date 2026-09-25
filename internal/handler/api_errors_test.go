@@ -12,30 +12,25 @@ import (
 	"github.com/wizier/airvault/internal/domain"
 )
 
+// The wire payload carries only the stable code, never a diagnostic.
 func TestAPIErrorPayloadContainsCodeOnly(t *testing.T) {
-	_, body := mapAPIError(domain.ErrBusy)
-	payload, err := json.Marshal(errorResponse{Error: body})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := string(payload), `{"error":{"code":"resource_busy"}}`; got != want {
-		t.Fatalf("error payload = %s, want %s", got, want)
-	}
-}
-
-func TestValidationErrorUsesStableCodeWithoutDiagnostic(t *testing.T) {
-	status, body := mapAPIError(&domain.ValidationError{
-		Code: "invalid_path", Message: "native path parser detail",
-	})
-	if status != http.StatusUnprocessableEntity || body.Code != "invalid_path" {
-		t.Fatalf("validation error = (%d, %#v), want 422 invalid_path", status, body)
-	}
-	payload, err := json.Marshal(errorResponse{Error: body})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := string(payload), `{"error":{"code":"invalid_path"}}`; got != want {
-		t.Fatalf("error payload = %s, want %s", got, want)
+	for _, test := range []struct {
+		err         error
+		wantStatus  int
+		wantPayload string
+	}{
+		{domain.ErrBusy, http.StatusConflict, `{"error":{"code":"resource_busy"}}`},
+		{&domain.ValidationError{Code: "invalid_path", Message: "native path parser detail"},
+			http.StatusUnprocessableEntity, `{"error":{"code":"invalid_path"}}`},
+	} {
+		status, body := mapAPIError(test.err)
+		payload, err := json.Marshal(errorResponse{Error: body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != test.wantStatus || string(payload) != test.wantPayload {
+			t.Errorf("mapAPIError(%v) = %d %s, want %d %s", test.err, status, payload, test.wantStatus, test.wantPayload)
+		}
 	}
 }
 

@@ -142,34 +142,25 @@ func TestProgressSinkPhaseTransitions(t *testing.T) {
 	}
 }
 
-// The idle stage holds until the first payload byte, which is the whole window
-// where the phone diffs against the previous backup and sends nothing.
-func TestProgressSinkNamesTheWaitBeforeTheFirstByte(t *testing.T) {
-	s := newTestService()
-	run := registerRun(s)
-	sink := s.progressSink(run, StageCalculating, StageBackingUp, 0)
-
-	sink(engine.Progress{})
-	if got := s.runs[run.udid].progress.Stage; got != StageCalculating {
-		t.Fatalf("before any byte: stage=%q", got)
-	}
-
-	sink(engine.Progress{BytesDone: 1})
-	if got := s.runs[run.udid].progress.Stage; got != StageBackingUp {
-		t.Fatalf("after the first byte: stage=%q", got)
-	}
-}
-
-// A percentage can reach the host before the bytes of the file that earned it,
-// and it means the phone is sending just the same.
-func TestProgressSinkLeavesTheIdleStageOnAPercentAlone(t *testing.T) {
-	s := newTestService()
-	run := registerRun(s)
-	sink := s.progressSink(run, StageCalculating, StageBackingUp, 0)
-
-	sink(engine.Progress{Percent: 1})
-	if got := s.runs[run.udid].progress.Stage; got != StageBackingUp {
-		t.Fatalf("percent without bytes: stage=%q", got)
+// The idle stage holds until the phone sends anything: the whole window where
+// it diffs against the previous backup. A percentage can arrive before the bytes
+// that earned it and means the phone is sending just the same.
+func TestProgressSinkLeavesTheIdleStageOnFirstPayload(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		frame engine.Progress
+		want  RunStage
+	}{
+		{"nothing sent", engine.Progress{}, StageCalculating},
+		{"first byte", engine.Progress{BytesDone: 1}, StageBackingUp},
+		{"percent alone", engine.Progress{Percent: 1}, StageBackingUp},
+	} {
+		s := newTestService()
+		run := registerRun(s)
+		s.progressSink(run, StageCalculating, StageBackingUp, 0)(test.frame)
+		if got := s.runs[run.udid].progress.Stage; got != test.want {
+			t.Errorf("%s: stage = %q, want %q", test.name, got, test.want)
+		}
 	}
 }
 
@@ -191,15 +182,10 @@ func TestProgressSinkDerivesPercentFromAKnownTotal(t *testing.T) {
 	}
 }
 
-func TestUnclassifiedErrorHasNoCode(t *testing.T) {
-	err := errors.New("device returned an unfamiliar error")
-
-	if got := engineErrorCode(err); got != "" {
-		t.Fatalf("engineErrorCode() = %q, want empty", got)
-	}
-}
-
 func TestEngineErrorCodes(t *testing.T) {
+	if got := engineErrorCode(errors.New("device returned an unfamiliar error")); got != "" {
+		t.Fatalf("unclassified error code = %q, want empty", got)
+	}
 	tests := []struct {
 		kind engine.ErrorKind
 		want string

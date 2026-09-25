@@ -301,12 +301,15 @@ mod tests {
         tree.rename("Snapshot", "Moved", 7).unwrap();
 
         assert!(tree.get("Snapshot/Manifest.db").is_none());
-        assert!(tree.get("Snapshot.plist").is_some(), "sibling survives");
         assert!(tree.get("Moved/Manifest.db").is_some(), "subtree follows");
+
+        tree.remove("Moved").unwrap();
+        assert!(tree.get("Snapshot.plist").is_some(), "sibling survives");
     }
 
     // rename(2) parity: the object store must refuse what the filesystem refuses,
-    // or a move silently drops files the manifest still lists.
+    // or a move silently drops files the manifest still lists. Moving a populated
+    // directory onto itself is the one allowed case.
     #[test]
     fn a_move_never_clobbers_a_populated_target() {
         let mut tree = Tree::new();
@@ -314,6 +317,8 @@ mod tests {
         file(&mut tree, "ab/old.bin");
 
         assert!(tree.rename("Snapshot/ab", "ab", 9).is_err());
+        tree.rename("ab", "ab", 9)
+            .expect("self-rename must succeed");
 
         assert!(tree.get("ab/old.bin").is_some(), "target subtree survives");
         assert!(tree.get("Snapshot/ab/new.bin").is_some(), "source survives");
@@ -322,31 +327,6 @@ mod tests {
         tree.rename("Snapshot/ab", "ab", 9)
             .expect("an empty target is replaceable");
         assert!(tree.get("ab/new.bin").is_some());
-    }
-
-    // rename(2) parity: a path moved onto itself succeeds and changes nothing —
-    // the from == to guard, without which replacing a non-empty dir with itself
-    // would refuse.
-    #[test]
-    fn a_self_rename_is_a_successful_noop() {
-        let mut tree = Tree::new();
-        file(&mut tree, "d/child.bin");
-
-        tree.rename("d", "d", 9).expect("self-rename must succeed");
-
-        assert!(tree.get("d/child.bin").is_some());
-    }
-
-    #[test]
-    fn a_rejected_rename_keeps_its_source() {
-        let mut tree = Tree::new();
-        file(&mut tree, "source.bin");
-        file(&mut tree, "blocked");
-
-        assert!(tree.rename("source.bin", "blocked/target.bin", 9).is_err());
-
-        assert!(tree.get("source.bin").is_some(), "rename lost its source");
-        assert!(tree.get("blocked/target.bin").is_none());
     }
 
     #[test]
@@ -406,7 +386,10 @@ mod tests {
     fn a_file_never_becomes_a_directory() {
         let mut tree = Tree::new();
         file(&mut tree, "a");
+        file(&mut tree, "source.bin");
         assert!(tree.ensure_dir("a/b", 1).is_err());
         assert!(tree.insert_file("a/b", String::new(), 0, 1).is_err());
+        assert!(tree.rename("source.bin", "a/b", 9).is_err());
+        assert!(tree.get("source.bin").is_some(), "rename lost its source");
     }
 }

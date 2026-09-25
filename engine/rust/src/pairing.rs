@@ -667,44 +667,38 @@ mod password_tests {
     }
 
     #[test]
-    fn password_verdict_preserves_invalid_password_kind() {
-        let value = process_message(207);
-        let outcome = password_change_verdict("DLMessageProcessMessage", &value).unwrap();
-        match outcome {
-            PasswordProtocolOutcome::Rejected(failure) => {
-                assert_eq!(failure.kind, ErrorKind::InvalidBackupPassword)
-            }
-            other => panic!("unexpected outcome: {other:?}"),
-        }
+    fn password_change_commits_only_on_a_zero_verdict() {
+        let outcome =
+            |code| password_change_verdict("DLMessageProcessMessage", &process_message(code));
+        assert!(matches!(
+            outcome(0),
+            Some(PasswordProtocolOutcome::Committed)
+        ));
+        assert!(matches!(
+            outcome(207),
+            Some(PasswordProtocolOutcome::Rejected(failure))
+                if failure.kind == ErrorKind::InvalidBackupPassword
+        ));
     }
 
+    // Without a readable verdict the device may or may not have changed the
+    // password, so neither success nor rejection may be reported.
     #[test]
-    fn password_zero_verdict_is_committed() {
-        let value = process_message(0);
-        let outcome = password_change_verdict("DLMessageProcessMessage", &value).unwrap();
-        assert!(matches!(outcome, PasswordProtocolOutcome::Committed));
-    }
-
-    #[test]
-    fn disconnect_is_indeterminate_not_success() {
-        let value = Value::Array(vec![Value::String("DLMessageDisconnect".into())]);
-        let outcome = password_change_verdict("DLMessageDisconnect", &value).unwrap();
-        match outcome {
-            PasswordProtocolOutcome::Indeterminate(failure) => {
-                assert_eq!(failure.kind, ErrorKind::OutcomeUnknown)
-            }
-            other => panic!("unexpected outcome: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn malformed_final_message_is_indeterminate_not_rejection() {
-        let value = Value::Array(vec![
+    fn unreadable_final_message_is_indeterminate() {
+        let disconnect = Value::Array(vec![Value::String("DLMessageDisconnect".into())]);
+        assert!(matches!(
+            password_change_verdict("DLMessageDisconnect", &disconnect),
+            Some(PasswordProtocolOutcome::Indeterminate(failure))
+                if failure.kind == ErrorKind::OutcomeUnknown
+        ));
+        let malformed = Value::Array(vec![
             Value::String("DLMessageProcessMessage".into()),
             Value::Dictionary(Dictionary::new()),
         ]);
-        let outcome = password_change_verdict("DLMessageProcessMessage", &value).unwrap();
-        assert!(matches!(outcome, PasswordProtocolOutcome::Indeterminate(_)));
+        assert!(matches!(
+            password_change_verdict("DLMessageProcessMessage", &malformed),
+            Some(PasswordProtocolOutcome::Indeterminate(_))
+        ));
     }
 
     #[test]

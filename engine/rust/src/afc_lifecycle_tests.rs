@@ -71,6 +71,19 @@ async fn file_open(stream: &mut DuplexStream) {
     .await;
 }
 
+async fn file_read(stream: &mut DuplexStream) {
+    let (packet_num, opcode) = request(stream).await;
+    assert_eq!(opcode, AfcOpcode::Read);
+    reply(
+        stream,
+        packet_num,
+        AfcOpcode::Data,
+        Vec::new(),
+        b"jpeg".to_vec(),
+    )
+    .await;
+}
+
 #[test]
 fn reuses_only_a_cleanly_closed_session() {
     block(async {
@@ -78,18 +91,7 @@ fn reuses_only_a_cleanly_closed_session() {
         let server = tokio::spawn(async move {
             file_info(&mut peer).await;
             file_open(&mut peer).await;
-
-            let (packet_num, opcode) = request(&mut peer).await;
-            assert_eq!(opcode, AfcOpcode::Read);
-            reply(
-                &mut peer,
-                packet_num,
-                AfcOpcode::Data,
-                Vec::new(),
-                b"jpeg".to_vec(),
-            )
-            .await;
-
+            file_read(&mut peer).await;
             let (packet_num, opcode) = request(&mut peer).await;
             assert_eq!(opcode, AfcOpcode::FileClose);
             reply(
@@ -102,15 +104,9 @@ fn reuses_only_a_cleanly_closed_session() {
             .await;
         });
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
-        let outcome = cancel_or_timeout(
-            &CancellationToken::new(),
-            timeouts::DEVICE_WORK,
-            read_small_file(client, "/thumb", 4),
-        )
-        .await;
-        match outcome {
-            Ok(Ok((_, bytes))) => assert_eq!(bytes, b"jpeg"),
-            _ => panic!("small read did not return a reusable session"),
+        match read_small_file(client, "/thumb", 4).await {
+            Ok((_, bytes)) => assert_eq!(bytes, b"jpeg"),
+            Err(_) => panic!("small read did not return a reusable session"),
         }
         server.await.unwrap();
     });
@@ -141,66 +137,38 @@ fn a_missing_file_keeps_the_session() {
     });
 }
 
+// The device never answers the request cancelled at, so only cancellation can
+// end the read: an open descriptor is discarded, a pending close is abandoned.
 #[test]
-fn cancellation_discards_an_open_descriptor() {
-    block(async {
-        let (device, mut peer) = tokio::io::duplex(4096);
-        let cancel = CancellationToken::new();
-        let server_cancel = cancel.clone();
-        let server = tokio::spawn(async move {
-            file_info(&mut peer).await;
-            file_open(&mut peer).await;
-            let (_, opcode) = request(&mut peer).await;
-            assert_eq!(opcode, AfcOpcode::Read);
-            server_cancel.cancel();
-            peer
-        });
-        let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
-        let outcome = cancel_or_timeout(
-            &cancel,
-            timeouts::DEVICE_WORK,
-            read_small_file(client, "/thumb", 4),
-        )
-        .await;
-        assert!(matches!(outcome, Err(Interrupt::Cancelled)));
-        drop(server.await.unwrap());
-    });
-}
-
-#[test]
-fn cancellation_interrupts_file_close() {
-    block(async {
-        let (device, mut peer) = tokio::io::duplex(4096);
-        let cancel = CancellationToken::new();
-        let server_cancel = cancel.clone();
-        let server = tokio::spawn(async move {
-            file_info(&mut peer).await;
-            file_open(&mut peer).await;
-
-            let (packet_num, opcode) = request(&mut peer).await;
-            assert_eq!(opcode, AfcOpcode::Read);
-            reply(
-                &mut peer,
-                packet_num,
-                AfcOpcode::Data,
-                Vec::new(),
-                b"jpeg".to_vec(),
+fn cancellation_interrupts_an_open_file_at_read_and_close() {
+    for cancel_at in [AfcOpcode::Read, AfcOpcode::FileClose] {
+        block(async move {
+            let (device, mut peer) = tokio::io::duplex(4096);
+            let cancel = CancellationToken::new();
+            let server_cancel = cancel.clone();
+            let server = tokio::spawn(async move {
+                file_info(&mut peer).await;
+                file_open(&mut peer).await;
+                if cancel_at == AfcOpcode::FileClose {
+                    file_read(&mut peer).await;
+                }
+                let (_, opcode) = request(&mut peer).await;
+                assert_eq!(opcode, cancel_at);
+                server_cancel.cancel();
+                peer
+            });
+            let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
+            let outcome = cancel_or_timeout(
+                &cancel,
+                timeouts::DEVICE_WORK,
+                read_small_file(client, "/thumb", 4),
             )
             .await;
-
-            let (_, opcode) = request(&mut peer).await;
-            assert_eq!(opcode, AfcOpcode::FileClose);
-            server_cancel.cancel();
-            peer
+            assert!(
+                matches!(outcome, Err(Interrupt::Cancelled)),
+                "{cancel_at:?}"
+            );
+            drop(server.await.unwrap());
         });
-        let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
-        let outcome = cancel_or_timeout(
-            &cancel,
-            timeouts::DEVICE_WORK,
-            read_small_file(client, "/thumb", 4),
-        )
-        .await;
-        assert!(matches!(outcome, Err(Interrupt::Cancelled)));
-        drop(server.await.unwrap());
-    });
+    }
 }

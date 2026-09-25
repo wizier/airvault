@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/wizier/airvault/internal/engine"
@@ -69,67 +69,47 @@ func TestApplyActivationKeepsLastKnownOnFailedRead(t *testing.T) {
 	}
 }
 
-// fakeEngine drives just OpenLockObserver for the lock-observer supervisor.
-type fakeEngine struct {
-	openLock func(ctx context.Context, device engine.DeviceID) (engine.LockStream, error)
+// fakeLockEngine opens lock streams that stay silent until their observer is
+// cancelled, recording each open and close.
+type fakeLockEngine struct {
+	opened, closed chan struct{}
 }
 
-func (f *fakeEngine) OpenLockObserver(ctx context.Context, device engine.DeviceID) (engine.LockStream, error) {
-	return f.openLock(ctx, device)
+func (f fakeLockEngine) OpenLockObserver(ctx context.Context, _ engine.DeviceID) (engine.LockStream, error) {
+	f.opened <- struct{}{}
+	return fakeLockStream{ctx: ctx, closed: f.closed}, nil
 }
 
 type fakeLockStream struct {
-	ctx     context.Context
-	stopped chan<- struct{}
-	once    sync.Once
+	ctx    context.Context
+	closed chan struct{}
 }
 
-func (s *fakeLockStream) Next() (engine.ScreenLockSignal, error) {
+func (s fakeLockStream) Next() (engine.ScreenLockSignal, error) {
 	<-s.ctx.Done()
-	s.once.Do(func() {
-		if s.stopped != nil {
-			s.stopped <- struct{}{}
-		}
-	})
 	return 0, s.ctx.Err()
 }
 
-func (s *fakeLockStream) Close() error {
-	s.once.Do(func() {
-		if s.stopped != nil {
-			s.stopped <- struct{}{}
-		}
-	})
+func (s fakeLockStream) Close() error {
+	s.closed <- struct{}{}
 	return nil
 }
 
 // The lock observer runs while a device is online and stops when it goes offline.
 func TestLockObserverLifecycle(t *testing.T) {
-	running := make(chan struct{}, 2)
-	stopped := make(chan struct{}, 1)
-	fake := &fakeEngine{
-		openLock: func(ctx context.Context, _ engine.DeviceID) (engine.LockStream, error) {
-			running <- struct{}{}
-			return &fakeLockStream{ctx: ctx, stopped: stopped}, nil
-		},
-	}
-	m := newLockObserverMgr(context.Background(), fake, func(string, engine.ScreenLockSignal) {})
-	m.setOnline("phone")
-	select {
-	case <-running:
-	case <-time.After(2 * time.Second):
-		t.Fatal("online device did not start a lock observer")
-	}
-	m.setOnline("phone") // idempotent: an already-running observer is not doubled
-	m.setOffline("phone")
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("offline device did not stop its lock observer")
-	}
-	select {
-	case <-running:
-		t.Fatal("setOnline started a second observer for an already-online device")
-	default:
-	}
+	synctest.Test(t, func(t *testing.T) {
+		fake := fakeLockEngine{opened: make(chan struct{}, 2), closed: make(chan struct{}, 2)}
+		m := newLockObserverMgr(context.Background(), fake, func(string, engine.ScreenLockSignal) {})
+		m.setOnline("phone")
+		m.setOnline("phone") // idempotent: an already-running observer is not doubled
+		synctest.Wait()
+		if got := len(fake.opened); got != 1 {
+			t.Fatalf("online device opened %d lock observers, want 1", got)
+		}
+		m.setOffline("phone")
+		synctest.Wait()
+		if got := len(fake.closed); got != 1 {
+			t.Fatalf("offline device closed %d lock observers, want 1", got)
+		}
+	})
 }
