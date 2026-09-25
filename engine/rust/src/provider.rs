@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use idevice::pairing_file::PairingFile;
 use idevice::provider::{IdeviceProvider, UsbmuxdProvider};
@@ -15,9 +15,10 @@ use idevice::services::lockdown::LockdownClient;
 use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice};
 use idevice::{Idevice, IdeviceError, IdeviceService};
 
+use crate::afc_pool::AfcPool;
 use crate::bounded;
 use crate::logging::init_tracing;
-use crate::pairing_store::PairingStore;
+use crate::pairing_store::{PairingStore, PairingStoreError};
 use crate::timeouts;
 
 // Shared multi-thread tokio runtime. Go always calls in from outside any
@@ -45,14 +46,15 @@ where
     RT.spawn(f)
 }
 
-/// Immutable provider and storage context shared by one explicit AvEngine.
-/// Protocol code receives it as an ordinary dependency; process environment is
-/// never consulted after construction.
+/// Provider and storage context shared by one explicit AvEngine. Protocol code
+/// receives it as an ordinary dependency; process environment is never
+/// consulted after construction. Only the idle AFC pool changes over time.
 #[derive(Debug)]
 pub(crate) struct EngineContext {
     backup_root: PathBuf,
     pub(crate) pairing_store: PairingStore,
     mux_addr: UsbmuxdAddr,
+    pub(crate) afc_pool: Arc<AfcPool>,
 }
 
 impl EngineContext {
@@ -88,7 +90,27 @@ impl EngineContext {
             backup_root,
             pairing_store: PairingStore::new(pairing_root),
             mux_addr,
+            afc_pool: AfcPool::new(),
         })
+    }
+
+    /// Saves our pairing record for `udid`. Idle AFC connections authenticated
+    /// with the previous record are forgotten.
+    pub(crate) fn save_pairing(
+        &self,
+        udid: &str,
+        pairing: &PairingFile,
+    ) -> Result<(), PairingStoreError> {
+        let saved = self.pairing_store.save_pairing(udid, pairing);
+        self.afc_pool.forget(udid);
+        saved
+    }
+
+    /// Deletes our pairing record for `udid` and forgets its idle AFC connections.
+    pub(crate) fn delete_pairing(&self, udid: &str) -> Result<bool, PairingStoreError> {
+        let deleted = self.pairing_store.delete_pairing(udid);
+        self.afc_pool.forget(udid);
+        deleted
     }
 
     pub(crate) fn backup_root(&self) -> &Path {

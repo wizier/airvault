@@ -1,13 +1,22 @@
-use idevice::services::afc::opcode::AfcOpcode;
+use std::ptr;
+use std::sync::Arc;
+
+use idevice::services::afc::opcode::{AfcFopenMode, AfcOpcode};
 use idevice::services::afc::packet::{AfcPacket, AfcPacketHeader};
 use idevice::services::afc::{AfcClient, MAGIC};
 use idevice::Idevice;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use super::read_small_file;
+use super::{
+    av_afc_file_cancel, av_afc_file_close, av_afc_file_read, read_small_file, AvAfcFile, FileGuard,
+    Resource, Slot, Source,
+};
+use crate::afc_pool::{AfcPool, PoolKey, Transport};
 use crate::bounded::{cancel_or_timeout, Interrupt};
-use crate::provider::block;
+use crate::engine_error::ErrorKind;
+use crate::ffi::{av_buffer_free, AvBuffer, AvError};
+use crate::provider::{block, spawn};
 use crate::timeouts;
 
 async fn request(stream: &mut DuplexStream) -> (u64, AfcOpcode) {
@@ -44,7 +53,7 @@ async fn reply(
     stream.write_all(&packet.serialize()).await.unwrap();
 }
 
-async fn file_info(stream: &mut DuplexStream) {
+pub(crate) async fn file_info(stream: &mut DuplexStream) {
     let (packet_num, opcode) = request(stream).await;
     assert_eq!(opcode, AfcOpcode::GetFileInfo);
     reply(
@@ -84,6 +93,19 @@ async fn file_read(stream: &mut DuplexStream) {
     .await;
 }
 
+async fn file_close(stream: &mut DuplexStream) {
+    let (packet_num, opcode) = request(stream).await;
+    assert_eq!(opcode, AfcOpcode::FileClose);
+    reply(
+        stream,
+        packet_num,
+        AfcOpcode::Status,
+        0_u64.to_le_bytes().to_vec(),
+        Vec::new(),
+    )
+    .await;
+}
+
 #[test]
 fn reuses_only_a_cleanly_closed_session() {
     block(async {
@@ -92,16 +114,7 @@ fn reuses_only_a_cleanly_closed_session() {
             file_info(&mut peer).await;
             file_open(&mut peer).await;
             file_read(&mut peer).await;
-            let (packet_num, opcode) = request(&mut peer).await;
-            assert_eq!(opcode, AfcOpcode::FileClose);
-            reply(
-                &mut peer,
-                packet_num,
-                AfcOpcode::Status,
-                0_u64.to_le_bytes().to_vec(),
-                Vec::new(),
-            )
-            .await;
+            file_close(&mut peer).await;
         });
         let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
         match read_small_file(client, "/thumb", 4).await {
@@ -171,4 +184,96 @@ fn cancellation_interrupts_an_open_file_at_read_and_close() {
             drop(server.await.unwrap());
         });
     }
+}
+
+fn media_key() -> PoolKey {
+    PoolKey {
+        udid: "test".to_owned(),
+        source: Source::Media,
+    }
+}
+
+/// An open file handle like av_afc_file_open produces, checked out of `pool`;
+/// the returned peer is the fake device after it answered FileOpen.
+fn open_file(pool: &Arc<AfcPool>) -> (*mut AvAfcFile, DuplexStream) {
+    block(async {
+        let (device, mut peer) = tokio::io::duplex(4096);
+        let client = AfcClient::new(Idevice::new(Box::new(device), "test"));
+        let connect = async { Ok(client) };
+        let (client, origin) = pool
+            .checkout(&media_key(), Transport::Usb, connect)
+            .await
+            .unwrap();
+        let (opened, ()) = tokio::join!(
+            client.open_owned("/file", AfcFopenMode::RdOnly),
+            file_open(&mut peer)
+        );
+        let slot = Arc::new(Slot::new(Resource::File(FileGuard::new(opened.unwrap()))));
+        (Box::into_raw(Box::new(AvAfcFile { slot, origin })), peer)
+    })
+}
+
+fn read(file: *mut AvAfcFile) -> i32 {
+    let mut buffer = [0_u8; 4];
+    let mut read = 0;
+    let mut error = AvError {
+        detail: AvBuffer {
+            ptr: ptr::null_mut(),
+            len: 0,
+        },
+    };
+    let rc = av_afc_file_read(
+        file,
+        buffer.as_mut_ptr(),
+        buffer.len(),
+        &mut read,
+        &mut error,
+    );
+    unsafe { av_buffer_free(error.detail) };
+    rc
+}
+
+// Go's close order: cancel, wait for the call in flight, destroy.
+fn close(file: *mut AvAfcFile) {
+    unsafe {
+        av_afc_file_cancel(file);
+        av_afc_file_close(file);
+    }
+}
+
+#[test]
+fn a_cleanly_closed_file_returns_its_client_to_the_pool() {
+    let pool = AfcPool::new();
+    let (file, mut peer) = open_file(&pool);
+    let server = spawn(async move {
+        file_read(&mut peer).await;
+        file_close(&mut peer).await;
+        peer
+    });
+    assert_eq!(read(file), 0);
+    close(file);
+    assert_eq!(pool.idle_count(&media_key()), 1);
+    drop(block(server).unwrap());
+}
+
+#[test]
+fn a_file_interrupted_mid_read_is_not_pooled() {
+    let pool = AfcPool::new();
+    let (file, mut peer) = open_file(&pool);
+    let (read_seen, read_started) = std::sync::mpsc::channel();
+    // The device never answers the read, so only cancellation can end it.
+    let server = spawn(async move {
+        let (_, opcode) = request(&mut peer).await;
+        assert_eq!(opcode, AfcOpcode::Read);
+        read_seen.send(()).unwrap();
+        peer
+    });
+    let address = file as usize;
+    let reader = std::thread::spawn(move || read(address as *mut AvAfcFile));
+    read_started.recv().unwrap();
+    unsafe { av_afc_file_cancel(file) };
+    assert_eq!(reader.join().unwrap(), ErrorKind::Cancelled.code());
+    close(file);
+    assert_eq!(pool.idle_count(&media_key()), 0);
+    drop(block(server).unwrap());
 }

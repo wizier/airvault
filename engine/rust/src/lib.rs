@@ -9,6 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 
 mod activation;
 mod afc;
+mod afc_pool;
 mod apps;
 mod backup_storage;
 mod bounded;

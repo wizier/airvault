@@ -111,6 +111,8 @@ func deviceWriteResource(udid string) resourceRequest {
 	return resourceRequest{key: "device:" + udid, mode: resourceWrite}
 }
 
+// deviceReadResource covers a file operation in progress. Idle AFC connections
+// the engine pools between requests hold no lease and do nothing on the phone.
 func deviceReadResource(udid string) resourceRequest {
 	return resourceRequest{key: "device:" + udid, mode: resourceRead}
 }

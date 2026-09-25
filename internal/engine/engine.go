@@ -183,8 +183,9 @@ const (
 	AFCAppDocuments AFCSource = 1 // one app's Documents container (house_arrest)
 )
 
-// AFCSession is one sequential, short-lived device connection. Open consumes
-// the session because a file reader owns its dedicated transport until Close.
+// AFCSession is one sequential conversation on an AFC connection; the engine
+// pools idle connections, so Close returns a healthy one for the next session.
+// Open consumes the session because a file reader owns the transport until Close.
 type AFCSession interface {
 	List(path string) ([]string, error)
 	Stat(path string) (AFCEntry, error)
@@ -196,7 +197,7 @@ type AFCSession interface {
 	Close() error
 }
 
-// AFCFile is a cancellable reader backed by one dedicated AFC connection.
+// AFCFile is a cancellable reader that owns its AFC connection until Close.
 type AFCFile interface {
 	io.ReadCloser
 	Size() int64

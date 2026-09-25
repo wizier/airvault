@@ -1,5 +1,6 @@
 //! Stateful Apple File Conduit transport. Go owns paths, pagination, copying
 //! and progress; this module owns only AFC connections and cancellable reads.
+//! Connections come from and return to the engine's idle pool (afc_pool.rs).
 
 use std::ffi::c_char;
 use std::future::Future;
@@ -14,14 +15,16 @@ use idevice::services::afc::{
     AfcClient, FileInfo,
 };
 use idevice::services::house_arrest::HouseArrestClient;
+use idevice::usbmuxd::UsbmuxdDevice;
 use idevice::{IdeviceError, IdeviceService};
 use tokio::io::AsyncSeekExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::afc_pool::{ClientOrigin, PoolKey, Transport};
 use crate::bounded::{cancel_or_timeout, Interrupt};
 use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{block_bounded, engine_ref, guard_error, out_str, to_json, AvEngine, AvError};
-use crate::provider::{block, provider_for, EngineContext, MAX_UDID_BYTES};
+use crate::provider::{block, devices_deduped, provider_from, EngineContext, MAX_UDID_BYTES};
 use crate::timeouts;
 
 const AFC_SOURCE_MEDIA: i32 = 0;
@@ -35,7 +38,7 @@ struct SlotState<T> {
     closed: bool,
 }
 
-// One lock is the linearization point for operation completion and Close.
+// One lock is the linearization point for operation completion and cancel.
 // A resource taken by an operation can only be returned while the slot is
 // still open, so cancellation can never be followed by resource resurrection.
 struct Slot<T> {
@@ -71,15 +74,18 @@ impl<T> Slot<T> {
         Ok(())
     }
 
-    /// Cancels any in-flight operation and releases the idle resource.
-    fn close(&self) {
-        let resource = {
-            let mut state = crate::lock(&self.state);
-            state.closed = true;
-            state.resource.take()
-        };
+    /// Interrupts an operation in flight and refuses later ones. A resource
+    /// taken by that operation can no longer be put back, so it is dropped; an
+    /// idle resource stays for close(), which may still reuse it.
+    fn cancel(&self) {
+        crate::lock(&self.state).closed = true;
         self.cancel.cancel();
-        drop(resource);
+    }
+
+    /// Cancels, then hands the idle resource (if any) to the caller.
+    fn close(&self) -> Option<T> {
+        self.cancel();
+        crate::lock(&self.state).resource.take()
     }
 }
 
@@ -132,15 +138,15 @@ impl Slot<Resource> {
                 result
             }
             Ok((None, result)) => {
-                self.close();
+                self.cancel();
                 result
             }
             Err(Interrupt::Cancelled) => {
-                self.close();
+                self.cancel();
                 Err(cancelled(cancelled_detail))
             }
             Err(Interrupt::TimedOut) => {
-                self.close();
+                self.cancel();
                 Err(EngineFailure::new(ErrorKind::Timeout, timeout_detail))
             }
         }
@@ -214,21 +220,25 @@ impl Drop for FileGuard {
 }
 
 /// Type-distinct FFI wrappers prevent a session from being passed to a file
-/// operation (or vice versa).
+/// operation (or vice versa). Both carry the connection's pool origin, so
+/// closing either returns a healthy idle connection to the pool.
 pub struct AvAfcSession {
     // File-open moves the slot to AvAfcFile while this wrapper stays alive for
     // the rest of the FFI call, so a concurrent cancel cannot free it early.
     slot: Mutex<Option<Arc<Slot<Resource>>>>,
+    origin: ClientOrigin,
 }
 
 pub struct AvAfcFile {
     slot: Arc<Slot<Resource>>,
+    origin: ClientOrigin,
 }
 
 impl AvAfcSession {
-    fn new(slot: Arc<Slot<Resource>>) -> Self {
+    fn new(client: AfcClient, origin: ClientOrigin) -> Self {
         Self {
-            slot: Mutex::new(Some(slot)),
+            slot: Mutex::new(Some(Arc::new(Slot::new(Resource::Session(client))))),
+            origin,
         }
     }
 
@@ -332,12 +342,14 @@ unsafe fn physical_path(ptr: *const u8, len: usize) -> Result<String, EngineFail
     Ok(path)
 }
 
-enum Source {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Source {
     Media,
-    AppDocuments,
+    /// One app's Documents container, by bundle id.
+    AppDocuments(String),
 }
 
-fn parse_source(source: i32, bundle: &str) -> Result<Source, EngineFailure> {
+fn parse_source(source: i32, bundle: String) -> Result<Source, EngineFailure> {
     let bad = |detail: &str| Err(EngineFailure::invalid_argument(detail));
     match source {
         AFC_SOURCE_MEDIA if !bundle.is_empty() => {
@@ -347,25 +359,59 @@ fn parse_source(source: i32, bundle: &str) -> Result<Source, EngineFailure> {
             bad("app Documents source requires a bundle id")
         }
         AFC_SOURCE_MEDIA => Ok(Source::Media),
-        AFC_SOURCE_APP_DOCUMENTS => Ok(Source::AppDocuments),
+        AFC_SOURCE_APP_DOCUMENTS => Ok(Source::AppDocuments(bundle)),
         _ => bad("bad AFC source"),
     }
 }
 
+/// An idle pooled client when the device is still on the same preferred
+/// transport, otherwise a fresh connection. A vanished device loses its idle
+/// clients and fails as DeviceNotFound.
+async fn open_client(
+    context: &EngineContext,
+    key: &PoolKey,
+) -> Result<(AfcClient, ClientOrigin), IdeviceError> {
+    let device = devices_deduped(context)
+        .await?
+        .into_iter()
+        .find(|device| device.udid == key.udid);
+    let Some(device) = device else {
+        context.afc_pool.forget(&key.udid);
+        return Err(IdeviceError::DeviceNotFound);
+    };
+    let transport = Transport::from(&device.connection_type);
+    let connect = connect(context, &device, &key.source);
+    context.afc_pool.checkout(key, transport, connect).await
+}
+
 async fn connect(
     context: &EngineContext,
-    udid: &str,
-    source: Source,
-    bundle: &str,
+    device: &UsbmuxdDevice,
+    source: &Source,
 ) -> Result<AfcClient, IdeviceError> {
-    let provider = provider_for(context, udid).await?;
+    let provider = provider_from(context, device);
     match source {
         Source::Media => AfcClient::connect(&provider).await,
-        Source::AppDocuments => {
+        Source::AppDocuments(bundle) => {
             let house_arrest = HouseArrestClient::connect(&provider).await?;
-            house_arrest.vend_documents(bundle.to_owned()).await
+            house_arrest.vend_documents(bundle.clone()).await
         }
     }
+}
+
+/// Returns a closed handle's idle connection to the pool. A file first closes
+/// its descriptor; if that fails the guard drops and closes the transport.
+async fn release_to_pool(resource: Resource, origin: ClientOrigin) {
+    let client = match resource {
+        Resource::Session(client) => client,
+        Resource::File(file) => {
+            match tokio::time::timeout(timeouts::TEARDOWN, file.close()).await {
+                Ok(Ok(client)) => client,
+                _ => return,
+            }
+        }
+    };
+    origin.check_in(client);
 }
 
 #[derive(serde::Serialize)]
@@ -376,7 +422,8 @@ struct RawStat {
     modified: i64,
 }
 
-/// Opens one short-lived AFC connection. rc 0 or an AV_ERROR_* kind.
+/// Opens an AFC session, reusing an idle pooled connection while it is healthy.
+/// rc 0 or an AV_ERROR_* kind.
 #[no_mangle]
 pub extern "C" fn av_afc_open(
     engine: *mut AvEngine,
@@ -396,14 +443,16 @@ pub extern "C" fn av_afc_open(
         unsafe { *out_session = ptr::null_mut() };
         let udid = unsafe { input(udid_ptr, udid_len, MAX_UDID_BYTES, "udid", false) }?;
         let bundle = unsafe { input(bundle_ptr, bundle_len, MAX_BUNDLE_BYTES, "bundle id", true) }?;
-        let source = parse_source(source, &bundle)?;
-        let client = block_bounded(
+        let key = PoolKey {
+            source: parse_source(source, bundle)?,
+            udid,
+        };
+        let (client, origin) = block_bounded(
             timeouts::DEVICE_WORK,
             "opening AFC session timed out",
-            connect(context, &udid, source, &bundle),
+            open_client(context, &key),
         )?;
-        let slot = Arc::new(Slot::new(Resource::Session(client)));
-        unsafe { *out_session = Box::into_raw(Box::new(AvAfcSession::new(slot))) };
+        unsafe { *out_session = Box::into_raw(Box::new(AvAfcSession::new(client, origin))) };
         Ok(())
     })
 }
@@ -594,14 +643,16 @@ pub extern "C" fn av_afc_file_open(
         // Transfer the resource before publishing the file pointer: Go
         // releases the emptied session wrapper only after this returns.
         // SAFETY: session_slot above proved the handle non-null.
-        if !unsafe { &*session }.detach(&slot) {
-            slot.close();
+        let session = unsafe { &*session };
+        if !session.detach(&slot) {
+            drop(slot.close());
             return Err(cancelled("AFC session cancelled"));
         }
+        let origin = session.origin.clone();
         unsafe {
             *out_size = info.size as u64;
             *out_modified = info.modified.and_utc().timestamp();
-            *out_file = Box::into_raw(Box::new(AvAfcFile { slot }));
+            *out_file = Box::into_raw(Box::new(AvAfcFile { slot, origin }));
         }
         Ok(())
     })
@@ -676,44 +727,51 @@ pub extern "C" fn av_afc_file_seek(file: *mut AvAfcFile, offset: u64, error: *mu
     })
 }
 
-/// Signals cancellation without releasing the wrapper. Go calls this before
-/// waiting for an in-flight FFI operation, then calls close after it returns.
+/// Interrupts an in-flight call without releasing the wrapper; the interrupted
+/// connection is dropped, never pooled. Go calls this before waiting for the
+/// in-flight FFI operation, then calls close after it returns.
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_cancel(session: *mut AvAfcSession) {
     if let Ok(slot) = unsafe { session_slot(session) } {
-        slot.close();
+        slot.cancel();
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_file_cancel(file: *mut AvAfcFile) {
     if let Some(file) = unsafe { file.as_ref() } {
-        file.slot.close();
+        file.slot.cancel();
     }
 }
 
-/// Cancels and closes an AFC session. A null pointer is a no-op.
+/// Closes an AFC session and returns its idle connection to the pool. A null
+/// pointer is a no-op.
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_close(session: *mut AvAfcSession) {
     if !session.is_null() {
-        let slot = crate::lock(&unsafe { Box::from_raw(session) }.slot).take();
-        if let Some(slot) = slot {
-            slot.close();
+        let session = unsafe { Box::from_raw(session) };
+        let slot = crate::lock(&session.slot).take();
+        if let Some(resource) = slot.and_then(|slot| slot.close()) {
+            block(release_to_pool(resource, session.origin));
         }
     }
 }
 
-/// Cancels and closes an AFC file. A null pointer is a no-op.
+/// Closes an AFC file (one FileClose round trip) and returns its connection to
+/// the pool. A null pointer is a no-op.
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_file_close(file: *mut AvAfcFile) {
     if !file.is_null() {
-        unsafe { Box::from_raw(file) }.slot.close();
+        let file = unsafe { Box::from_raw(file) };
+        if let Some(resource) = file.slot.close() {
+            block(release_to_pool(resource, file.origin));
+        }
     }
 }
 
 #[cfg(test)]
 #[path = "afc_lifecycle_tests.rs"]
-mod lifecycle_tests;
+pub(crate) mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -773,17 +831,19 @@ mod tests {
         unsafe { av_buffer_free(error.detail) };
     }
 
-    // Close must win over both an idle resource and one still in flight, or a
-    // closed session keeps a device connection alive.
+    // Cancel refuses further operations but leaves an idle resource for close
+    // to hand back; a resource in flight at cancel can never be put back.
     #[test]
-    fn a_closed_slot_holds_no_resource() {
+    fn cancel_drops_only_a_resource_in_flight() {
         let idle = Slot::new(7);
-        idle.close();
+        idle.cancel();
         assert_eq!(idle.take(), None);
+        assert_eq!(idle.close(), Some(7));
 
         let in_flight = Slot::new(7);
         assert_eq!(in_flight.take(), Some(7));
-        in_flight.close();
+        in_flight.cancel();
         assert_eq!(in_flight.put(7), Err(7));
+        assert_eq!(in_flight.close(), None);
     }
 }

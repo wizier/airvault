@@ -67,7 +67,8 @@ typedef struct AvAfcFile AvAfcFile;
 
 /**
  * Type-distinct FFI wrappers prevent a session from being passed to a file
- * operation (or vice versa).
+ * operation (or vice versa). Both carry the connection's pool origin, so
+ * closing either returns a healthy idle connection to the pool.
  */
 typedef struct AvAfcSession AvAfcSession;
 
@@ -155,7 +156,8 @@ int32_t av_activation_finish(AvEngine *engine,
                              AvError *error);
 
 /**
- * Opens one short-lived AFC connection. rc 0 or an AV_ERROR_* kind.
+ * Opens an AFC session, reusing an idle pooled connection while it is healthy.
+ * rc 0 or an AV_ERROR_* kind.
  */
 int32_t av_afc_open(AvEngine *engine,
                     const uint8_t *udid_ptr,
@@ -234,20 +236,23 @@ int32_t av_afc_file_read(AvAfcFile *file,
 int32_t av_afc_file_seek(AvAfcFile *file, uint64_t offset, AvError *error);
 
 /**
- * Signals cancellation without releasing the wrapper. Go calls this before
- * waiting for an in-flight FFI operation, then calls close after it returns.
+ * Interrupts an in-flight call without releasing the wrapper; the interrupted
+ * connection is dropped, never pooled. Go calls this before waiting for the
+ * in-flight FFI operation, then calls close after it returns.
  */
 void av_afc_cancel(AvAfcSession *session);
 
 void av_afc_file_cancel(AvAfcFile *file);
 
 /**
- * Cancels and closes an AFC session. A null pointer is a no-op.
+ * Closes an AFC session and returns its idle connection to the pool. A null
+ * pointer is a no-op.
  */
 void av_afc_close(AvAfcSession *session);
 
 /**
- * Cancels and closes an AFC file. A null pointer is a no-op.
+ * Closes an AFC file (one FileClose round trip) and returns its connection to
+ * the pool. A null pointer is a no-op.
  */
 void av_afc_file_close(AvAfcFile *file);
 

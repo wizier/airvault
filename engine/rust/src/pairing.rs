@@ -92,7 +92,7 @@ async fn device_unpair(context: &EngineContext, udid: &str, pf: &PairingFile) {
 }
 
 fn delete_local_pairing(context: &EngineContext, udid: &str) -> Result<(), String> {
-    let record = context.pairing_store.delete_pairing(udid);
+    let record = context.delete_pairing(udid);
     let identity = context.pairing_store.delete_identity(udid);
     match (record, identity) {
         (Ok(_), Ok(_)) => Ok(()),
@@ -205,7 +205,7 @@ async fn pair_trust_inner(
             }
             // Our own store is the source of truth. Wi-Fi setup below also
             // ensures that the muxer has a record it can use for discovery.
-            pairing_store.save_pairing(udid, &pf)?;
+            context.save_pairing(udid, &pf)?;
             pairing_store.delete_identity(udid)?;
             if let Err(error) = lc.start_session(&pf).await {
                 tracing::warn!(

@@ -135,6 +135,9 @@ async fn run_mb2(
     progress: ProgressSink,
     cancel: CancellationToken,
 ) -> Result<u64, EngineFailure> {
+    // Idle AFC connections are useless during a multi-minute transfer, and a
+    // restore reboots the phone.
+    context.afc_pool.forget(udid);
     let root = context.backup_root();
     let is_backup = spec.is_backup();
     let sandbox = PathSandbox::new(root, source).map_err(EngineFailure::integrity)?;
