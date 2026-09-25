@@ -2,7 +2,6 @@
 //! snapshot shared with the watcher, battery and the USB list.
 
 use std::ffi::c_char;
-use std::time::Duration;
 
 use idevice::provider::IdeviceProvider;
 use idevice::services::lockdown::LockdownClient;
@@ -80,7 +79,7 @@ impl DeviceMeta {
 /// Enrich a device over lockdown, time-bounded. Failure produces an explicit
 /// unknown result instead of removing a mux-reachable device from the response.
 async fn device_meta(context: &EngineContext, udid: &str) -> DeviceMeta {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    let deadline = tokio::time::Instant::now() + crate::timeouts::DISCOVERY;
     let provider = match tokio::time::timeout_at(deadline, provider_for(context, udid)).await {
         Ok(Ok(provider)) => provider,
         Ok(Err(_)) | Err(_) => return DeviceMeta::unknown(),
@@ -328,7 +327,7 @@ pub extern "C" fn av_device_battery(
         let context = engine.context();
         block_probe(
             err,
-            Duration::from_secs(5),
+            crate::timeouts::PROBE,
             "battery read timed out",
             async move {
                 battery_inner(context, &udid)
@@ -361,11 +360,15 @@ async fn usb_list_inner(context: &EngineContext) -> Result<String, idevice::Idev
         if !matches!(d.connection_type, Connection::Usb) {
             continue;
         }
-        let name =
-            match tokio::time::timeout(Duration::from_secs(3), usb_name(context, &d.udid)).await {
-                Ok(n) if !n.is_empty() => n,
-                _ => d.udid.clone(),
-            };
+        let name = match tokio::time::timeout(
+            crate::timeouts::DISCOVERY,
+            usb_name(context, &d.udid),
+        )
+        .await
+        {
+            Ok(n) if !n.is_empty() => n,
+            _ => d.udid.clone(),
+        };
         items.push(UsbItem { udid: d.udid, name });
     }
     Ok(to_json(&items))

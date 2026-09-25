@@ -14,14 +14,17 @@ use tracing::Instrument;
 use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{engine_udid, guard_error, AvEngine, AvError};
 use crate::mobilebackup2;
-use crate::{block, operation_span, opt_owned, out_str, provider_for, write_err, EngineContext};
+use crate::{
+    block, operation_span, opt_owned, out_str, provider_for, timeouts, write_err, EngineContext,
+};
 use crate::{PairingIdentity, PairingStoreError};
 
 const MAX_PASSWORD_DL_FRAME_BYTES: usize = 8 * 1024 * 1024;
-const BACKUP_PASSWORD_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const BACKUP_PASSWORD_OPERATION_TIMEOUT: Duration = Duration::from_secs(180);
-const BACKUP_PASSWORD_STATE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const BACKUP_PASSWORD_STATE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const BACKUP_PASSWORD_CONNECT_TIMEOUT: Duration = timeouts::CONNECT;
+// The device raises its passcode prompt here: budget for a person, not a wire.
+const BACKUP_PASSWORD_OPERATION_TIMEOUT: Duration = timeouts::PROMPT;
+const BACKUP_PASSWORD_STATE_PROBE_TIMEOUT: Duration = timeouts::PROBE;
+const BACKUP_PASSWORD_STATE_POLL_INTERVAL: Duration = timeouts::POLL_INTERVAL;
 
 fn outcome_unknown(detail: impl Into<String>) -> EngineFailure {
     EngineFailure::new(ErrorKind::OutcomeUnknown, detail)
@@ -78,7 +81,7 @@ async fn receive_capped_dl_message(
     Ok((tag.to_owned(), value))
 }
 
-const UNPAIR_DEVICE_TIMEOUT: Duration = Duration::from_secs(20);
+const UNPAIR_DEVICE_TIMEOUT: Duration = timeouts::CONNECT;
 
 /// Tells the phone to forget this host, best effort: `Unpair` is device-side
 /// only, the host record goes either way, so the outcome is logged not returned.
@@ -276,7 +279,7 @@ pub extern "C" fn av_pairing_advance(
         block(
             async {
                 match tokio::time::timeout(
-                    Duration::from_secs(45),
+                    timeouts::PAIRING_ADVANCE,
                     pair_trust_inner(context, &udid),
                 )
                 .await

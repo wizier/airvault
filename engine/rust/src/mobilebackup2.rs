@@ -14,7 +14,7 @@ use crate::bounded;
 use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::AirvaultProvider;
 
-const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const DISCONNECT_TIMEOUT: Duration = crate::timeouts::TEARDOWN;
 
 /// Connect with the pairing record's escrow bag so backupd can read protected
 /// keychain items while the phone is locked.

@@ -15,12 +15,13 @@ use idevice::IdeviceService;
 
 use crate::bounded;
 use crate::engine_error::EngineFailure;
+use crate::timeouts;
 use crate::AirvaultProvider;
 
 const LOCK_SYNC: &str = "/com.apple.itunes.lock_sync";
-const START_STEP_TIMEOUT: Duration = Duration::from_secs(5);
-const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
-const CLEANUP_STEP_TIMEOUT: Duration = Duration::from_secs(2);
+const START_STEP_TIMEOUT: Duration = timeouts::PROBE;
+const LOCK_WAIT_TIMEOUT: Duration = timeouts::SYNC_LOCK_WAIT;
+const CLEANUP_STEP_TIMEOUT: Duration = timeouts::TEARDOWN;
 
 pub(super) struct SyncSession {
     notifications: NotificationProxyClient,
@@ -181,7 +182,7 @@ async fn acquire(
         match tokio::time::timeout_at(deadline, file.lock(AfcLockOp::ExclusiveLock)).await {
             Ok(Ok(())) => return Ok(file),
             Ok(Err(idevice::IdeviceError::Afc(AfcError::OpWouldBlock))) => {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(timeouts::SYNC_LOCK_RETRY).await;
             }
             Ok(Err(error)) => return Err(preserve_acquire_error(file, error).await),
             Err(_) => {

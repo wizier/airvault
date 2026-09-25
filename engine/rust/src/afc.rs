@@ -24,7 +24,7 @@ use crate::{block, block_bounded, out_str, provider_for, to_json, EngineContext,
 
 const AFC_SOURCE_MEDIA: i32 = 0;
 const AFC_SOURCE_APP_DOCUMENTS: i32 = 1;
-const AFC_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const AFC_OPERATION_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
 const MAX_BUNDLE_BYTES: usize = 512;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_READ_BYTES: usize = 1024 * 1024;

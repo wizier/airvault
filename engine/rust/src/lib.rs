@@ -48,6 +48,7 @@ mod operation_registry;
 mod pairing;
 mod path_sandbox;
 mod power_assertion;
+mod timeouts;
 mod transfer;
 mod watch;
 
@@ -319,18 +320,14 @@ impl EngineContext {
     }
 }
 
-/// Cap on any muxer conversation (connect + query): a wedged usbmuxd socket
-/// (accepts, then hangs) must never block the daemon's single refresh worker.
-pub(crate) const MUX_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// One crate-wide UDID length cap (matches the Go/store source limit).
 pub(crate) const MAX_UDID_BYTES: usize = 64;
 
-/// Run a muxer conversation under MUX_TIMEOUT, flattening elapsed into an error.
+/// Run a muxer conversation under `timeouts::MUX`, flattening elapsed into an error.
 pub(crate) async fn mux_bound<T>(
     f: impl Future<Output = Result<T, idevice::IdeviceError>>,
 ) -> Result<T, idevice::IdeviceError> {
-    tokio::time::timeout(MUX_TIMEOUT, f)
+    tokio::time::timeout(timeouts::MUX, f)
         .await
         .unwrap_or(Err(idevice::IdeviceError::Timeout))
 }

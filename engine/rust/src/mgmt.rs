@@ -20,8 +20,8 @@ use crate::{
     out_str, provider_for, req_str, to_json, AirvaultProvider, EngineContext, ProbeError,
 };
 
-const APP_INSTALL_OPERATION_TIMEOUT: Duration = Duration::from_secs(300);
-const APP_UNINSTALL_TIMEOUT: Duration = Duration::from_secs(60);
+const APP_INSTALL_OPERATION_TIMEOUT: Duration = crate::timeouts::APP_INSTALL;
+const APP_UNINSTALL_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
 const INSTALL_STAGING_PATH: &str = "PublicStaging/airvault-install.ipa";
 
 /// The first non-empty candidate, or "" — the display-name/version fallback ladder.
@@ -70,7 +70,7 @@ pub extern "C" fn av_device_power(
         let span = operation_span(&job_id, "power", &udid);
         block_bounded_unit(
             err,
-            Duration::from_secs(15),
+            crate::timeouts::UI_CALL,
             "power request timed out",
             async move {
                 let fut = async {
@@ -129,7 +129,7 @@ async fn device_info_inner(
     // Battery gas-gauge via the diagnostics relay (AppleSmartBattery IORegistry):
     // USB-mostly and can HANG over a Wi-Fi/standby link, so hard-capped and
     // best-effort — on timeout/absence the key is simply omitted.
-    let battery = tokio::time::timeout(Duration::from_secs(4), async {
+    let battery = tokio::time::timeout(crate::timeouts::PROBE, async {
         let mut dr = DiagnosticsRelayClient::connect(&provider).await.ok()?;
         dr.ioregistry(None, Some("AppleSmartBattery"), None)
             .await
@@ -165,7 +165,7 @@ pub extern "C" fn av_device_hardware(
         block_bounded_out(
             out_json,
             err,
-            Duration::from_secs(15),
+            crate::timeouts::UI_CALL,
             "device info timed out",
             async move {
                 device_info_inner(context, &udid)
@@ -252,7 +252,7 @@ pub extern "C" fn av_apps_list(
         block_bounded_out(
             out_json,
             err,
-            Duration::from_secs(30),
+            crate::timeouts::DEVICE_WORK,
             "app list timed out",
             async move {
                 apps_inner(context, &udid, kind)
@@ -420,7 +420,7 @@ pub extern "C" fn av_app_icon(
         };
         block_bounded(
             err,
-            Duration::from_secs(10),
+            crate::timeouts::UI_CALL,
             "app icon timed out",
             async move {
                 app_icon_inner(context, &udid, &bundle)
@@ -477,7 +477,7 @@ pub extern "C" fn av_wallpaper_get(
         let context = engine.context();
         block_probe(
             err,
-            Duration::from_secs(10),
+            crate::timeouts::UI_CALL,
             "wallpaper preview timed out",
             wallpaper_inner(context, &udid, lock_screen != 0),
             move |bytes| {

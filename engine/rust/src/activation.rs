@@ -19,7 +19,7 @@ use crate::{
 };
 
 const ACTIVATION_SERVICE: &str = "com.apple.mobileactivationd";
-const ACTIVATION_STEP_TIMEOUT: Duration = Duration::from_secs(30);
+const ACTIVATION_STEP_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
 // Activation payloads carry certificate chains; cap generously.
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 

@@ -17,7 +17,7 @@ use crate::ffi::{
 };
 use crate::{guard, out_str, provider_for, EngineContext};
 
-const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
+const SETUP_TIMEOUT: Duration = crate::timeouts::CONNECT;
 
 pub struct AvLockStream {
     receiver: Mutex<Receiver<Result<i32, String>>>,
@@ -130,7 +130,7 @@ pub extern "C" fn av_lock_observer_next(
             out_str(err, "missing lock event output");
             return ErrorKind::InvalidArgument.code();
         }
-        match crate::lock(&stream.receiver).recv_timeout(Duration::from_secs(1)) {
+        match crate::lock(&stream.receiver).recv_timeout(crate::timeouts::STREAM_TICK) {
             Ok(Ok(event)) => {
                 unsafe { *out_event = event };
                 0

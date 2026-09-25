@@ -15,8 +15,8 @@ const WIRELESS_SYNC_TYPE: &str = "AMDPowerAssertionTypeWirelessSync";
 // 1200 s maximum AMDevicePowerAssertionCreate accepts, re-create over a fresh
 // connection every 600 s, releasing the previous assertion after.
 const ASSERTION_BACKSTOP_SECS: f64 = 1200.0;
-const ASSERTION_RENEW: Duration = Duration::from_secs(600);
-const ASSERTION_RETRY: Duration = Duration::from_secs(60);
+const ASSERTION_RENEW: Duration = crate::timeouts::ASSERTION_RENEW;
+const ASSERTION_RETRY: Duration = crate::timeouts::ASSERTION_RETRY;
 const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 /// The device holds the assertion while this connection stays open; dropping

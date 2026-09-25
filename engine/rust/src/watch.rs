@@ -2,7 +2,6 @@
 
 use std::ffi::c_char;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
 
 use idevice::usbmuxd::RawPacket;
 use idevice::ReadWrite;
@@ -72,7 +71,7 @@ pub extern "C" fn av_device_watch_next(
             tokio::select! {
                 biased;
                 _ = watcher.cancel.cancelled() => None,
-                result = tokio::time::timeout(Duration::from_secs(1), receiver.changed()) => Some(result),
+                result = tokio::time::timeout(crate::timeouts::STREAM_TICK, receiver.changed()) => Some(result),
             }
         });
         match result {
@@ -140,7 +139,7 @@ async fn watch_loop(
         }
         tokio::select! {
             _ = cancel.cancelled() => return,
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            _ = tokio::time::sleep(crate::timeouts::POLL_INTERVAL) => {}
         }
     }
 }

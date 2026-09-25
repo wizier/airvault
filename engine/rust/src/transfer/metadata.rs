@@ -13,7 +13,7 @@ use plist::Value;
 
 use crate::{getv_str, AirvaultProvider};
 
-pub(super) const RESTORE_APPLICATIONS_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const RESTORE_APPLICATIONS_TIMEOUT: Duration = crate::timeouts::DEVICE_WORK;
 // The canonical "iTunes Files" census (idevicebackup2).
 const ITUNES_FILES: [&str; 11] = [
     "ApertureAlbumPrefs",
@@ -99,11 +99,11 @@ pub(super) async fn stage_restore_applications(
         )
         .await
         .map_err(|error| RestoreApplicationsError::Device(format!("{error:?}")))?;
-    file.write_entire(&xml)
-        .await
-        .map_err(|error| RestoreApplicationsError::Device(format!("{error:?}")))?;
-    file.close()
-        .await
+    // Close even when the write failed, or the device-side descriptor leaks.
+    let written = file.write_entire(&xml).await;
+    let closed = file.close().await;
+    written
+        .and(closed)
         .map_err(|error| RestoreApplicationsError::Device(format!("{error:?}")))?;
     Ok(true)
 }
@@ -115,7 +115,7 @@ pub(super) async fn remove_restore_applications(provider: &AirvaultProvider, udi
         let mut afc = AfcClient::connect(provider).await?;
         afc.remove_all("/iTunesRestore").await
     };
-    match tokio::time::timeout(RESTORE_APPLICATIONS_TIMEOUT, cleanup).await {
+    match tokio::time::timeout(crate::timeouts::PROBE, cleanup).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             tracing::debug!(udid = %udid, ?error, "restore: staged app list not removed")

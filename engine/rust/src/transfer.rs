@@ -28,14 +28,15 @@ use crate::{
     operation_registry::RegisterError,
     operation_span, opt_owned, out_str,
     path_sandbox::PathSandbox,
-    provider_for, req_str, AirvaultProvider, EngineContext,
+    provider_for, req_str, timeouts, AirvaultProvider, EngineContext,
 };
 
-// Wide enough for the app census: one icon round-trip per installed app.
-const INFO_PLIST_TIMEOUT: Duration = Duration::from_secs(180);
-const MB2_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const CANCEL_OBSERVER_TIMEOUT: Duration = Duration::from_secs(5);
-const FMIP_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+// Both stages can stall on the device passcode prompt, and the Info.plist pass
+// also has to survive an app census of one icon round-trip per installed app.
+const INFO_PLIST_TIMEOUT: Duration = timeouts::PROMPT;
+const MB2_CONNECT_TIMEOUT: Duration = timeouts::PROMPT;
+const CANCEL_OBSERVER_TIMEOUT: Duration = timeouts::PROBE;
+const FMIP_PREFLIGHT_TIMEOUT: Duration = timeouts::CONNECT;
 
 fn merge_transfer_cleanup<T>(
     primary: Result<T, EngineFailure>,
@@ -214,8 +215,7 @@ async fn run_mb2_transfer(
             ObjectSession::restore(root, source, snapshot_id).map_err(EngineFailure::from)?
         }
     };
-    let is_restore = !spec.is_backup();
-    let delegate = BackupStorage::new(session.clone(), sandbox, progress, is_restore);
+    let delegate = BackupStorage::new(session.clone(), sandbox, progress);
     let info_path = delegate.sandbox().allowed_root().join("Info.plist");
     let restore_apps_staged = match &spec {
         // Refresh Info.plist (device identity + app census) before backing up.

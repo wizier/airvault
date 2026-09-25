@@ -3,7 +3,6 @@
 
 use std::ffi::c_char;
 use std::sync::Mutex as StdMutex;
-use std::time::Duration;
 
 use idevice::services::os_trace_relay::{LogLevel, OsTraceRelayClient, OsTraceRelayReceiver};
 use idevice::IdeviceService;
@@ -66,7 +65,7 @@ pub extern "C" fn av_console_open(
                 let client = OsTraceRelayClient::connect(&provider).await?;
                 client.start_trace(None).await
             };
-            match tokio::time::timeout(Duration::from_secs(10), fut).await {
+            match tokio::time::timeout(crate::timeouts::UI_CALL, fut).await {
                 Ok(Ok(receiver)) => {
                     unsafe {
                         *out_stream = Box::into_raw(Box::new(AvConsoleStream {
@@ -105,7 +104,7 @@ pub extern "C" fn av_console_next(
             tokio::select! {
                 biased;
                 _ = stream.cancel.cancelled() => None,
-                result = tokio::time::timeout(Duration::from_secs(1), rx.next()) => Some(result),
+                result = tokio::time::timeout(crate::timeouts::STREAM_TICK, rx.next()) => Some(result),
             }
         });
         match res {
