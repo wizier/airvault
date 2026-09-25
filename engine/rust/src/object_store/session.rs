@@ -60,10 +60,7 @@ impl Inner {
     }
 
     pub(super) fn record_failure(&self, failure: ObjectFailure) {
-        let mut state = self.state();
-        if state.error.is_none() {
-            state.error = Some(failure);
-        }
+        self.state().error.get_or_insert(failure);
     }
 }
 
@@ -125,7 +122,7 @@ impl ObjectSession {
         fs::create_dir_all(staging_dir.join("objects"))
             .map_err(|error| ObjectFailure::from_io("create object staging directory", &error))?;
 
-        let tree = match base_snapshot_id.filter(|value| !value.is_empty()) {
+        let tree = match base_snapshot_id {
             Some(base_snapshot_id) => {
                 Tree::from_entries(&load_manifest(root, source, base_snapshot_id)?.entries)
             }
@@ -169,11 +166,7 @@ impl ObjectSession {
     pub(crate) fn finish(&self, cancel: &CancellationToken) -> Result<u64, ObjectFailure> {
         not_cancelled(cancel)?;
         let started = Instant::now();
-        let staging_dir = self
-            .inner
-            .staging_dir
-            .as_ref()
-            .ok_or_else(|| "object staging directory is missing".to_string())?;
+        let staging_dir = self.reject_write()?;
         let (mut manifest, written) = {
             let mut state = self.inner.state();
             if let Some(error) = &state.error {

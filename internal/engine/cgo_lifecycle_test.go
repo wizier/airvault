@@ -1,13 +1,19 @@
 package engine
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
 )
 
 func TestNativeHandleCloseCancelsBeforeDestroying(t *testing.T) {
-	handle := newNativeHandle(7)
+	cancelled := make(chan struct{})
+	destroyed := make(chan struct{})
+	handle := newNativeHandle(context.Background(), 7,
+		func(value int) { close(cancelled) },
+		func(value int) { close(destroyed) },
+	)
 	entered := make(chan struct{})
 	releaseCall := make(chan struct{})
 	go func() {
@@ -22,14 +28,9 @@ func TestNativeHandleCloseCancelsBeforeDestroying(t *testing.T) {
 	}()
 	<-entered
 
-	cancelled := make(chan struct{})
-	destroyed := make(chan struct{})
 	closed := make(chan struct{})
 	go func() {
-		handle.close(
-			func(value int) { close(cancelled) },
-			func(value int) { close(destroyed) },
-		)
+		handle.close()
 		close(closed)
 	}()
 
@@ -52,16 +53,32 @@ func TestNativeHandleCloseCancelsBeforeDestroying(t *testing.T) {
 	}
 }
 
+func TestNativeHandleClosesOnContextOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	destroyed := make(chan struct{}, 2)
+	handle := newNativeHandle(ctx, 7, nil, func(int) { destroyed <- struct{}{} })
+	cancel()
+	select {
+	case <-destroyed:
+	case <-time.After(time.Second):
+		t.Fatal("context cancellation did not close the handle")
+	}
+	handle.close()
+	if len(destroyed) != 0 {
+		t.Fatal("a second Close destroyed the handle again")
+	}
+}
+
 func TestNativeHandleDetachTransfersOwnership(t *testing.T) {
-	handle := newNativeHandle(7)
+	destroyed := false
+	handle := newNativeHandle(context.Background(), 7, nil, func(int) { destroyed = true })
 	value, leave, ok := handle.enter()
 	if !ok || !handle.detach(value) {
 		t.Fatal("active call could not detach its handle")
 	}
 	leave()
 
-	destroyed := false
-	handle.close(nil, func(int) { destroyed = true })
+	handle.close()
 	if destroyed {
 		t.Fatal("Close destroyed a handle owned by the completed transition")
 	}

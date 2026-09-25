@@ -11,7 +11,8 @@ use crate::bounded;
 use crate::discover::{snapshot, SnapshotItem};
 use crate::engine_error::EngineFailure;
 use crate::ffi::{
-    engine_ref, guard, guard_error, out_str, to_json, AvEngine, AvError, AV_STREAM_CLOSED,
+    engine_ref, guard, guard_error, out_str, reset_out, to_json, AvEngine, AvError,
+    AV_STREAM_CLOSED,
 };
 use crate::provider::EngineContext;
 use crate::pull_stream::{ItemSender, PullStream};
@@ -37,11 +38,7 @@ pub extern "C" fn av_device_watch_open(
 ) -> i32 {
     guard_error(error, || {
         let context = unsafe { engine_ref(engine) }?.context_arc();
-        if out.is_null() {
-            return Err(EngineFailure::invalid_argument(
-                "missing presence watcher output",
-            ));
-        }
+        reset_out(out, "missing presence watcher output")?;
         let stream = PullStream::spawn(|sender| watch_loop(context, sender));
         unsafe { *out = Box::into_raw(Box::new(AvPresenceWatch { stream })) };
         Ok(())
@@ -57,16 +54,9 @@ pub extern "C" fn av_device_watch_next(
 ) -> i32 {
     guard(err, || {
         let Some(watcher) = (unsafe { watcher.as_ref() }) else {
-            out_str(err, "presence watcher is closed");
             return AV_STREAM_CLOSED;
         };
-        match watcher.stream.next(err) {
-            Ok(state) => {
-                out_str(out_json, &state);
-                0
-            }
-            Err(rc) => rc,
-        }
+        watcher.stream.next(err, |state| out_str(out_json, &state))
     })
 }
 
@@ -92,16 +82,15 @@ async fn watch_loop(
     context: Arc<EngineContext>,
     sender: ItemSender<String>,
 ) -> Result<(), EngineFailure> {
-    let mut up = false;
-    let mut state_known = false;
+    // Starts true so a muxer that is down from the start is published too.
+    let mut up = true;
     loop {
         let Err(error) = watch_once(&context, &sender, &mut up).await else {
             return Ok(());
         };
         tracing::debug!(%error, "presence watcher reconnecting");
-        if !state_known || up {
+        if up {
             up = false;
-            state_known = true;
             let down = PresenceState {
                 up: false,
                 devices: Vec::new(),

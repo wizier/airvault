@@ -16,14 +16,10 @@ func newBackupCallback(fn func(Progress)) *backupCallback {
 
 // Native frames carry the session's cumulative byte total (0 = not reported),
 // so the dispatcher may coalesce to the latest frame without losing bytes.
-func (c *backupCallback) submit(phase int32, percent float64, bytes uint64) {
+func (c *backupCallback) submit(phase ProgressPhase, percent float64, bytes uint64) {
 	c.mu.Lock()
 	p := c.last
-	if phase == 1 {
-		p.Phase = ProgressPhaseSealing
-	} else {
-		p.Phase = ProgressPhaseTransfer
-	}
+	p.Phase = phase
 	if percent >= 0 {
 		p.Percent = int(percent)
 	}

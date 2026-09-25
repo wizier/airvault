@@ -4,6 +4,9 @@
 // transport without freeing an in-flight handle.
 package engine
 
+// #include "airvault.h"
+import "C"
+
 import (
 	"context"
 	"errors"
@@ -148,9 +151,9 @@ type RestoreSnapshotRequest struct {
 type PowerAction uint8
 
 const (
-	PowerRestart PowerAction = iota
-	PowerShutdown
-	PowerSleep
+	PowerRestart  PowerAction = C.AV_POWER_RESTART
+	PowerShutdown PowerAction = C.AV_POWER_SHUTDOWN
+	PowerSleep    PowerAction = C.AV_POWER_SLEEP
 )
 
 // App is one installed application. FileSharing is true when the app exposes
@@ -173,8 +176,8 @@ type AFCEntry struct {
 type AFCSource int32
 
 const (
-	AFCMedia        AFCSource = 0 // whole media partition (com.apple.afc)
-	AFCAppDocuments AFCSource = 1 // one app's Documents container (house_arrest)
+	AFCMedia        AFCSource = C.AV_AFC_SOURCE_MEDIA         // whole media partition (com.apple.afc)
+	AFCAppDocuments AFCSource = C.AV_AFC_SOURCE_APP_DOCUMENTS // one app's Documents container (house_arrest)
 )
 
 // AFCSession is one sequential conversation on an AFC connection; the engine

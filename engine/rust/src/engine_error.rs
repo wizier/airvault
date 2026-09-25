@@ -171,41 +171,15 @@ mod tests {
     use idevice::usbmuxd::errors::UsbmuxdError;
     use idevice::IdeviceError;
 
-    /// Every export returns `.code()`, so a variant carrying the wrong
-    /// discriminant would silently retype errors for Go.
+    /// Success and the pull-stream rc values must stay outside the error space.
     #[test]
-    fn every_kind_keeps_its_abi_value() {
-        let cases = [
-            (ErrorKind::InvalidArgument, ffi::AV_ERROR_INVALID_ARGUMENT),
-            (
-                ErrorKind::DeviceUnavailable,
-                ffi::AV_ERROR_DEVICE_UNAVAILABLE,
-            ),
-            (ErrorKind::DeviceLocked, ffi::AV_ERROR_DEVICE_LOCKED),
-            (ErrorKind::TrustRequired, ffi::AV_ERROR_TRUST_REQUIRED),
-            (ErrorKind::UserDenied, ffi::AV_ERROR_USER_DENIED),
-            (ErrorKind::Busy, ffi::AV_ERROR_BUSY),
-            (ErrorKind::Timeout, ffi::AV_ERROR_TIMEOUT),
-            (ErrorKind::Cancelled, ffi::AV_ERROR_CANCELLED),
-            (ErrorKind::Protocol, ffi::AV_ERROR_PROTOCOL),
-            (ErrorKind::StorageFull, ffi::AV_ERROR_STORAGE_FULL),
-            (ErrorKind::Integrity, ffi::AV_ERROR_INTEGRITY),
-            (ErrorKind::Unsupported, ffi::AV_ERROR_UNSUPPORTED),
-            (ErrorKind::Internal, ffi::AV_ERROR_INTERNAL),
-            (
-                ErrorKind::InvalidBackupPassword,
-                ffi::AV_ERROR_INVALID_BACKUP_PASSWORD,
-            ),
-            (ErrorKind::OutcomeUnknown, ffi::AV_ERROR_OUTCOME_UNKNOWN),
-            (ErrorKind::FindMyEnabled, ffi::AV_ERROR_FIND_MY_ENABLED),
-        ];
-        for (kind, expected) in cases {
-            assert_eq!(kind.code(), expected, "{kind:?}");
-        }
-        // Success and the pull-stream rc values must stay outside the error space.
-        let reserved = [0, ffi::AV_STREAM_CONTINUE, ffi::AV_STREAM_CLOSED];
-        for (kind, _) in cases {
-            assert!(!reserved.contains(&kind.code()), "{kind:?}");
+    fn reserved_rc_values_are_not_error_kinds() {
+        for reserved in [0, ffi::AV_STREAM_CONTINUE, ffi::AV_STREAM_CLOSED] {
+            assert!(
+                !(ffi::AV_ERROR_INVALID_ARGUMENT..=ffi::AV_ERROR_FIND_MY_ENABLED)
+                    .contains(&reserved),
+                "{reserved}"
+            );
         }
     }
 

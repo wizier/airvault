@@ -9,9 +9,29 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * av_afc_open sources: the media partition, or one app's Documents container.
+ */
+#define AV_AFC_SOURCE_MEDIA 0
+
+#define AV_AFC_SOURCE_APP_DOCUMENTS 1
+
 #define AV_INSTALL_PHASE_STAGING 0
 
 #define AV_INSTALL_PHASE_INSTALLING 1
+
+#define AV_BACKUP_PHASE_TRANSFER 0
+
+#define AV_BACKUP_PHASE_FINALIZING 1
+
+/**
+ * av_device_power actions.
+ */
+#define AV_POWER_RESTART 0
+
+#define AV_POWER_SHUTDOWN 1
+
+#define AV_POWER_SLEEP 2
 
 #define AV_ERROR_INVALID_ARGUMENT 1
 
@@ -63,6 +83,13 @@
  */
 #define AV_CANCEL_NOT_REGISTERED 3
 
+/**
+ * av_lock_observer_next events: the lock state changed / the device locked.
+ */
+#define AV_LOCK_EVENT_CHANGED 1
+
+#define AV_LOCK_EVENT_COMPLETE 2
+
 typedef struct AvAfcFile AvAfcFile;
 
 /**
@@ -105,7 +132,7 @@ typedef void (*av_log_cb)(int32_t, const char*, const char*, const char*);
 
 /**
  * Progress callback into Go: (opaque operation id, phase, percent, bytes).
- * Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
+ * Phase is AV_BACKUP_PHASE_*; percent < 0 means "not reported this call", and
  * `bytes` is the session's cumulative total (0 = not reported this call).
  */
 typedef void (*av_backup_cb)(size_t, int32_t, double, uint64_t);
@@ -196,16 +223,14 @@ int32_t av_afc_remove(AvAfcSession *session,
                       AvError *error);
 
 /**
- * Reads one whole small file (bounded by buffer_len) on an existing session
- * WITHOUT consuming it — the bulk path for thumbnails. Large streaming stays on
- * file_open/file_read. rc 0 or an AV_ERROR_* kind.
+ * Reads one whole small file (at most MAX_READ_BYTES) into `out` on an existing
+ * session WITHOUT consuming it — the bulk path for thumbnails. Large streaming
+ * stays on file_open/file_read. rc 0 or an AV_ERROR_* kind.
  */
 int32_t av_afc_read_small(AvAfcSession *session,
                           const uint8_t *path_ptr,
                           size_t path_len,
-                          uint8_t *buffer,
-                          size_t buffer_len,
-                          size_t *out_read,
+                          AvBuffer *out,
                           AvError *error);
 
 /**
@@ -316,9 +341,9 @@ void av_console_cancel(AvConsoleStream *stream);
 void av_console_close(AvConsoleStream *stream);
 
 /**
- * Sends a power command (0 = restart, 1 = shutdown, 2 = sleep) via the
- * diagnostics relay. Returns once the command is ACCEPTED — the device acts
- * asynchronously and (for restart/shutdown) drops off the muxer.
+ * Sends a power command (AV_POWER_*) via the diagnostics relay. Returns once
+ * the command is ACCEPTED — the device acts asynchronously and (for
+ * restart/shutdown) drops off the muxer.
  */
 int32_t av_device_power(AvEngine *engine,
                         const char *udid,

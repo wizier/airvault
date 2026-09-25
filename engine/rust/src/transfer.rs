@@ -1,12 +1,14 @@
 //! Cancellable mobilebackup2 backup/restore orchestration.
 
 use std::ffi::c_char;
+use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
 use idevice::services::mobilebackup2::RestoreOptions;
+use idevice::IdeviceError;
 use tracing::Instrument;
 
 mod metadata;
@@ -18,7 +20,7 @@ use metadata::{
 };
 use sync_session::SyncSession;
 
-use crate::backup_storage::{BackupCb, BackupStorage, ProgressSink, BACKUP_PHASE_FINALIZING};
+use crate::backup_storage::{BackupCb, BackupStorage, ProgressSink, AV_BACKUP_PHASE_FINALIZING};
 use crate::bounded::{self, cancel_or_timeout, Interrupt};
 use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{engine_udid, guard_error, in_str, req_str, AvEngine, AvError};
@@ -51,21 +53,38 @@ fn merge_transfer_cleanup<T>(
     }
 }
 
-fn interrupt_failure(
+/// Awaits one transfer stage under `limit`; a cancellation or the elapsed
+/// limit becomes that stage's failure.
+async fn run_stage<T>(
+    cancel: &CancellationToken,
     operation: &str,
     stage: &str,
     limit: Duration,
-    interrupt: Interrupt,
-) -> EngineFailure {
-    match interrupt {
-        Interrupt::Cancelled => EngineFailure::new(
-            ErrorKind::Cancelled,
-            format!("{operation} cancelled during {stage}"),
-        ),
-        Interrupt::TimedOut => EngineFailure::new(
-            ErrorKind::Timeout,
-            format!("{operation} {stage} timed out after {}s", limit.as_secs()),
-        ),
+    future: impl Future<Output = T>,
+) -> Result<T, EngineFailure> {
+    cancel_or_timeout(cancel, limit, future)
+        .await
+        .map_err(|interrupt| match interrupt {
+            Interrupt::Cancelled => EngineFailure::new(
+                ErrorKind::Cancelled,
+                format!("{operation} cancelled during {stage}"),
+            ),
+            Interrupt::TimedOut => EngineFailure::new(
+                ErrorKind::Timeout,
+                format!("{operation} {stage} timed out after {}s", limit.as_secs()),
+            ),
+        })
+}
+
+/// A recorded object-store failure is the root cause of whatever the transfer
+/// reported after it, so it replaces that result.
+fn prefer_store_error<T>(
+    session: &ObjectSession,
+    result: Result<T, EngineFailure>,
+) -> Result<T, EngineFailure> {
+    match session.error() {
+        Some(error) => Err(EngineFailure::from(error)),
+        None => result,
     }
 }
 
@@ -160,19 +179,11 @@ async fn run_mb2(
     let cleanup = sync.finish().await;
     let session = merge_transfer_cleanup(transfer, cleanup, "sync session teardown")?;
     if is_backup {
-        progress.emit(BACKUP_PHASE_FINALIZING, -1.0, 0);
-        // Expose cancellable local finalization. If cancellation raced the
-        // callback, stop before starting the manifest pass.
-        if cancel.is_cancelled() {
-            return Err(EngineFailure::new(ErrorKind::Cancelled, "backup cancelled"));
-        }
-        let added = session.finish(&cancel).map_err(|failure| {
-            if cancel.is_cancelled() {
-                EngineFailure::new(ErrorKind::Cancelled, failure.detail)
-            } else {
-                EngineFailure::from(failure)
-            }
-        })?;
+        progress.emit(AV_BACKUP_PHASE_FINALIZING, -1.0, 0);
+        // finish() refuses a cancelled token itself; run_transfer_export then
+        // reports the failure as Cancelled.
+        let added = session.finish(&cancel).map_err(EngineFailure::from)?;
+        // A cancel that raced the manifest pass discards the sealed backup.
         if cancel.is_cancelled() {
             return Err(EngineFailure::new(ErrorKind::Cancelled, "backup cancelled"));
         }
@@ -198,7 +209,6 @@ async fn run_mb2_transfer(
         sandbox,
     } = storage;
     let label = spec.label();
-    let fallback = format!("the device reported a {label} error");
     let session = match &spec {
         TransferSpec::Backup {
             snapshot_id,
@@ -209,144 +219,81 @@ async fn run_mb2_transfer(
             ObjectSession::restore(root, source, snapshot_id).map_err(EngineFailure::from)?
         }
     };
-    let delegate = BackupStorage::new(session.clone(), sandbox, progress);
-    let info_path = delegate.sandbox().allowed_root().join("Info.plist");
-    let restore_apps_staged = match &spec {
-        // Refresh Info.plist (device identity + app census) before backing up.
-        TransferSpec::Backup { .. } => {
-            match cancel_or_timeout(
-                &cancel,
-                INFO_PLIST_TIMEOUT,
-                prepare_backup_info(provider, udid, &delegate, &info_path),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    if let Some(failure) = session.error() {
-                        return Err(EngineFailure::from(failure));
-                    }
-                    return Err(EngineFailure::integrity(format!(
-                        "backup: required Info.plist could not be written: {error}"
-                    )));
-                }
-                Err(interrupt) => {
-                    return Err(interrupt_failure(
-                        label,
-                        "Info.plist preparation",
-                        INFO_PLIST_TIMEOUT,
-                        interrupt,
-                    ))
-                }
+    // Set while RestoreApplications.plist may be on the device: a failed
+    // restore must not leave it there (idevicebackup2 parity).
+    let mut restore_apps_staged = false;
+    let result = async {
+        match &spec {
+            // Refresh Info.plist (device identity + app census) before backing up.
+            TransferSpec::Backup { .. } => {
+                let prepare = prepare_backup_info(provider, udid, &session);
+                let stage = "Info.plist preparation";
+                let written = run_stage(&cancel, label, stage, INFO_PLIST_TIMEOUT, prepare).await?;
+                prefer_store_error(
+                    &session,
+                    written.map_err(|error| {
+                        EngineFailure::integrity(format!(
+                            "backup: required Info.plist could not be written: {error}"
+                        ))
+                    }),
+                )?;
             }
-            false
-        }
-        // Stage the app-reinstall list on the device. Continuing without it
-        // would silently restore with no App Store apps, so failure aborts
-        // (idevicebackup2 parity).
-        TransferSpec::Restore { .. } => {
-            let staged = match cancel_or_timeout(
-                &cancel,
-                timeouts::DEVICE_WORK,
-                stage_restore_applications(provider, &delegate, &info_path),
-            )
-            .await
-            {
-                Ok(Ok(staged)) => Ok(staged),
-                // A snapshot-side failure never reached the device.
-                Ok(Err(RestoreApplicationsError::Snapshot(error))) => {
-                    if let Some(failure) = session.error() {
-                        return Err(EngineFailure::from(failure));
+            // Stage the app-reinstall list on the device. Continuing without it
+            // would silently restore with no App Store apps, so failure aborts
+            // (idevicebackup2 parity).
+            TransferSpec::Restore { .. } => {
+                let prepare = stage_restore_applications(provider, &session);
+                let stage = "RestoreApplications.plist preparation";
+                let staged = run_stage(&cancel, label, stage, timeouts::DEVICE_WORK, prepare).await;
+                // An empty app list or a snapshot-side failure never touches
+                // the device; any other outcome may have staged it, if partially.
+                restore_apps_staged = !matches!(
+                    staged,
+                    Ok(Ok(false) | Err(RestoreApplicationsError::Snapshot(_)))
+                );
+                match staged? {
+                    Ok(_) => {}
+                    Err(RestoreApplicationsError::Snapshot(error)) => {
+                        return prefer_store_error(
+                            &session,
+                            Err(EngineFailure::integrity(format!(
+                                "restore: RestoreApplications.plist source is invalid: {error}"
+                            ))),
+                        );
                     }
-                    return Err(EngineFailure::integrity(format!(
-                        "restore: RestoreApplications.plist source is invalid: {error}"
-                    )));
-                }
-                Ok(Err(RestoreApplicationsError::Device(error))) => Err(EngineFailure::new(
-                    ErrorKind::DeviceUnavailable,
-                    format!("restore: RestoreApplications.plist could not be staged: {error}"),
-                )),
-                Err(interrupt) => Err(interrupt_failure(
-                    label,
-                    "RestoreApplications.plist preparation",
-                    timeouts::DEVICE_WORK,
-                    interrupt,
-                )),
-            };
-            match staged {
-                Ok(staged) => staged,
-                // The staging write may have partially reached the device.
-                Err(failure) => {
-                    remove_restore_applications(provider, udid).await;
-                    return Err(failure);
+                    Err(RestoreApplicationsError::Device(error)) => {
+                        return Err(EngineFailure::new(
+                            ErrorKind::DeviceUnavailable,
+                            format!("restore: RestoreApplications.plist could not be staged: {error}"),
+                        ));
+                    }
                 }
             }
         }
-    };
-    let connected = async {
         if let Some(error) = session.error() {
             return Err(EngineFailure::from(error));
         }
-        match cancel_or_timeout(&cancel, timeouts::CONNECT, mobilebackup2::connect(provider)).await
-        {
-            Ok(Ok(client)) => Ok(client),
-            Ok(Err(error)) => Err(EngineFailure::from_idevice(
-                &format!("{label} mobilebackup2 connect failed"),
-                error,
-            )),
-            Err(interrupt) => Err(interrupt_failure(
-                label,
-                "mobilebackup2 connect",
-                timeouts::CONNECT,
-                interrupt,
-            )),
-        }
-    }
-    .await;
-    let mut mb2 = match connected {
-        Ok(client) => client,
-        Err(failure) => {
-            if restore_apps_staged {
-                remove_restore_applications(provider, udid).await;
-            }
-            return Err(failure);
-        }
-    };
-    // netmuxd owns the device heartbeat, so no heartbeat service is opened here.
-    let (cancel_obs, observer_error) = match cancel_or_timeout(
-        &cancel,
-        timeouts::PROBE,
-        mobilebackup2::spawn_cancel_observer(provider, cancel.clone()),
-    )
-    .await
-    {
-        Ok(observer) => (observer, None),
-        Err(Interrupt::Cancelled) => (
-            None,
-            Some(interrupt_failure(
-                label,
-                "cancel-observer setup",
-                timeouts::PROBE,
-                Interrupt::Cancelled,
-            )),
-        ),
-        Err(Interrupt::TimedOut) => {
-            let error = interrupt_failure(
-                label,
-                "cancel-observer setup",
-                timeouts::PROBE,
-                Interrupt::TimedOut,
-            );
-            tracing::warn!(udid = %udid, error = %error.detail, "mb2: proceeding without device cancel observer");
-            (None, None)
-        }
-    };
-    // From this point delegate activity comes from the device conversation,
-    // not from preparing local metadata such as Info.plist.
-    delegate.begin_transfer();
-    let res = match observer_error {
-        Some(error) => Err(error),
-        None => tokio::select! {
+        let connect = mobilebackup2::connect(provider, udid);
+        let stage = "mobilebackup2 connect";
+        let mut mb2 = run_stage(&cancel, label, stage, timeouts::CONNECT, connect)
+            .await?
+            .map_err(|error| {
+                EngineFailure::from_idevice(&format!("{label} mobilebackup2 connect failed"), error)
+            })?;
+        // netmuxd owns the device heartbeat, so no heartbeat service is opened here.
+        let observer = mobilebackup2::spawn_cancel_observer(provider, cancel.clone());
+        let observer = match cancel_or_timeout(&cancel, timeouts::PROBE, observer).await {
+            // The biased select below reports the cancellation.
+            Err(Interrupt::Cancelled) => None,
+            setup => setup
+                .unwrap_or(Err(IdeviceError::Timeout))
+                .inspect_err(|error| {
+                    tracing::warn!(udid = %udid, %error, "mb2: proceeding without device cancel observer")
+                })
+                .ok(),
+        };
+        let delegate = BackupStorage::new(session.clone(), sandbox, progress);
+        let res = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(EngineFailure::new(
                 ErrorKind::Cancelled,
@@ -368,31 +315,32 @@ async fn run_mb2_transfer(
             // Off charger iOS standby reaps service sockets ~15 min in; hold
             // the keep-awake assertion Finder's Wi-Fi sync uses.
             _ = crate::power_assertion::keep_device_awake(provider, udid, label) => unreachable!(),
-        },
-    };
-    if let Some(obs) = cancel_obs {
-        obs.abort();
+        };
+        if let Some(observer) = observer {
+            observer.abort();
+        }
+        let fallback = format!("the device reported a {label} error");
+        let transfer = prefer_store_error(
+            &session,
+            match delegate.violation() {
+                Some(violation) => Err(EngineFailure::integrity(violation)),
+                None => res.and_then(|outcome| {
+                    mobilebackup2::verdict(outcome, &fallback).map_err(EngineFailure::from)
+                }),
+            },
+        );
+        let cleanup = mobilebackup2::disconnect_bounded(&mut mb2, label).await;
+        // Late cancellation is caught by run_mb2 before it seals the staging manifest.
+        merge_transfer_cleanup(transfer, cleanup, &format!("{label}: transport teardown"))
     }
-    let transfer = match session.error() {
-        Some(error) => Err(EngineFailure::from(error)),
-        None => match delegate.violation() {
-            Some(violation) => Err(EngineFailure::integrity(violation)),
-            None => res.and_then(|outcome| {
-                mobilebackup2::verdict(outcome, &fallback).map_err(EngineFailure::from)
-            }),
-        },
-    };
-    let cleanup = mobilebackup2::disconnect_bounded(&mut mb2, label).await;
-    // Late cancellation is caught by run_mb2 before it seals the staging manifest.
-    let primary =
-        merge_transfer_cleanup(transfer, cleanup, &format!("{label}: transport teardown"));
-    if let Err(error) = &primary {
+    .await;
+    if let Err(error) = &result {
         tracing::debug!(udid = %udid, error = %error.detail, "mb2: {label} failed");
     }
-    if restore_apps_staged && primary.is_err() {
+    if restore_apps_staged && result.is_err() {
         remove_restore_applications(provider, udid).await;
     }
-    primary.map(|()| session)
+    result.map(|()| session)
 }
 
 /// Registers the transfer under its job id (Busy while one runs for this

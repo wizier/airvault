@@ -48,7 +48,6 @@ fn normalize_path(path: &Path) -> Result<PathBuf, String> {
 pub(crate) struct PathSandbox {
     backup_root: PathBuf,
     allowed_source: String,
-    allowed_root: PathBuf,
 }
 
 impl PathSandbox {
@@ -59,16 +58,10 @@ impl PathSandbox {
         if backup_root.as_os_str().as_encoded_bytes().len() > MAX_MB2_PATH_BYTES {
             return Err(rejected_path("backup root exceeds path length limit"));
         }
-        let allowed_root = backup_root.join(source);
         Ok(Self {
             backup_root,
             allowed_source: source.to_owned(),
-            allowed_root,
         })
-    }
-
-    pub(crate) fn allowed_root(&self) -> &Path {
-        &self.allowed_root
     }
 
     /// Resolves one mb2 host path into a logical manifest key ("" = source root).

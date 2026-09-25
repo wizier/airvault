@@ -157,14 +157,10 @@ async fn app_install(
             .map_err(|e| EngineFailure::from_request("open staged IPA", e))?,
     );
     let mut copied = 0_u64;
-    let mut last_percent = 0;
     let mut writer = InspectWriter::new(&mut *staged, |bytes| {
         copied += bytes.len() as u64;
         let percent = copied.min(total).saturating_mul(100) / total.max(1);
-        if percent != last_percent {
-            last_percent = percent;
-            cb(callback_id, AV_INSTALL_PHASE_STAGING, percent);
-        }
+        cb(callback_id, AV_INSTALL_PHASE_STAGING, percent);
     });
     let mut reader = tokio::io::BufReader::with_capacity(1024 * 1024, file);
     let upload = tokio::io::copy_buf(&mut reader, &mut writer)
@@ -232,9 +228,6 @@ pub extern "C" fn av_app_install(
     })
 }
 
-/// Most icons one av_app_icons call reads.
-const MAX_ICON_BATCH: usize = 100;
-
 /// Home-screen icon PNGs by bundle id, read over one springboard connection.
 /// A failed or empty icon is left out; a broken connection ends the batch
 /// with what it already has.
@@ -292,9 +285,6 @@ pub extern "C" fn av_app_icons(
         let json = unsafe { req_str(bundle_ids_json, "bad bundle id list") }?;
         let bundle_ids: Vec<String> = serde_json::from_str(&json)
             .map_err(|e| EngineFailure::invalid_argument(format!("bad bundle id list: {e}")))?;
-        if bundle_ids.len() > MAX_ICON_BATCH {
-            return Err(EngineFailure::invalid_argument("too many bundle ids"));
-        }
         let icons = block_bounded(
             timeouts::DEVICE_WORK,
             "app icons timed out",

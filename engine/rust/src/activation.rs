@@ -230,13 +230,8 @@ pub extern "C" fn av_activation_finish(
             return Err(EngineFailure::invalid_argument("bad activation record"));
         }
         let record = unsafe { std::slice::from_raw_parts(record, record_len) }.to_vec();
-        let headers_json = unsafe { opt_owned(headers_json) };
-        let headers = if headers_json.is_empty() {
-            serde_json::Map::new()
-        } else {
-            serde_json::from_str(&headers_json)
-                .map_err(|_| EngineFailure::invalid_argument("bad activation response headers"))?
-        };
+        let headers = serde_json::from_str(&unsafe { opt_owned(headers_json) })
+            .map_err(|_| EngineFailure::invalid_argument("bad activation response headers"))?;
         let timeout = "activation record apply timed out";
         unsafe {
             run_step(engine, udid, job_id, timeout, |provider| async move {

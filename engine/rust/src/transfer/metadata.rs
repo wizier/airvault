@@ -2,12 +2,10 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
 use std::time::SystemTime;
 
 use idevice::services::afc::{opcode::AfcFopenMode, AfcClient};
 use idevice::services::installation_proxy::InstallationProxyClient;
-use idevice::services::mobilebackup2::BackupDelegate;
 use idevice::services::springboardservices::SpringBoardServicesClient;
 use idevice::utils::plist::truncate_dates_to_seconds;
 use idevice::{IdeviceError, IdeviceService};
@@ -15,8 +13,13 @@ use plist::Value;
 
 use crate::afc::{read_small_file, FileGuard};
 use crate::apps::read_app_icons;
+use crate::bounded;
+use crate::object_store::ObjectSession;
 use crate::provider::{authed_lockdown, AirvaultProvider};
 use crate::timeouts;
+
+// The backup's Info.plist, as a logical key of the source's object tree.
+const INFO_PLIST: &str = "Info.plist";
 
 // The canonical "iTunes Files" census (idevicebackup2).
 const ITUNES_FILES: [&str; 11] = [
@@ -56,14 +59,10 @@ pub(super) enum RestoreApplicationsError {
 pub(super) async fn prepare_backup_info(
     provider: &AirvaultProvider,
     udid: &str,
-    storage: &dyn BackupDelegate,
-    info_path: &Path,
+    session: &ObjectSession,
 ) -> Result<(), String> {
     let bytes = build_info_plist(provider, udid).await?;
-    let mut file = storage
-        .create_file_write(info_path)
-        .await
-        .map_err(|error| error.to_string())?;
+    let mut file = session.create_file_write(INFO_PLIST)?;
     file.write_all(&bytes).map_err(|error| error.to_string())?;
     file.flush().map_err(|error| error.to_string())
 }
@@ -72,15 +71,14 @@ pub(super) async fn prepare_backup_info(
 /// App Store applications after restore.
 pub(super) async fn stage_restore_applications(
     provider: &AirvaultProvider,
-    storage: &dyn BackupDelegate,
-    info_path: &Path,
+    session: &ObjectSession,
 ) -> Result<bool, RestoreApplicationsError> {
     const MAX_INFO_BYTES: u64 = 256 << 20;
 
-    let mut file = storage
-        .open_file_read(info_path)
-        .await
-        .map_err(|error| RestoreApplicationsError::Snapshot(error.to_string()))?;
+    let mut file = session
+        .open_file_read(INFO_PLIST)
+        .map_err(RestoreApplicationsError::Snapshot)?
+        .ok_or_else(|| RestoreApplicationsError::Snapshot("Info.plist not found".into()))?;
     let mut bytes = Vec::new();
     file.by_ref()
         .take(MAX_INFO_BYTES + 1)
@@ -124,32 +122,21 @@ pub(super) async fn stage_restore_applications(
 /// A failed or aborted restore must not leave the staged app list on the device
 /// (idevicebackup2 parity). Best-effort: it may already be rebooting.
 pub(super) async fn remove_restore_applications(provider: &AirvaultProvider, udid: &str) {
-    let cleanup = async {
+    let cleanup = bounded::within(timeouts::CONNECT, async {
         let mut afc = AfcClient::connect(provider).await?;
         afc.remove_all("/iTunesRestore").await
-    };
-    match tokio::time::timeout(timeouts::CONNECT, cleanup).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            tracing::debug!(udid = %udid, ?error, "restore: staged app list not removed")
-        }
-        Err(_) => tracing::debug!(udid = %udid, "restore: staged app list removal timed out"),
+    });
+    if let Err(error) = cleanup.await {
+        tracing::debug!(udid = %udid, ?error, "restore: staged app list not removed");
     }
 }
 
 /// A file's non-empty contents, or None. Takes the client out of `afc` and puts
 /// it back unless the read lost it.
 async fn afc_file_contents(afc: &mut Option<AfcClient>, path: &str) -> Option<Vec<u8>> {
-    match read_small_file(afc.take()?, path, usize::MAX).await {
-        Ok((client, data)) => {
-            *afc = Some(client);
-            Some(data).filter(|data| !data.is_empty())
-        }
-        Err((client, _)) => {
-            *afc = client;
-            None
-        }
-    }
+    let (client, data) = read_small_file(afc.take()?, path, usize::MAX).await;
+    *afc = client;
+    data.ok().filter(|data| !data.is_empty())
 }
 
 async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec<u8>, String> {

@@ -20,11 +20,11 @@ use crate::object_store::ObjectSession;
 use crate::path_sandbox::PathSandbox;
 
 /// Progress callback into Go: (opaque operation id, phase, percent, bytes).
-/// Phase is BACKUP_PHASE_*; percent < 0 means "not reported this call", and
+/// Phase is AV_BACKUP_PHASE_*; percent < 0 means "not reported this call", and
 /// `bytes` is the session's cumulative total (0 = not reported this call).
 pub(crate) type BackupCb = extern "C" fn(usize, i32, f64, u64);
-pub(crate) const BACKUP_PHASE_TRANSFER: i32 = 0;
-pub(crate) const BACKUP_PHASE_FINALIZING: i32 = 1;
+pub const AV_BACKUP_PHASE_TRANSFER: i32 = 0;
+pub const AV_BACKUP_PHASE_FINALIZING: i32 = 1;
 
 /// Where progress frames go: the Go callback plus its operation id.
 #[derive(Clone, Copy)]
@@ -47,7 +47,6 @@ pub(crate) struct BackupStorage {
     sandbox: PathSandbox,
     violation: StdMutex<Option<String>>,
     progress: ProgressSink,
-    tracking: AtomicBool,
     started: AtomicBool,
 }
 
@@ -62,26 +61,17 @@ impl BackupStorage {
             sandbox,
             violation: StdMutex::new(None),
             progress,
-            tracking: AtomicBool::new(false),
             started: AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn sandbox(&self) -> &PathSandbox {
-        &self.sandbox
-    }
-
-    /// Ignore local preparation; the first storage op after the device request
-    /// means its passcode gate has cleared and the DeviceLink loop has begun.
+    /// The first storage op after the device request means its passcode gate
+    /// has cleared and the DeviceLink loop has begun.
     fn touch(&self) {
-        if self.tracking.load(Ordering::Relaxed) && !self.started.swap(true, Ordering::Relaxed) {
+        if !self.started.swap(true, Ordering::Relaxed) {
             // Nothing has moved yet, so the frame itself is the whole signal.
-            self.progress.emit(BACKUP_PHASE_TRANSFER, -1.0, 0);
+            self.progress.emit(AV_BACKUP_PHASE_TRANSFER, -1.0, 0);
         }
-    }
-
-    pub(crate) fn begin_transfer(&self) {
-        self.tracking.store(true, Ordering::Relaxed);
     }
 
     fn resolve_key(&self, path: &Path) -> Result<String, IdeviceError> {
@@ -185,19 +175,15 @@ impl BackupDelegate for BackupStorage {
     fn exists<'a>(&'a self, path: &'a Path) -> DelegateFuture<'a, bool> {
         self.touch();
         Box::pin(async move {
-            match self.resolve_key(path) {
-                Ok(key) => self.session.exists(&key),
-                Err(_) => false,
-            }
+            self.resolve_key(path)
+                .is_ok_and(|key| self.session.exists(&key))
         })
     }
     fn is_dir<'a>(&'a self, path: &'a Path) -> DelegateFuture<'a, bool> {
         self.touch();
         Box::pin(async move {
-            match self.resolve_key(path) {
-                Ok(key) => self.session.is_dir(&key),
-                Err(_) => false,
-            }
+            self.resolve_key(path)
+                .is_ok_and(|key| self.session.is_dir(&key))
         })
     }
     fn list_dir<'a>(
@@ -226,7 +212,7 @@ impl BackupDelegate for BackupStorage {
     fn on_progress(&self, progress: BackupProgress) {
         self.started.store(true, Ordering::Relaxed); // real frame follows anyway
         self.progress.emit(
-            BACKUP_PHASE_TRANSFER,
+            AV_BACKUP_PHASE_TRANSFER,
             progress.overall_progress,
             progress.session_bytes_done,
         );

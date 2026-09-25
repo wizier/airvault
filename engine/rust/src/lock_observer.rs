@@ -7,11 +7,18 @@ use std::sync::Arc;
 use idevice::services::notification_proxy::NotificationProxyClient;
 use idevice::IdeviceService;
 
-use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{engine_udid, guard, guard_error, out_str, AvEngine, AvError, AV_STREAM_CLOSED};
+use crate::bounded;
+use crate::engine_error::EngineFailure;
+use crate::ffi::{
+    engine_udid, guard, guard_error, reset_out, write_failure, AvEngine, AvError, AV_STREAM_CLOSED,
+};
 use crate::provider::{provider_for, EngineContext};
 use crate::pull_stream::{ItemSender, PullStream};
 use crate::timeouts;
+
+/// av_lock_observer_next events: the lock state changed / the device locked.
+pub const AV_LOCK_EVENT_CHANGED: i32 = 1;
+pub const AV_LOCK_EVENT_COMPLETE: i32 = 2;
 
 pub struct AvLockStream {
     stream: PullStream<i32>,
@@ -33,19 +40,9 @@ async fn observe_lock_state(
             .await?;
         Ok(notifications)
     };
-    let mut notifications = match tokio::time::timeout(timeouts::CONNECT, setup).await {
-        Ok(result) => result
-            .map_err(|error| EngineFailure::from_request("lock observer setup failed", error))?,
-        Err(_) => {
-            return Err(EngineFailure::new(
-                ErrorKind::Timeout,
-                format!(
-                    "lock observer setup timed out after {}s",
-                    timeouts::CONNECT.as_secs()
-                ),
-            ))
-        }
-    };
+    let mut notifications = bounded::within(timeouts::CONNECT, setup)
+        .await
+        .map_err(|error| EngineFailure::from_request("lock observer setup failed", error))?;
 
     loop {
         let name = notifications
@@ -53,8 +50,8 @@ async fn observe_lock_state(
             .await
             .map_err(|error| EngineFailure::from_request("lock observer stream ended", error))?;
         let event = match name.as_str() {
-            LOCK_CHANGED => 1,
-            LOCKED => 2,
+            LOCK_CHANGED => AV_LOCK_EVENT_CHANGED,
+            LOCKED => AV_LOCK_EVENT_COMPLETE,
             _ => continue,
         };
         if sender.send(Ok(event)).await.is_err() {
@@ -73,11 +70,7 @@ pub extern "C" fn av_lock_observer_open(
     guard_error(error, || {
         let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context_arc();
-        if out.is_null() {
-            return Err(EngineFailure::invalid_argument(
-                "missing lock observer output",
-            ));
-        }
+        reset_out(out, "missing lock observer output")?;
         let stream = PullStream::spawn(|sender| observe_lock_state(context, udid, sender));
         unsafe { *out = Box::into_raw(Box::new(AvLockStream { stream })) };
         Ok(())
@@ -92,20 +85,14 @@ pub extern "C" fn av_lock_observer_next(
 ) -> i32 {
     guard(err, || {
         let Some(observer) = (unsafe { stream.as_ref() }) else {
-            out_str(err, "lock observer is closed");
             return AV_STREAM_CLOSED;
         };
-        if out_event.is_null() {
-            out_str(err, "missing lock event output");
-            return ErrorKind::InvalidArgument.code();
+        if let Err(failure) = reset_out(out_event, "missing lock event output") {
+            return write_failure(err, failure);
         }
-        match observer.stream.next(err) {
-            Ok(event) => {
-                unsafe { *out_event = event };
-                0
-            }
-            Err(rc) => rc,
-        }
+        observer
+            .stream
+            .next(err, |event| unsafe { *out_event = event })
     })
 }
 

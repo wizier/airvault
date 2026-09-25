@@ -10,15 +10,23 @@ import (
 // cancel first, wait for the active FFI call, destroy last. Calls are serialized
 // because each underlying protocol stream is sequential by definition.
 type nativeHandle[T comparable] struct {
-	mu    sync.Mutex
-	calls sync.Mutex
-	value T
-	done  chan struct{}
-	stop  func() bool
+	mu      sync.Mutex
+	calls   sync.Mutex
+	value   T
+	cancel  func(T)
+	destroy func(T)
+	done    chan struct{}
+	stop    func() bool
 }
 
-func newNativeHandle[T comparable](value T) nativeHandle[T] {
-	return nativeHandle[T]{value: value}
+// newNativeHandle binds the resource to the context passed to Open, so
+// cancellation can interrupt a blocked native call immediately.
+func newNativeHandle[T comparable](ctx context.Context, value T, cancel, destroy func(T)) *nativeHandle[T] {
+	h := &nativeHandle[T]{value: value, cancel: cancel, destroy: destroy}
+	h.mu.Lock()
+	h.stop = context.AfterFunc(ctx, h.close)
+	h.mu.Unlock()
+	return h
 }
 
 func (h *nativeHandle[T]) enter() (value T, leave func(), ok bool) {
@@ -48,14 +56,6 @@ func (h *nativeHandle[T]) detach(expected T) bool {
 	return true
 }
 
-// closeOnContext binds the opaque resource to the context passed to Open.
-// Cancellation can then interrupt a blocked native call immediately.
-func (h *nativeHandle[T]) closeOnContext(ctx context.Context, closeResource func()) {
-	h.mu.Lock()
-	h.stop = context.AfterFunc(ctx, closeResource)
-	h.mu.Unlock()
-}
-
 func (h *nativeHandle[T]) stopContextClose() {
 	h.mu.Lock()
 	stop := h.stop
@@ -66,7 +66,7 @@ func (h *nativeHandle[T]) stopContextClose() {
 	}
 }
 
-func (h *nativeHandle[T]) close(cancel, destroy func(T)) {
+func (h *nativeHandle[T]) close() {
 	h.mu.Lock()
 	var zero T
 	if h.value == zero {
@@ -88,11 +88,11 @@ func (h *nativeHandle[T]) close(cancel, destroy func(T)) {
 	if stop != nil {
 		stop()
 	}
-	if cancel != nil {
-		cancel(value)
+	if h.cancel != nil {
+		h.cancel(value)
 	}
 	h.calls.Lock()
-	destroy(value)
+	h.destroy(value)
 	h.calls.Unlock()
 	close(done)
 }

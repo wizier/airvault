@@ -6,7 +6,7 @@ use std::ffi::c_char;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use idevice::services::afc::errors::AfcError;
 use idevice::services::afc::file::OwnedFileDescriptor;
@@ -20,15 +20,19 @@ use idevice::{IdeviceError, IdeviceService};
 use tokio::io::AsyncSeekExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::afc_pool::{ClientOrigin, PoolKey, Transport};
-use crate::bounded::{cancel_or_timeout, Interrupt};
+use crate::afc_pool::{ClientOrigin, PoolKey};
+use crate::bounded::{self, cancel_or_timeout, Interrupt};
 use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{block_bounded, engine_ref, guard_error, out_str, to_json, AvEngine, AvError};
+use crate::ffi::{
+    block_bounded, engine_ref, guard_error, out_buffer, out_str, reset_out, to_json, AvBuffer,
+    AvEngine, AvError,
+};
 use crate::provider::{block, devices_deduped, provider_from, EngineContext, MAX_UDID_BYTES};
 use crate::timeouts;
 
-const AFC_SOURCE_MEDIA: i32 = 0;
-const AFC_SOURCE_APP_DOCUMENTS: i32 = 1;
+/// av_afc_open sources: the media partition, or one app's Documents container.
+pub const AV_AFC_SOURCE_MEDIA: i32 = 0;
+pub const AV_AFC_SOURCE_APP_DOCUMENTS: i32 = 1;
 const MAX_BUNDLE_BYTES: usize = 512;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_READ_BYTES: usize = 1024 * 1024;
@@ -223,61 +227,26 @@ impl Drop for FileGuard {
 /// operation (or vice versa). Both carry the connection's pool origin, so
 /// closing either returns a healthy idle connection to the pool.
 pub struct AvAfcSession {
-    // File-open moves the slot to AvAfcFile while this wrapper stays alive for
-    // the rest of the FFI call, so a concurrent cancel cannot free it early.
-    slot: Mutex<Option<Arc<Slot<Resource>>>>,
+    slot: Slot<Resource>,
     origin: ClientOrigin,
 }
 
 pub struct AvAfcFile {
-    slot: Arc<Slot<Resource>>,
+    slot: Slot<Resource>,
     origin: ClientOrigin,
-}
-
-impl AvAfcSession {
-    fn new(client: AfcClient, origin: ClientOrigin) -> Self {
-        Self {
-            slot: Mutex::new(Some(Arc::new(Slot::new(Resource::Session(client))))),
-            origin,
-        }
-    }
-
-    fn slot(&self) -> Option<Arc<Slot<Resource>>> {
-        crate::lock(&self.slot).clone()
-    }
-
-    fn detach(&self, expected: &Arc<Slot<Resource>>) -> bool {
-        let mut slot = crate::lock(&self.slot);
-        if slot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, expected))
-        {
-            slot.take();
-            true
-        } else {
-            false
-        }
-    }
 }
 
 fn cancelled(detail: &str) -> EngineFailure {
     EngineFailure::new(ErrorKind::Cancelled, detail)
 }
 
-/// The live slot behind a session handle, or Cancelled once it is closed.
-unsafe fn session_slot(session: *mut AvAfcSession) -> Result<Arc<Slot<Resource>>, EngineFailure> {
+/// The slot behind a session handle, or Cancelled for a null handle.
+unsafe fn session_slot<'a>(
+    session: *mut AvAfcSession,
+) -> Result<&'a Slot<Resource>, EngineFailure> {
     unsafe { session.as_ref() }
-        .and_then(AvAfcSession::slot)
+        .map(|session| &session.slot)
         .ok_or_else(|| cancelled("AFC session is closed"))
-}
-
-/// Zeroes a required string out-param before the call can fail.
-fn reset_out(out: *mut *mut c_char, what: &str) -> Result<(), EngineFailure> {
-    if out.is_null() {
-        return Err(EngineFailure::invalid_argument(what));
-    }
-    unsafe { *out = ptr::null_mut() };
-    Ok(())
 }
 
 /// Checks the caller's read buffer and zeroes its byte count.
@@ -352,14 +321,14 @@ pub(crate) enum Source {
 fn parse_source(source: i32, bundle: String) -> Result<Source, EngineFailure> {
     let bad = |detail: &str| Err(EngineFailure::invalid_argument(detail));
     match source {
-        AFC_SOURCE_MEDIA if !bundle.is_empty() => {
+        AV_AFC_SOURCE_MEDIA if !bundle.is_empty() => {
             bad("media AFC source must not carry a bundle id")
         }
-        AFC_SOURCE_APP_DOCUMENTS if bundle.is_empty() => {
+        AV_AFC_SOURCE_APP_DOCUMENTS if bundle.is_empty() => {
             bad("app Documents source requires a bundle id")
         }
-        AFC_SOURCE_MEDIA => Ok(Source::Media),
-        AFC_SOURCE_APP_DOCUMENTS => Ok(Source::AppDocuments(bundle)),
+        AV_AFC_SOURCE_MEDIA => Ok(Source::Media),
+        AV_AFC_SOURCE_APP_DOCUMENTS => Ok(Source::AppDocuments(bundle)),
         _ => bad("bad AFC source"),
     }
 }
@@ -379,9 +348,11 @@ async fn open_client(
         context.afc_pool.forget(&key.udid);
         return Err(IdeviceError::DeviceNotFound);
     };
-    let transport = Transport::from(&device.connection_type);
     let connect = connect(context, &device, &key.source);
-    context.afc_pool.checkout(key, transport, connect).await
+    context
+        .afc_pool
+        .checkout(key, &device.connection_type, connect)
+        .await
 }
 
 async fn connect(
@@ -403,15 +374,12 @@ async fn connect(
 /// its descriptor; if that fails the guard drops and closes the transport.
 async fn release_to_pool(resource: Resource, origin: ClientOrigin) {
     let client = match resource {
-        Resource::Session(client) => client,
-        Resource::File(file) => {
-            match tokio::time::timeout(timeouts::TEARDOWN, file.close()).await {
-                Ok(Ok(client)) => client,
-                _ => return,
-            }
-        }
+        Resource::Session(client) => Some(client),
+        Resource::File(file) => bounded::within(timeouts::TEARDOWN, file.close()).await.ok(),
     };
-    origin.check_in(client);
+    if let Some(client) = client {
+        origin.check_in(client);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -437,10 +405,7 @@ pub extern "C" fn av_afc_open(
 ) -> i32 {
     guard_error(error, || {
         let context = unsafe { engine_ref(engine) }?.context();
-        if out_session.is_null() {
-            return Err(EngineFailure::invalid_argument("bad AFC session output"));
-        }
-        unsafe { *out_session = ptr::null_mut() };
+        reset_out(out_session, "bad AFC session output")?;
         let udid = unsafe { input(udid_ptr, udid_len, MAX_UDID_BYTES, "udid", false) }?;
         let bundle = unsafe { input(bundle_ptr, bundle_len, MAX_BUNDLE_BYTES, "bundle id", true) }?;
         let key = PoolKey {
@@ -452,7 +417,11 @@ pub extern "C" fn av_afc_open(
             "opening AFC session timed out",
             open_client(context, &key),
         )?;
-        unsafe { *out_session = Box::into_raw(Box::new(AvAfcSession::new(client, origin))) };
+        let session = AvAfcSession {
+            slot: Slot::new(Resource::Session(client)),
+            origin,
+        };
+        unsafe { *out_session = Box::into_raw(Box::new(session)) };
         Ok(())
     })
 }
@@ -537,66 +506,61 @@ async fn regular_file_info(client: &mut AfcClient, path: &str) -> Result<FileInf
 }
 
 /// Reads one whole file of at most `cap` bytes and hands the client back. A
-/// refusal before the open (missing, a directory, too large) returns it with the
+/// refusal before the open (missing, a directory, too large) keeps it with the
 /// error; a transport failure, or any failure past open_owned, loses it.
 pub(crate) async fn read_small_file(
     mut client: AfcClient,
     path: &str,
     cap: usize,
-) -> Result<(AfcClient, Vec<u8>), (Option<AfcClient>, EngineFailure)> {
+) -> (Option<AfcClient>, Result<Vec<u8>, EngineFailure>) {
+    let internal = |detail| Err(EngineFailure::new(ErrorKind::Internal, detail));
     let size = match regular_file_info(&mut client, path).await {
         Ok(info) if info.size > cap => {
-            let failure = EngineFailure::new(
-                ErrorKind::Internal,
-                "AFC file is larger than the read buffer",
-            );
-            return Err((Some(client), failure));
+            return (
+                Some(client),
+                internal("AFC file is larger than the read buffer"),
+            )
         }
         Ok(info) => info.size,
         // An AFC status reply proves the connection still works.
-        Err(error @ IdeviceError::Afc(_)) => return Err((Some(client), error.into())),
-        Err(error) => return Err((None, error.into())),
+        Err(error @ IdeviceError::Afc(_)) => return (Some(client), Err(error.into())),
+        Err(error) => return (None, Err(error.into())),
     };
     let read = async {
         let mut file = FileGuard::new(client.open_owned(path, AfcFopenMode::RdOnly).await?);
         let bytes = file.read_n(size).await?;
-        Ok((file.close().await?, bytes))
+        Ok::<_, IdeviceError>((file.close().await?, bytes))
     };
-    read.await
-        .map_err(|error: IdeviceError| (None, error.into()))
+    match read.await {
+        Ok((client, bytes)) if bytes.len() > cap => (
+            Some(client),
+            internal("AFC returned more data than requested"),
+        ),
+        Ok((client, bytes)) => (Some(client), Ok(bytes)),
+        Err(error) => (None, Err(error.into())),
+    }
 }
 
-/// Reads one whole small file (bounded by buffer_len) on an existing session
-/// WITHOUT consuming it — the bulk path for thumbnails. Large streaming stays on
-/// file_open/file_read. rc 0 or an AV_ERROR_* kind.
+/// Reads one whole small file (at most MAX_READ_BYTES) into `out` on an existing
+/// session WITHOUT consuming it — the bulk path for thumbnails. Large streaming
+/// stays on file_open/file_read. rc 0 or an AV_ERROR_* kind.
 #[no_mangle]
 pub extern "C" fn av_afc_read_small(
     session: *mut AvAfcSession,
     path_ptr: *const u8,
     path_len: usize,
-    buffer: *mut u8,
-    buffer_len: usize,
-    out_read: *mut usize,
+    out: *mut AvBuffer,
     error: *mut AvError,
 ) -> i32 {
     guard_error(error, || {
         let slot = unsafe { session_slot(session) }?;
-        reset_read(buffer, buffer_len, out_read)?;
+        reset_out(out, "bad AFC read output")?;
         let path = unsafe { physical_path(path_ptr, path_len) }?;
         // A lost client closes the slot, so Go sees the next call as a dead session.
         let bytes = slot.run_session("reading AFC file timed out", |client| async move {
-            match read_small_file(client, &path, buffer_len).await {
-                Ok((client, bytes)) => (Some(client), Ok(bytes)),
-                Err((client, failure)) => (client, Err(failure)),
-            }
+            read_small_file(client, &path, MAX_READ_BYTES).await
         })?;
-        if bytes.len() > buffer_len {
-            return Err(EngineFailure::new(
-                ErrorKind::Internal,
-                "AFC returned more data than requested",
-            ));
-        }
-        unsafe { copy_read(&bytes, buffer, out_read) };
+        out_buffer(out, bytes);
         Ok(())
     })
 }
@@ -614,45 +578,43 @@ pub extern "C" fn av_afc_file_open(
     error: *mut AvError,
 ) -> i32 {
     guard_error(error, || {
-        let slot = unsafe { session_slot(session) }?;
-        if out_size.is_null() || out_modified.is_null() || out_file.is_null() {
-            return Err(EngineFailure::invalid_argument("bad AFC file output"));
-        }
-        unsafe {
-            *out_size = 0;
-            *out_modified = 0;
-            *out_file = ptr::null_mut();
-        }
+        let Some(session) = (unsafe { session.as_ref() }) else {
+            return Err(cancelled("AFC session is closed"));
+        };
+        reset_out(out_size, "bad AFC file output")?;
+        reset_out(out_modified, "bad AFC file output")?;
+        reset_out(out_file, "bad AFC file output")?;
         let path = unsafe { physical_path(path_ptr, path_len) }?;
+        let slot = &session.slot;
         let mut client = slot.take_session()?;
         let info = slot.run(
             "AFC session cancelled",
             "opening AFC file timed out",
             async move {
-                let opened = async {
-                    let info = regular_file_info(&mut client, &path).await?;
-                    let file = client.open_owned(path, AfcFopenMode::RdOnly).await?;
-                    Ok::<_, IdeviceError>((FileGuard::new(file), info))
+                let info = match regular_file_info(&mut client, &path).await {
+                    Ok(info) => info,
+                    // An AFC status reply proves the connection still works.
+                    Err(error @ IdeviceError::Afc(_)) => {
+                        return (Some(Resource::Session(client)), Err(error.into()))
+                    }
+                    Err(error) => return (None, Err(error.into())),
                 };
-                match opened.await {
-                    Ok((file, info)) => (Some(Resource::File(file)), Ok(info)),
+                match client.open_owned(path, AfcFopenMode::RdOnly).await {
+                    Ok(file) => (Some(Resource::File(FileGuard::new(file))), Ok(info)),
                     Err(error) => (None, Err(error.into())),
                 }
             },
         )?;
-        // Transfer the resource before publishing the file pointer: Go
-        // releases the emptied session wrapper only after this returns.
-        // SAFETY: session_slot above proved the handle non-null.
-        let session = unsafe { &*session };
-        if !session.detach(&slot) {
-            drop(slot.close());
-            return Err(cancelled("AFC session cancelled"));
-        }
-        let origin = session.origin.clone();
+        // A cancel landing after the open leaves the file in the session slot,
+        // where av_afc_close releases it.
+        let file = slot.take_file()?;
         unsafe {
             *out_size = info.size as u64;
             *out_modified = info.modified.and_utc().timestamp();
-            *out_file = Box::into_raw(Box::new(AvAfcFile { slot, origin }));
+            *out_file = Box::into_raw(Box::new(AvAfcFile {
+                slot: Slot::new(Resource::File(file)),
+                origin: session.origin.clone(),
+            }));
         }
         Ok(())
     })
@@ -732,8 +694,8 @@ pub extern "C" fn av_afc_file_seek(file: *mut AvAfcFile, offset: u64, error: *mu
 /// in-flight FFI operation, then calls close after it returns.
 #[no_mangle]
 pub unsafe extern "C" fn av_afc_cancel(session: *mut AvAfcSession) {
-    if let Ok(slot) = unsafe { session_slot(session) } {
-        slot.cancel();
+    if let Some(session) = unsafe { session.as_ref() } {
+        session.slot.cancel();
     }
 }
 
@@ -750,8 +712,7 @@ pub unsafe extern "C" fn av_afc_file_cancel(file: *mut AvAfcFile) {
 pub unsafe extern "C" fn av_afc_close(session: *mut AvAfcSession) {
     if !session.is_null() {
         let session = unsafe { Box::from_raw(session) };
-        let slot = crate::lock(&session.slot).take();
-        if let Some(resource) = slot.and_then(|slot| slot.close()) {
+        if let Some(resource) = session.slot.close() {
             block(release_to_pool(resource, session.origin));
         }
     }

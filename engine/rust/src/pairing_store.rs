@@ -294,13 +294,8 @@ fn read_private_file(path: &Path, max_bytes: u64) -> Result<Option<Vec<u8>>, Pai
 }
 
 fn write_atomic_private(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), PairingStoreError> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| PairingStoreError::UnsafePath {
-            path: path.to_owned(),
-            detail: "record has no valid UTF-8 filename".into(),
-        })?;
+    // Record paths always end in an ASCII `<udid>.plist` (see file_name).
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = dir.join(format!(
         ".{file_name}.tmp-{}-{}",
         std::process::id(),

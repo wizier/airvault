@@ -11,38 +11,6 @@ usize_is_size_t = true
 [parse]
 parse_deps = false
 
-[export]
-include = [
-  "LogCb",
-  "BackupCb",
-  "InstallCb",
-  "AV_INSTALL_PHASE_STAGING",
-  "AV_INSTALL_PHASE_INSTALLING",
-  "AV_ERROR_INVALID_ARGUMENT",
-  "AV_ERROR_DEVICE_UNAVAILABLE",
-  "AV_ERROR_DEVICE_LOCKED",
-  "AV_ERROR_TRUST_REQUIRED",
-  "AV_ERROR_USER_DENIED",
-  "AV_ERROR_BUSY",
-  "AV_ERROR_TIMEOUT",
-  "AV_ERROR_CANCELLED",
-  "AV_ERROR_PROTOCOL",
-  "AV_ERROR_STORAGE_FULL",
-  "AV_ERROR_INTEGRITY",
-  "AV_ERROR_UNSUPPORTED",
-  "AV_ERROR_INTERNAL",
-  "AV_ERROR_INVALID_BACKUP_PASSWORD",
-  "AV_ERROR_OUTCOME_UNKNOWN",
-  "AV_STREAM_CONTINUE",
-  "AV_STREAM_CLOSED",
-  "AV_CANCEL_NOT_REGISTERED",
-  "AvEngine",
-  "AvBuffer",
-  "AvError",
-  "AvPresenceWatch",
-  "AvLockStream",
-]
-
 [export.rename]
 "BackupCb" = "av_backup_cb"
 "InstallCb" = "av_install_cb"

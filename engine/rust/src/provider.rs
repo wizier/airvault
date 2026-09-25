@@ -65,26 +65,12 @@ impl EngineContext {
     ) -> Result<Self, String> {
         let mux_addr = match mux_address.filter(|value| !value.is_empty()) {
             None => UsbmuxdAddr::default(),
-            Some(value) => {
-                #[cfg(unix)]
-                {
-                    if value.contains(':') {
-                        UsbmuxdAddr::TcpSocket(
-                            SocketAddr::from_str(value)
-                                .map_err(|error| format!("invalid mux address: {error}"))?,
-                        )
-                    } else {
-                        UsbmuxdAddr::UnixSocket(value.to_owned())
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    UsbmuxdAddr::TcpSocket(
-                        SocketAddr::from_str(value)
-                            .map_err(|error| format!("invalid mux address: {error}"))?,
-                    )
-                }
-            }
+            #[cfg(unix)]
+            Some(value) if !value.contains(':') => UsbmuxdAddr::UnixSocket(value.to_owned()),
+            Some(value) => UsbmuxdAddr::TcpSocket(
+                SocketAddr::from_str(value)
+                    .map_err(|error| format!("invalid mux address: {error}"))?,
+            ),
         };
         Ok(Self {
             backup_root,

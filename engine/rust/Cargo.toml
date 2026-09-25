@@ -29,7 +29,7 @@ idevice = { version = "0.1.68", default-features = false, features = [
     "notification_proxy",    # the iTunes sync-session dance around backups
     "mobileactivationd",     # av_activation_* (Setup Assistant restore needs activation)
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "fs"] }
 tokio-util = { version = "0.7", features = ["io"] }
 thiserror = "2"
 plist = "1"

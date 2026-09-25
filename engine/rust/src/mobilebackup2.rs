@@ -14,22 +14,15 @@ use crate::provider::AirvaultProvider;
 use crate::timeouts;
 
 /// Connect with the pairing record's escrow bag so backupd can read protected
-/// keychain items while the phone is locked.
+/// keychain items while the phone is locked. `udid` is the device's own, sent
+/// as the requests' TargetIdentifier.
 pub(crate) async fn connect(
     provider: &AirvaultProvider,
+    udid: &str,
 ) -> Result<MobileBackup2Client, idevice::IdeviceError> {
     let pairing = provider.get_pairing_file().await?;
     let mut lockdown = LockdownClient::connect(provider).await?;
     let legacy = lockdown.start_session(&pairing).await?;
-    let udid = lockdown
-        .get_value(Some("UniqueDeviceID"), None)
-        .await
-        .ok()
-        .and_then(|value| value.as_string().map(str::to_owned));
-    if udid.is_none() {
-        tracing::warn!("mb2: UniqueDeviceID unavailable; using default Target/Source identifiers");
-    }
-
     let service = MobileBackup2Client::service_name();
     let (port, ssl) = match lockdown
         .start_service_with_escrow(service.clone(), pairing.escrow_bag.clone())
@@ -46,9 +39,7 @@ pub(crate) async fn connect(
     if ssl {
         device.start_session(&pairing, legacy).await?;
     }
-    if let Some(udid) = udid {
-        device.set_udid(udid);
-    }
+    device.set_udid(udid);
     MobileBackup2Client::from_stream(device).await
 }
 
@@ -65,29 +56,18 @@ pub(crate) async fn disconnect_bounded(
 }
 
 /// Watches for a device-initiated sync abort and forwards it to the transfer's
-/// cancellation token. Failure to create the optional observer is non-fatal.
+/// cancellation token.
 pub(crate) async fn spawn_cancel_observer(
     provider: &AirvaultProvider,
     cancel: CancellationToken,
-) -> Option<tokio::task::JoinHandle<()>> {
+) -> Result<tokio::task::JoinHandle<()>, idevice::IdeviceError> {
     const CANCEL: &str = "com.apple.itunes-client.syncCancelRequest";
 
-    let mut notifications = NotificationProxyClient::connect(provider)
-        .await
-        .inspect_err(
-            |error| tracing::warn!(%error, "mb2: proceeding without device cancel observer"),
-        )
-        .ok()?;
-    notifications
-        .observe_notification(CANCEL)
-        .await
-        .inspect_err(
-            |error| tracing::warn!(%error, "mb2: proceeding without device cancel observer"),
-        )
-        .ok()?;
+    let mut notifications = NotificationProxyClient::connect(provider).await?;
+    notifications.observe_notification(CANCEL).await?;
 
     let span = tracing::Span::current();
-    Some(tokio::spawn(
+    Ok(tokio::spawn(
         async move {
             loop {
                 match notifications.receive_notification().await {

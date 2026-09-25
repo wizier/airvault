@@ -187,16 +187,12 @@ pub unsafe extern "C" fn av_log_init(cb: LogCb, level: *const c_char) -> i32 {
 
 /// Span shared by every durable mutation that crosses the Go/Rust boundary.
 pub(crate) fn operation_span(job_id: &str, operation: &str, udid: &str) -> tracing::Span {
-    let span = tracing::info_span!(
+    tracing::info_span!(
         "operation",
-        job_id = tracing::field::Empty,
+        job_id = (!job_id.is_empty()).then_some(job_id),
         operation = %operation,
         udid = %udid
-    );
-    if !job_id.is_empty() {
-        span.record("job_id", job_id);
-    }
-    span
+    )
 }
 
 #[cfg(test)]

@@ -76,6 +76,17 @@ pub(crate) fn out_str(dst: *mut *mut c_char, s: &str) {
     }
 }
 
+/// Zeroes a required out-param before the call can fail; null is an invalid
+/// argument. Only for plain outputs (pointers, integers, AvBuffer), where all
+/// zero bytes is the empty value.
+pub(crate) fn reset_out<T>(out: *mut T, what: &str) -> Result<(), EngineFailure> {
+    if out.is_null() {
+        return Err(EngineFailure::invalid_argument(what));
+    }
+    unsafe { out.write_bytes(0, 1) };
+    Ok(())
+}
+
 /// Free any string handed out by this shim (including error text).
 ///
 /// # Safety
@@ -127,9 +138,10 @@ pub(crate) fn guard_error(
     rc
 }
 
-pub(crate) fn out_buffer(dst: *mut AvBuffer, bytes: Vec<u8>) -> bool {
+/// Write owned bytes into an out-param (caller frees via av_buffer_free).
+pub(crate) fn out_buffer(dst: *mut AvBuffer, bytes: Vec<u8>) {
     if dst.is_null() {
-        return false;
+        return;
     }
     let mut bytes = bytes.into_boxed_slice();
     let buffer = AvBuffer {
@@ -138,7 +150,6 @@ pub(crate) fn out_buffer(dst: *mut AvBuffer, bytes: Vec<u8>) -> bool {
     };
     std::mem::forget(bytes);
     unsafe { *dst = buffer };
-    true
 }
 
 #[no_mangle]
@@ -216,24 +227,14 @@ impl AvEngine {
     }
 }
 
-/// Required absolute-path argument for engine construction.
-unsafe fn abs_root(p: *const c_char, what: &str) -> Result<PathBuf, EngineFailure> {
-    let path = PathBuf::from(unsafe { req_str(p, &format!("bad {what}")) }?);
-    if !path.is_absolute() {
-        return Err(EngineFailure::invalid_argument(format!(
-            "{what} must be absolute"
-        )));
-    }
-    Ok(path)
-}
-
+/// The roots arrive absolute: engine.New resolves them with filepath.Abs.
 unsafe fn engine_context(
     backup_root: *const c_char,
     pairing_root: *const c_char,
     mux_address: *const c_char,
 ) -> Result<EngineContext, EngineFailure> {
-    let root = unsafe { abs_root(backup_root, "backup root") }?;
-    let pairing_root = unsafe { abs_root(pairing_root, "pairing root") }?;
+    let root = PathBuf::from(unsafe { req_str(backup_root, "bad backup root") }?);
+    let pairing_root = PathBuf::from(unsafe { req_str(pairing_root, "bad pairing root") }?);
     EngineContext::new(root, pairing_root, unsafe { in_str(mux_address) })
         .map_err(EngineFailure::invalid_argument)
 }

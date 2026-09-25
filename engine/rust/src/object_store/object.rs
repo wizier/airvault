@@ -86,9 +86,7 @@ impl Drop for ObjectWriter {
                 .map_err(ObjectFailure::integrity)
         });
         if let Err(error) = outcome {
-            if state.error.is_none() {
-                state.error = Some(error);
-            }
+            state.error.get_or_insert(error);
         }
     }
 }
@@ -175,15 +173,15 @@ impl ObjectWriter {
 }
 
 pub(super) struct HashVerifyReader {
-    pub(super) file: File,
-    pub(super) inner: Arc<Inner>,
-    pub(super) hasher: Sha256,
-    pub(super) remaining: u64,
-    pub(super) expected_hex: String,
-    pub(super) context: String,
-    pub(super) verified: bool,
+    file: File,
+    inner: Arc<Inner>,
+    hasher: Sha256,
+    remaining: u64,
+    expected_hex: String,
+    context: String,
+    verified: bool,
     // First failure, replayed verbatim on any further read.
-    pub(super) failed: Option<(std::io::ErrorKind, String)>,
+    failed: Option<(std::io::ErrorKind, String)>,
 }
 
 impl HashVerifyReader {

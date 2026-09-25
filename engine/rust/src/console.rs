@@ -8,7 +8,7 @@ use idevice::IdeviceService;
 
 use crate::engine_error::EngineFailure;
 use crate::ffi::{
-    block_bounded, engine_udid, guard, guard_error, out_str, to_json, AvEngine, AvError,
+    block_bounded, engine_udid, guard, guard_error, out_str, reset_out, to_json, AvEngine, AvError,
     AV_STREAM_CLOSED,
 };
 use crate::provider::provider_for;
@@ -79,10 +79,7 @@ pub extern "C" fn av_console_open(
     guard_error(error, || {
         let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context();
-        if out_stream.is_null() {
-            return Err(EngineFailure::invalid_argument("bad console stream output"));
-        }
-        unsafe { *out_stream = std::ptr::null_mut() };
+        reset_out(out_stream, "bad console stream output")?;
         let receiver = block_bounded(timeouts::UI_CALL, "console connect timed out", async {
             let provider = provider_for(context, &udid).await?;
             let client = OsTraceRelayClient::connect(&provider).await?;
@@ -106,13 +103,9 @@ pub extern "C" fn av_console_next(
         let Some(console) = (unsafe { stream.as_ref() }) else {
             return AV_STREAM_CLOSED;
         };
-        match console.stream.next(err) {
-            Ok(record) => {
-                out_str(out_json, &record);
-                0
-            }
-            Err(rc) => rc,
-        }
+        console
+            .stream
+            .next(err, |record| out_str(out_json, &record))
     })
 }
 

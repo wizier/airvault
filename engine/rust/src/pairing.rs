@@ -12,9 +12,12 @@ use plist::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::bounded;
 use crate::discover::read_will_encrypt;
 use crate::engine_error::{EngineFailure, ErrorKind};
-use crate::ffi::{block_bounded, engine_udid, guard_error, opt_owned, out_str, AvEngine, AvError};
+use crate::ffi::{
+    block_bounded, engine_udid, guard_error, in_str, opt_owned, out_str, req_str, AvEngine, AvError,
+};
 use crate::logging::operation_span;
 use crate::mobilebackup2;
 use crate::pairing_store::{PairingIdentity, PairingStoreError};
@@ -42,13 +45,8 @@ enum PasswordProtocolOutcome {
     Indeterminate(EngineFailure),
 }
 
-struct PasswordRunResult {
-    encrypted: Option<bool>,
-    result: Result<(), EngineFailure>,
-}
-
-/// The pinned idevice reader allocates an untrusted u32 frame length directly.
-/// ChangePassword owns its receive loop, so enforce a bound before allocation.
+/// idevice's DeviceLink reader allocates an untrusted u32 frame length
+/// directly; ChangePassword owns its receive loop, so bound it before allocation.
 async fn receive_capped_dl_message(
     mb2: &mut MobileBackup2Client,
 ) -> Result<(String, Value), String> {
@@ -68,25 +66,21 @@ async fn receive_capped_dl_message(
 /// only, the host record goes either way, so the outcome is logged not returned.
 /// InvalidHostID means it had already forgotten us.
 async fn device_unpair(context: &EngineContext, udid: &str, pf: &PairingFile) {
-    let attempt = async {
+    let attempt = bounded::within(timeouts::CONNECT, async {
         let provider = provider_for(context, udid).await?;
         let mut lc = LockdownClient::connect(&provider).await?;
         // Over Wi-Fi Unpair only lands inside a session; over USB it is taken plain.
         let _ = lc.start_session(pf).await;
         lc.unpair(pf.host_id.clone()).await
-    };
-    match tokio::time::timeout(timeouts::CONNECT, attempt).await {
-        Ok(Ok(())) | Ok(Err(IdeviceError::InvalidHostID)) => {
+    });
+    match attempt.await {
+        Ok(()) | Err(IdeviceError::InvalidHostID) => {
             tracing::info!(udid = %udid, "unpair: device forgot this host")
         }
-        Ok(Err(e)) => tracing::warn!(
+        Err(e) => tracing::warn!(
             udid = %udid,
             error = ?e,
             "unpair: device-side revoke not acknowledged; removing host state anyway"
-        ),
-        Err(_) => tracing::warn!(
-            udid = %udid,
-            "unpair: device did not answer in time; removing host state anyway"
         ),
     }
 }
@@ -310,85 +304,48 @@ async fn finish_pairing(
 /// Sets/changes/removes the device-side backup password via mobilebackup2
 /// ChangePassword (None old = enable, None new = disable). Driven by hand:
 /// upstream's `change_password_from_path` discards the wrong-password verdict.
+/// `encrypted` receives the device flag whenever it is known, even on error.
 async fn backup_password_run(
     context: &EngineContext,
     udid: &str,
     old: Option<&str>,
     new: Option<&str>,
     cancel: CancellationToken,
-) -> PasswordRunResult {
+    encrypted: &mut Option<bool>,
+) -> Result<(), EngineFailure> {
     if cancel.is_cancelled() {
-        return PasswordRunResult {
-            encrypted: None,
-            result: Err(EngineFailure::new(
-                ErrorKind::Cancelled,
-                "backup password change cancelled before it started",
-            )),
-        };
+        return Err(EngineFailure::new(
+            ErrorKind::Cancelled,
+            "backup password change cancelled before it started",
+        ));
     }
-    let provider = match provider_for(context, udid).await {
-        Ok(provider) => provider,
-        Err(error) => {
-            return PasswordRunResult {
-                encrypted: None,
-                result: Err(EngineFailure::from_idevice(
-                    "backup password provider lookup failed",
-                    error,
-                )),
-            }
-        }
-    };
+    let provider = provider_for(context, udid).await.map_err(|error| {
+        EngineFailure::from_idevice("backup password provider lookup failed", error)
+    })?;
 
     // The baseline prevents a stale UI from treating an already-matching flag
     // as proof that this request changed it. Only a transition can rescue an
     // otherwise indeterminate enable/disable operation.
     let baseline = probe_backup_encryption(&provider).await;
+    *encrypted = baseline;
     tracing::debug!(encrypted = ?baseline, "backup password: captured encryption baseline");
     // ChangePassword is standalone: unlike backup/restore, it takes no AFC sync lock.
-    let mut mb2 =
-        match tokio::time::timeout(timeouts::CONNECT, mobilebackup2::connect(&provider)).await {
-            Ok(Ok(client)) => client,
-            Ok(Err(error)) => {
-                return PasswordRunResult {
-                    encrypted: baseline,
-                    result: Err(EngineFailure::from_idevice(
-                        "backup password mobilebackup2 connect failed",
-                        error,
-                    )),
-                }
-            }
-            Err(_) => {
-                return PasswordRunResult {
-                    encrypted: baseline,
-                    result: Err(EngineFailure::new(
-                        ErrorKind::Timeout,
-                        format!(
-                            "backup password mobilebackup2 connect timed out after {}s",
-                            timeouts::CONNECT.as_secs()
-                        ),
-                    )),
-                }
-            }
-        };
+    let mut mb2 = bounded::within(timeouts::CONNECT, mobilebackup2::connect(&provider, udid))
+        .await
+        .map_err(|error| {
+            EngineFailure::from_idevice("backup password mobilebackup2 connect failed", error)
+        })?;
 
     // Last point with no device-side effect: past here a cancel can only be
     // reported as an indeterminate outcome.
     if cancel.is_cancelled() {
-        return PasswordRunResult {
-            encrypted: baseline,
-            result: Err(EngineFailure::new(
-                ErrorKind::Cancelled,
-                "backup password change cancelled before request",
-            )),
-        };
+        return Err(EngineFailure::new(
+            ErrorKind::Cancelled,
+            "backup password change cancelled before request",
+        ));
     }
 
-    if let Err(failure) = send_backup_password_request(&mut mb2, udid, old, new).await {
-        return PasswordRunResult {
-            encrypted: baseline,
-            result: Err(failure),
-        };
-    }
+    send_backup_password_request(&mut mb2, udid, old, new).await?;
     tracing::debug!("backup password: ChangePassword request sent");
 
     let expected_transition =
@@ -423,43 +380,30 @@ async fn backup_password_run(
     // Close the operation channel before opening the final lockdown probe.
     drop(mb2);
     let final_state = probe_backup_encryption(&provider).await.or(baseline);
+    *encrypted = final_state;
 
     match outcome {
         PasswordProtocolOutcome::Committed => {
-            let encrypted = match (old, new) {
+            *encrypted = match (old, new) {
                 (None, Some(_)) => Some(true),
                 (Some(_), None) => Some(false),
                 (Some(_), Some(_)) => final_state.or(Some(true)),
                 _ => final_state,
             };
-            tracing::info!(encrypted = ?encrypted, "backup password change committed");
-            PasswordRunResult {
-                encrypted,
-                result: Ok(()),
-            }
+            tracing::info!(encrypted = ?*encrypted, "backup password change committed");
+            Ok(())
         }
-        PasswordProtocolOutcome::Rejected(failure) => PasswordRunResult {
-            encrypted: final_state,
-            result: Err(failure),
+        PasswordProtocolOutcome::Rejected(failure) => Err(failure),
+        PasswordProtocolOutcome::Indeterminate(failure) => match expected_transition {
+            Some(expected) if final_state == Some(expected) => {
+                tracing::info!(
+                    encrypted = expected,
+                    "backup password change committed: encryption state reached the expected value"
+                );
+                Ok(())
+            }
+            _ => Err(failure),
         },
-        PasswordProtocolOutcome::Indeterminate(failure) => {
-            if let Some(expected) = expected_transition {
-                if final_state == Some(expected) {
-                    tracing::info!(
-                        encrypted = expected,
-                        "backup password change committed: encryption state reached the expected value"
-                    );
-                    return PasswordRunResult {
-                        encrypted: Some(expected),
-                        result: Ok(()),
-                    };
-                }
-            }
-            PasswordRunResult {
-                encrypted: final_state,
-                result: Err(failure),
-            }
-        }
     }
 }
 
@@ -530,25 +474,18 @@ async fn read_password_device_link(mb2: &mut MobileBackup2Client) -> PasswordPro
     }
 }
 
-async fn read_backup_encryption(provider: &AirvaultProvider) -> Result<bool, IdeviceError> {
-    let mut lockdown = authed_lockdown(provider).await?;
-    read_will_encrypt(&mut lockdown).await
-}
-
 /// None = the flag could not be read. Failures are expected while the phone is
 /// busy applying the change, so they stay at debug.
 async fn probe_backup_encryption(provider: &AirvaultProvider) -> Option<bool> {
-    match tokio::time::timeout(timeouts::PROBE, read_backup_encryption(provider)).await {
-        Ok(Ok(encrypted)) => Some(encrypted),
-        Ok(Err(error)) => {
-            tracing::debug!(%error, ?error, "backup password encryption-state probe failed");
-            None
-        }
-        Err(_) => {
-            tracing::debug!("backup password encryption-state probe timed out");
-            None
-        }
-    }
+    bounded::within(timeouts::PROBE, async {
+        let mut lockdown = authed_lockdown(provider).await?;
+        read_will_encrypt(&mut lockdown).await
+    })
+    .await
+    .inspect_err(
+        |error| tracing::debug!(%error, ?error, "backup password encryption-state probe failed"),
+    )
+    .ok()
 }
 
 async fn wait_backup_encryption_transition(
@@ -618,31 +555,22 @@ pub extern "C" fn av_backup_password_change(
         }
         let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
         let context = engine.context();
-        let job_id = unsafe { opt_owned(job_id) };
-        if job_id.is_empty() {
-            return Err(EngineFailure::invalid_argument(
-                "backup password change requires a job id",
-            ));
-        }
+        let job_id = unsafe { req_str(job_id, "backup password change requires a job id") }?;
         let lease = engine.operations.register_command(job_id.clone());
-        let old = unsafe { opt_owned(old_pw) };
-        let new = unsafe { opt_owned(new_pw) };
+        let old = unsafe { in_str(old_pw) }.filter(|s| !s.is_empty());
+        let new = unsafe { in_str(new_pw) }.filter(|s| !s.is_empty());
         let span = operation_span(&job_id, "password", &udid);
-        block(
-            async {
-                let old = (!old.is_empty()).then_some(old.as_str());
-                let new = (!new.is_empty()).then_some(new.as_str());
-                let outcome =
-                    backup_password_run(context, &udid, old, new, lease.cancellation_token()).await;
-                if let Some(encrypted) = outcome.encrypted {
-                    if !out_encrypted.is_null() {
-                        unsafe { *out_encrypted = i32::from(encrypted) };
-                    }
-                }
-                outcome.result
+        let mut encrypted = None;
+        let cancel = lease.cancellation_token();
+        let result = block(
+            backup_password_run(context, &udid, old, new, cancel, &mut encrypted).instrument(span),
+        );
+        if let Some(encrypted) = encrypted {
+            if !out_encrypted.is_null() {
+                unsafe { *out_encrypted = i32::from(encrypted) };
             }
-            .instrument(span),
-        )
+        }
+        result
     })
 }
 

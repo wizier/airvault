@@ -12,7 +12,7 @@ package engine
 #include "airvault.h"
 
 // Backup/restore progress push: the shim calls back per payload chunk and per
-// device progress frame. Trampolines are defined in cgo_watch.go.
+// device progress frame. Trampolines are defined in cgo_trampolines.go.
 void av_backup_trampoline(size_t callback_id, int32_t phase, double percent, uint64_t bytes);
 void av_install_trampoline(size_t callback_id, int32_t phase, uint64_t percent);
 
@@ -20,7 +20,6 @@ void av_install_trampoline(size_t callback_id, int32_t phase, uint64_t percent);
 import "C"
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,14 +66,10 @@ func New(config Config) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve engine pairing root: %w", err)
 	}
-	croot := C.CString(root)
-	defer C.free(unsafe.Pointer(croot))
-	cpairing := C.CString(pairingRoot)
-	defer C.free(unsafe.Pointer(cpairing))
-	cmux := C.CString(config.MuxAddress)
-	defer C.free(unsafe.Pointer(cmux))
+	var cs cStrings
+	defer cs.free()
 	var errStr *C.char
-	native := C.av_engine_new(croot, cpairing, cmux, &errStr)
+	native := C.av_engine_new(cs.add(root), cs.add(pairingRoot), cs.add(config.MuxAddress), &errStr)
 	defer C.av_string_free(errStr)
 	if native == nil {
 		return nil, fmt.Errorf("create native engine: %s", C.GoString(errStr))
@@ -110,6 +105,22 @@ func (e *Engine) engine(ctx context.Context) (*C.AvEngine, func(), error) {
 	return e.native, e.mu.RUnlock, nil
 }
 
+// cStrings keeps the C copies of one call's string arguments alive until free,
+// which the caller defers past the native call.
+type cStrings []*C.char
+
+func (cs *cStrings) add(s string) *C.char {
+	p := C.CString(s)
+	*cs = append(*cs, p)
+	return p
+}
+
+func (cs cStrings) free() {
+	for _, p := range cs {
+		C.free(unsafe.Pointer(p))
+	}
+}
+
 func cbool(b bool) C.int32_t {
 	if b {
 		return 1
@@ -127,11 +138,8 @@ func callEngineError(call func(out *C.AvError) C.int32_t) error {
 	if rc == 0 {
 		return nil
 	}
-	detail := "device engine operation failed"
-	if native.detail.len > 0 {
-		detail = string(C.GoBytes(unsafe.Pointer(native.detail.ptr), C.int(native.detail.len)))
-	}
-	return &Error{Kind: ErrorKind(rc), Detail: detail}
+	detail := C.GoBytes(unsafe.Pointer(native.detail.ptr), C.int(native.detail.len))
+	return &Error{Kind: ErrorKind(rc), Detail: string(detail)}
 }
 
 // callString returns one string-returning shim call's payload.
@@ -204,6 +212,31 @@ func (e *Engine) reqBytes(ctx context.Context, call func(*C.AvEngine, *C.AvBuffe
 	return callBufferBytes(func(out *C.AvBuffer, errOut *C.AvError) C.int32_t { return call(native, out, errOut) })
 }
 
+// reqJob is req for a job-scoped operation: cancelling ctx aborts exactly that
+// native operation. Watching stops before the engine is released.
+func (e *Engine) reqJob(ctx context.Context, call func(*C.AvEngine, *C.AvError) C.int32_t) error {
+	native, releaseEngine, err := e.engine(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseEngine()
+	stopCancellation := watchOperationCancellation(ctx, native)
+	defer stopCancellation()
+	return callEngineError(func(out *C.AvError) C.int32_t { return call(native, out) })
+}
+
+// withBackupProgress hands run the callback id for av_backup_trampoline; the
+// dispatcher is flushed and the handle deleted only after run returns.
+func withBackupProgress(onProgress func(Progress), run func(callbackID C.size_t) error) error {
+	callback := newBackupCallback(onProgress)
+	callbackID := cgo.NewHandle(callback)
+	defer func() {
+		callback.sink.close()
+		callbackID.Delete()
+	}()
+	return run(C.size_t(callbackID))
+}
+
 // pullStream runs blocking pulls on an owned stream until a payload or a
 // failure, retrying AV_STREAM_CONTINUE internally. call's outputs are written
 // only on rc 0; errStr is owned and freed here.
@@ -235,7 +268,7 @@ func pullStream[H comparable](ctx context.Context, h *nativeHandle[H], call func
 			if detail == "" {
 				detail = "device engine stream failed"
 			}
-			return errors.New(detail)
+			return &Error{Kind: ErrorKind(rc), Detail: detail}
 		}
 	}
 }
@@ -282,11 +315,11 @@ func (e *Engine) ListPresence(ctx context.Context) ([]DevicePresence, error) {
 }
 
 func (e *Engine) Battery(ctx context.Context, device DeviceID) (Battery, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
+	var cs cStrings
+	defer cs.free()
 	var battery Battery
 	err := e.reqJSON(ctx, &battery, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_device_battery(native, cu, out, e)
+		return C.av_device_battery(native, cs.add(string(device)), out, e)
 	})
 	return battery, err
 }
@@ -300,12 +333,10 @@ func (e *Engine) ListUSBDevices(ctx context.Context) ([]USBDevice, error) {
 }
 
 func (e *Engine) AdvancePairing(ctx context.Context, device DeviceID) (PairingOutcome, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
+	var cs cStrings
+	defer cs.free()
 	status, err := e.reqString(ctx, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_pairing_advance(native, cu, cjob, out, e)
+		return C.av_pairing_advance(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)), out, e)
 	})
 	if err != nil {
 		return TrustError, err
@@ -314,25 +345,13 @@ func (e *Engine) AdvancePairing(ctx context.Context, device DeviceID) (PairingOu
 }
 
 func (e *Engine) ChangeBackupPassword(ctx context.Context, device DeviceID, oldPassword, newPassword string) (BackupPasswordResult, error) {
-	native, releaseEngine, err := e.engine(ctx)
-	if err != nil {
-		return BackupPasswordResult{}, err
-	}
-	defer releaseEngine()
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	cold := C.CString(oldPassword)
-	defer C.free(unsafe.Pointer(cold))
-	cnew := C.CString(newPassword)
-	defer C.free(unsafe.Pointer(cnew))
+	var cs cStrings
+	defer cs.free()
 	var encrypted C.int32_t = -1
-	stopCancellation := watchOperationCancellation(ctx, native)
-	err = callEngineError(func(e *C.AvError) C.int32_t {
-		return C.av_backup_password_change(native, cu, cjob, cold, cnew, &encrypted, e)
+	err := e.reqJob(ctx, func(native *C.AvEngine, e *C.AvError) C.int32_t {
+		return C.av_backup_password_change(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)),
+			cs.add(oldPassword), cs.add(newPassword), &encrypted, e)
 	})
-	stopCancellation()
 	result := BackupPasswordResult{EncryptionKnown: encrypted >= 0}
 	if result.EncryptionKnown {
 		result.Encrypted = encrypted != 0
@@ -344,17 +363,17 @@ func (e *Engine) ChangeBackupPassword(ctx context.Context, device DeviceID, oldP
 // state. The device-side revoke is best effort and only logged by the shim; an
 // error here means the host state itself survived.
 func (e *Engine) Unpair(ctx context.Context, device DeviceID) error {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
+	var cs cStrings
+	defer cs.free()
 	return e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_pairing_unpair(native, cu, out)
+		return C.av_pairing_unpair(native, cs.add(string(device)), out)
 	})
 }
 
 // PresenceWatcher owns one pull-based mux listener until Close.
 type PresenceWatcher struct {
 	ctx    context.Context
-	handle nativeHandle[*C.AvPresenceWatch]
+	handle *nativeHandle[*C.AvPresenceWatch]
 }
 
 func (e *Engine) OpenPresenceWatcher(ctx context.Context) (*PresenceWatcher, error) {
@@ -364,24 +383,22 @@ func (e *Engine) OpenPresenceWatcher(ctx context.Context) (*PresenceWatcher, err
 	}); err != nil {
 		return nil, err
 	}
-	watcher := &PresenceWatcher{ctx: ctx, handle: newNativeHandle(handle)}
-	watcher.handle.closeOnContext(ctx, func() { _ = watcher.Close() })
-	return watcher, nil
+	return &PresenceWatcher{ctx: ctx, handle: newNativeHandle(ctx, handle,
+		func(handle *C.AvPresenceWatch) { C.av_device_watch_cancel(handle) },
+		func(handle *C.AvPresenceWatch) { C.av_device_watch_close(handle) },
+	)}, nil
 }
 
 func (w *PresenceWatcher) Next() (PresenceState, error) {
 	var state PresenceState
-	err := pullJSON(w.ctx, &w.handle, &state, func(handle *C.AvPresenceWatch, out, errStr **C.char) C.int32_t {
+	err := pullJSON(w.ctx, w.handle, &state, func(handle *C.AvPresenceWatch, out, errStr **C.char) C.int32_t {
 		return C.av_device_watch_next(handle, out, errStr)
 	})
 	return state, err
 }
 
 func (w *PresenceWatcher) Close() error {
-	w.handle.close(
-		func(handle *C.AvPresenceWatch) { C.av_device_watch_cancel(handle) },
-		func(handle *C.AvPresenceWatch) { C.av_device_watch_close(handle) },
-	)
+	w.handle.close()
 	return nil
 }
 
@@ -415,39 +432,26 @@ func watchOperationCancellation(ctx context.Context, native *C.AvEngine) func() 
 
 //export goBackupCallback
 func goBackupCallback(callbackID C.size_t, phase C.int32_t, percent C.double, bytes C.uint64_t) {
-	cgo.Handle(callbackID).Value().(*backupCallback).submit(int32(phase), float64(percent), uint64(bytes))
+	progressPhase := ProgressPhaseTransfer
+	if phase == C.AV_BACKUP_PHASE_FINALIZING {
+		progressPhase = ProgressPhaseSealing
+	}
+	cgo.Handle(callbackID).Value().(*backupCallback).submit(progressPhase, float64(percent), uint64(bytes))
 }
 
 // BuildSnapshot blocks for the whole transfer — the documented exception to the
 // shim-timeout rule; cancelling ctx aborts the exact device-link session. On
 // success it returns the payload bytes the backup added to the object pool.
 func (e *Engine) BuildSnapshot(ctx context.Context, req BuildSnapshotRequest, onProgress func(Progress)) (int64, error) {
-	native, releaseEngine, err := e.engine(ctx)
-	if err != nil {
-		return 0, err
-	}
-	cu := C.CString(string(req.DeviceID))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	csnapshot := C.CString(string(req.SnapshotID))
-	defer C.free(unsafe.Pointer(csnapshot))
-	cbase := C.CString(string(req.BaseSnapshotID))
-	defer C.free(unsafe.Pointer(cbase))
-	callback := newBackupCallback(onProgress)
-	callbackID := cgo.NewHandle(callback)
-	stopCancellation := watchOperationCancellation(ctx, native)
-	defer func() {
-		stopCancellation()
-		releaseEngine()
-		callback.sink.close()
-		callbackID.Delete()
-	}()
-
+	var cs cStrings
+	defer cs.free()
 	var added C.uint64_t
-	err = callEngineError(func(e *C.AvError) C.int32_t {
-		return C.av_snapshot_build(native, cu, cjob, csnapshot, cbase,
-			C.av_backup_cb(C.av_backup_trampoline), C.size_t(callbackID), &added, e)
+	err := withBackupProgress(onProgress, func(callbackID C.size_t) error {
+		return e.reqJob(ctx, func(native *C.AvEngine, e *C.AvError) C.int32_t {
+			return C.av_snapshot_build(native, cs.add(string(req.DeviceID)), cs.add(airlog.JobID(ctx)),
+				cs.add(string(req.SnapshotID)), cs.add(string(req.BaseSnapshotID)),
+				C.av_backup_cb(C.av_backup_trampoline), callbackID, &added, e)
+		})
 	})
 	if err != nil {
 		return 0, err
@@ -457,35 +461,36 @@ func (e *Engine) BuildSnapshot(ctx context.Context, req BuildSnapshotRequest, on
 
 type cgoLockStream struct {
 	ctx    context.Context
-	handle nativeHandle[*C.AvLockStream]
+	handle *nativeHandle[*C.AvLockStream]
 }
 
 func (e *Engine) OpenLockObserver(ctx context.Context, device DeviceID) (LockStream, error) {
-	cdevice := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cdevice))
+	var cs cStrings
+	defer cs.free()
 	var handle *C.AvLockStream
 	if err := e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_lock_observer_open(native, cdevice, &handle, out)
+		return C.av_lock_observer_open(native, cs.add(string(device)), &handle, out)
 	}); err != nil {
 		return nil, err
 	}
-	stream := &cgoLockStream{ctx: ctx, handle: newNativeHandle(handle)}
-	stream.handle.closeOnContext(ctx, func() { _ = stream.Close() })
-	return stream, nil
+	return &cgoLockStream{ctx: ctx, handle: newNativeHandle(ctx, handle,
+		func(handle *C.AvLockStream) { C.av_lock_observer_cancel(handle) },
+		func(handle *C.AvLockStream) { C.av_lock_observer_close(handle) },
+	)}, nil
 }
 
 func (s *cgoLockStream) Next() (ScreenLockSignal, error) {
 	var event C.int32_t
-	err := pullStream(s.ctx, &s.handle, func(handle *C.AvLockStream, errStr **C.char) C.int32_t {
+	err := pullStream(s.ctx, s.handle, func(handle *C.AvLockStream, errStr **C.char) C.int32_t {
 		return C.av_lock_observer_next(handle, &event, errStr)
 	})
 	if err != nil {
 		return 0, err
 	}
 	switch event {
-	case 1:
+	case C.AV_LOCK_EVENT_CHANGED:
 		return ScreenLockChanged, nil
-	case 2:
+	case C.AV_LOCK_EVENT_COMPLETE:
 		return ScreenLockComplete, nil
 	default:
 		return 0, &Error{Kind: ErrorProtocol, Detail: "invalid lock event"}
@@ -493,87 +498,59 @@ func (s *cgoLockStream) Next() (ScreenLockSignal, error) {
 }
 
 func (s *cgoLockStream) Close() error {
-	s.handle.close(
-		func(handle *C.AvLockStream) { C.av_lock_observer_cancel(handle) },
-		func(handle *C.AvLockStream) { C.av_lock_observer_close(handle) },
-	)
+	s.handle.close()
 	return nil
 }
 
 // RestoreSnapshot mirrors BuildSnapshot: a blocking transfer with call-local
 // progress and exact cancellation.
 func (e *Engine) RestoreSnapshot(ctx context.Context, req RestoreSnapshotRequest, onProgress func(Progress)) error {
-	native, releaseEngine, err := e.engine(ctx)
-	if err != nil {
-		return err
-	}
-	cu := C.CString(string(req.TargetID))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	csrc := C.CString(string(req.Snapshot.SourceID))
-	defer C.free(unsafe.Pointer(csrc))
-	csnapshot := C.CString(string(req.Snapshot.SnapshotID))
-	defer C.free(unsafe.Pointer(csnapshot))
-	cpw := C.CString(req.Password)
-	defer C.free(unsafe.Pointer(cpw))
-	callback := newBackupCallback(onProgress)
-	callbackID := cgo.NewHandle(callback)
-	stopCancellation := watchOperationCancellation(ctx, native)
-	defer func() {
-		stopCancellation()
-		releaseEngine()
-		callback.sink.close()
-		callbackID.Delete()
-	}()
-
-	return callEngineError(func(e *C.AvError) C.int32_t {
-		return C.av_snapshot_restore(native, cu, cjob, csrc, csnapshot, cpw, cbool(req.SystemFiles), cbool(req.Reboot),
-			cbool(req.SettingsFromBackup), cbool(req.RemoveItemsNotRestored),
-			C.av_backup_cb(C.av_backup_trampoline), C.size_t(callbackID), e)
+	var cs cStrings
+	defer cs.free()
+	return withBackupProgress(onProgress, func(callbackID C.size_t) error {
+		return e.reqJob(ctx, func(native *C.AvEngine, e *C.AvError) C.int32_t {
+			return C.av_snapshot_restore(native, cs.add(string(req.TargetID)), cs.add(airlog.JobID(ctx)),
+				cs.add(string(req.Snapshot.SourceID)), cs.add(string(req.Snapshot.SnapshotID)), cs.add(req.Password),
+				cbool(req.SystemFiles), cbool(req.Reboot), cbool(req.SettingsFromBackup), cbool(req.RemoveItemsNotRestored),
+				C.av_backup_cb(C.av_backup_trampoline), callbackID, e)
+		})
 	})
 }
 
 func (e *Engine) Power(ctx context.Context, device DeviceID, action PowerAction) error {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
+	var cs cStrings
+	defer cs.free()
 	return e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_device_power(native, cu, cjob, C.int32_t(action), out)
+		return C.av_device_power(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)), C.int32_t(action), out)
 	})
 }
 
 func (e *Engine) HardwareReport(ctx context.Context, device DeviceID) (HardwareReport, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
+	var cs cStrings
+	defer cs.free()
 	var report HardwareReport
 	err := e.reqJSON(ctx, &report, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_device_hardware(native, cu, out, e)
+		return C.av_device_hardware(native, cs.add(string(device)), out, e)
 	})
 	return report, err
 }
 
 // ActivationState reads the live activation state ("Activated", "Unactivated", ...).
 func (e *Engine) ActivationState(ctx context.Context, device DeviceID) (string, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
+	var cs cStrings
+	defer cs.free()
 	return e.reqString(ctx, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_activation_state(native, cu, cjob, out, e)
+		return C.av_activation_state(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)), out, e)
 	})
 }
 
 // ActivationSessionInfo returns the session blob for Apple's drmHandshake POST
 // (an XML plist).
 func (e *Engine) ActivationSessionInfo(ctx context.Context, device DeviceID) ([]byte, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
+	var cs cStrings
+	defer cs.free()
 	blob, err := e.reqString(ctx, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_activation_session_info(native, cu, cjob, out, e)
+		return C.av_activation_session_info(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)), out, e)
 	})
 	if err != nil {
 		return nil, err
@@ -584,16 +561,11 @@ func (e *Engine) ActivationSessionInfo(ctx context.Context, device DeviceID) ([]
 // ActivationInfo builds the signed activation info (an XML plist) from Apple's
 // raw drmHandshake response body.
 func (e *Engine) ActivationInfo(ctx context.Context, device DeviceID, handshake []byte) ([]byte, error) {
-	if len(handshake) == 0 {
-		return nil, errors.New("empty drmHandshake response")
-	}
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	h := (*C.uint8_t)(unsafe.Pointer(&handshake[0]))
+	var cs cStrings
+	defer cs.free()
 	info, err := e.reqString(ctx, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_activation_info(native, cu, cjob, h, C.size_t(len(handshake)), out, e)
+		return C.av_activation_info(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)),
+			(*C.uint8_t)(unsafe.SliceData(handshake)), C.size_t(len(handshake)), out, e)
 	})
 	if err != nil {
 		return nil, err
@@ -604,36 +576,22 @@ func (e *Engine) ActivationInfo(ctx context.Context, device DeviceID, handshake 
 // ActivationFinish applies Apple's activation record on the phone; headers are
 // the activation response headers (forwarded verbatim).
 func (e *Engine) ActivationFinish(ctx context.Context, device DeviceID, record []byte, headers map[string]string) error {
-	if len(record) == 0 {
-		return errors.New("empty activation record")
-	}
-	headersJSON := ""
-	if len(headers) > 0 {
-		encoded, err := json.Marshal(headers)
-		if err != nil {
-			return err
-		}
-		headersJSON = string(encoded)
-	}
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	r := (*C.uint8_t)(unsafe.Pointer(&record[0]))
-	cheaders := C.CString(headersJSON)
-	defer C.free(unsafe.Pointer(cheaders))
+	encoded, _ := json.Marshal(headers) // a string map always encodes
+	var cs cStrings
+	defer cs.free()
 	return e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_activation_finish(native, cu, cjob, r, C.size_t(len(record)), cheaders, out)
+		return C.av_activation_finish(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)),
+			(*C.uint8_t)(unsafe.SliceData(record)), C.size_t(len(record)), cs.add(string(encoded)), out)
 	})
 }
 
 // ListApps lists the device's user-installed applications.
 func (e *Engine) ListApps(ctx context.Context, device DeviceID) ([]App, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
+	var cs cStrings
+	defer cs.free()
 	var apps []App
 	err := e.reqJSON(ctx, &apps, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_apps_list(native, cu, out, e)
+		return C.av_apps_list(native, cs.add(string(device)), out, e)
 	})
 	return apps, err
 }
@@ -642,24 +600,22 @@ func (e *Engine) ListApps(ctx context.Context, device DeviceID) ([]App, error) {
 // connection; apps without a readable icon are absent from the map.
 func (e *Engine) AppIcons(ctx context.Context, device DeviceID, bundleIDs []string) (map[string][]byte, error) {
 	encoded, _ := json.Marshal(bundleIDs) // a string slice always encodes
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cids := C.CString(string(encoded))
-	defer C.free(unsafe.Pointer(cids))
+	var cs cStrings
+	defer cs.free()
 	// The shim sends base64 strings, which encoding/json decodes into []byte.
 	var icons map[string][]byte
 	err := e.reqJSON(ctx, &icons, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
-		return C.av_app_icons(native, cu, cids, out, e)
+		return C.av_app_icons(native, cs.add(string(device)), cs.add(string(encoded)), out, e)
 	})
 	return icons, err
 }
 
 // Wallpaper fetches the rendered lock-screen (lockScreen) or home-screen preview.
 func (e *Engine) Wallpaper(ctx context.Context, device DeviceID, lockScreen bool) ([]byte, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
+	var cs cStrings
+	defer cs.free()
 	return e.reqBytes(ctx, func(native *C.AvEngine, out *C.AvBuffer, e *C.AvError) C.int32_t {
-		return C.av_wallpaper_get(native, cu, cbool(lockScreen), out, e)
+		return C.av_wallpaper_get(native, cs.add(string(device)), cbool(lockScreen), out, e)
 	})
 }
 
@@ -676,12 +632,8 @@ func goInstallCallback(callbackID C.size_t, phase C.int32_t, percent C.uint64_t)
 // forwarding phase-local progress. Once native work starts it runs to a device
 // result or the shim's hard timeout; request cancellation cannot undo install.
 func (e *Engine) InstallApp(ctx context.Context, device DeviceID, ipaPath string, onProgress func(InstallProgress)) error {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	cp := C.CString(ipaPath)
-	defer C.free(unsafe.Pointer(cp))
+	var cs cStrings
+	defer cs.free()
 	callback := newLatestDispatcher("install progress", onProgress)
 	callbackID := cgo.NewHandle(callback)
 	defer func() {
@@ -689,39 +641,27 @@ func (e *Engine) InstallApp(ctx context.Context, device DeviceID, ipaPath string
 		callbackID.Delete()
 	}()
 	return e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_app_install(native, cu, cjob, cp, C.av_install_cb(C.av_install_trampoline), C.size_t(callbackID), out)
+		return C.av_app_install(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)), cs.add(ipaPath),
+			C.av_install_cb(C.av_install_trampoline), C.size_t(callbackID), out)
 	})
 }
 
 // UninstallApp removes an installed app by bundle id (installation_proxy).
 func (e *Engine) UninstallApp(ctx context.Context, device DeviceID, bundleID string) error {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
-	cjob := C.CString(airlog.JobID(ctx))
-	defer C.free(unsafe.Pointer(cjob))
-	cb := C.CString(bundleID)
-	defer C.free(unsafe.Pointer(cb))
+	var cs cStrings
+	defer cs.free()
 	return e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_app_uninstall(native, cu, cjob, cb, out)
+		return C.av_app_uninstall(native, cs.add(string(device)), cs.add(airlog.JobID(ctx)), cs.add(bundleID), out)
 	})
 }
 
 type cgoAFCSession struct {
 	ctx    context.Context
-	handle nativeHandle[*C.AvAfcSession]
-}
-
-func newAFCSession(ctx context.Context, handle *C.AvAfcSession) *cgoAFCSession {
-	session := &cgoAFCSession{ctx: ctx, handle: newNativeHandle(handle)}
-	session.handle.closeOnContext(ctx, func() { _ = session.Close() })
-	return session
+	handle *nativeHandle[*C.AvAfcSession]
 }
 
 func (s *cgoAFCSession) Close() error {
-	s.handle.close(
-		func(handle *C.AvAfcSession) { C.av_afc_cancel(handle) },
-		func(handle *C.AvAfcSession) { C.av_afc_close(handle) },
-	)
+	s.handle.close()
 	return nil
 }
 
@@ -765,25 +705,15 @@ func (s *cgoAFCSession) Remove(devicePath string) error {
 	})
 }
 
-// afcReadBufPool recycles the 1 MiB read buffer so a thumbnail batch (many small
-// ReadSmall calls on one session) does not allocate per file.
-var afcReadBufPool = sync.Pool{New: func() any { b := make([]byte, 1<<20); return &b }}
-
 func (s *cgoAFCSession) ReadSmall(devicePath string) ([]byte, error) {
-	bufPtr := afcReadBufPool.Get().(*[]byte)
-	defer afcReadBufPool.Put(bufPtr)
-	buffer := *bufPtr
-	var read C.size_t
-	err := s.call(devicePath, func(handle *C.AvAfcSession, path *C.uint8_t, pathLen C.size_t) error {
-		return callEngineError(func(e *C.AvError) C.int32_t {
-			return C.av_afc_read_small(handle, path, pathLen,
-				(*C.uint8_t)(unsafe.Pointer(&buffer[0])), C.size_t(len(buffer)), &read, e)
+	var data []byte
+	err := s.call(devicePath, func(handle *C.AvAfcSession, path *C.uint8_t, pathLen C.size_t) (err error) {
+		data, err = callBufferBytes(func(out *C.AvBuffer, e *C.AvError) C.int32_t {
+			return C.av_afc_read_small(handle, path, pathLen, out, e)
 		})
+		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return bytes.Clone(buffer[:read]), nil
+	return data, err
 }
 
 func (s *cgoAFCSession) Open(devicePath string) (AFCFile, error) {
@@ -815,20 +745,17 @@ func (s *cgoAFCSession) Open(devicePath string) (AFCFile, error) {
 	if modified > 0 {
 		modTime = time.Unix(int64(modified), 0)
 	}
-	return newAFCFile(s.ctx, file, int64(size), modTime), nil
+	return &cgoAFCFile{ctx: s.ctx, size: int64(size), modTime: modTime, handle: newNativeHandle(s.ctx, file,
+		func(handle *C.AvAfcFile) { C.av_afc_file_cancel(handle) },
+		func(handle *C.AvAfcFile) { C.av_afc_file_close(handle) },
+	)}, nil
 }
 
 type cgoAFCFile struct {
 	ctx     context.Context
-	handle  nativeHandle[*C.AvAfcFile]
+	handle  *nativeHandle[*C.AvAfcFile]
 	size    int64
 	modTime time.Time
-}
-
-func newAFCFile(ctx context.Context, handle *C.AvAfcFile, size int64, modTime time.Time) *cgoAFCFile {
-	file := &cgoAFCFile{ctx: ctx, handle: newNativeHandle(handle), size: size, modTime: modTime}
-	file.handle.closeOnContext(ctx, func() { _ = file.Close() })
-	return file
 }
 
 func (f *cgoAFCFile) Size() int64 { return f.size }
@@ -872,10 +799,7 @@ func (f *cgoAFCFile) SeekTo(offset int64) error {
 }
 
 func (f *cgoAFCFile) Close() error {
-	f.handle.close(
-		func(handle *C.AvAfcFile) { C.av_afc_file_cancel(handle) },
-		func(handle *C.AvAfcFile) { C.av_afc_file_close(handle) },
-	)
+	f.handle.close()
 	return nil
 }
 
@@ -897,41 +821,42 @@ func (e *Engine) OpenAFC(ctx context.Context, device DeviceID, source AFCSource,
 		C.av_afc_close(handle)
 		return nil, ctx.Err()
 	}
-	return newAFCSession(ctx, handle), nil
+	return &cgoAFCSession{ctx: ctx, handle: newNativeHandle(ctx, handle,
+		func(handle *C.AvAfcSession) { C.av_afc_cancel(handle) },
+		func(handle *C.AvAfcSession) { C.av_afc_close(handle) },
+	)}, nil
 }
 
 // ConsoleStream owns one pull-based os_trace session until Close.
 type ConsoleStream struct {
 	ctx    context.Context
-	handle nativeHandle[*C.AvConsoleStream]
+	handle *nativeHandle[*C.AvConsoleStream]
 }
 
 func (e *Engine) OpenConsole(ctx context.Context, device DeviceID) (*ConsoleStream, error) {
-	cu := C.CString(string(device))
-	defer C.free(unsafe.Pointer(cu))
+	var cs cStrings
+	defer cs.free()
 	var handle *C.AvConsoleStream
 	if err := e.req(ctx, func(native *C.AvEngine, out *C.AvError) C.int32_t {
-		return C.av_console_open(native, cu, &handle, out)
+		return C.av_console_open(native, cs.add(string(device)), &handle, out)
 	}); err != nil {
 		return nil, err
 	}
-	stream := &ConsoleStream{ctx: ctx, handle: newNativeHandle(handle)}
-	stream.handle.closeOnContext(ctx, func() { _ = stream.Close() })
-	return stream, nil
+	return &ConsoleStream{ctx: ctx, handle: newNativeHandle(ctx, handle,
+		func(handle *C.AvConsoleStream) { C.av_console_cancel(handle) },
+		func(handle *C.AvConsoleStream) { C.av_console_close(handle) },
+	)}, nil
 }
 
 func (s *ConsoleStream) Next() (ConsoleLine, error) {
 	var line ConsoleLine
-	err := pullJSON(s.ctx, &s.handle, &line, func(handle *C.AvConsoleStream, out, errStr **C.char) C.int32_t {
+	err := pullJSON(s.ctx, s.handle, &line, func(handle *C.AvConsoleStream, out, errStr **C.char) C.int32_t {
 		return C.av_console_next(handle, out, errStr)
 	})
 	return line, err
 }
 
 func (s *ConsoleStream) Close() error {
-	s.handle.close(
-		func(handle *C.AvConsoleStream) { C.av_console_cancel(handle) },
-		func(handle *C.AvConsoleStream) { C.av_console_close(handle) },
-	)
+	s.handle.close()
 	return nil
 }

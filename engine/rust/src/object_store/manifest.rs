@@ -98,7 +98,7 @@ pub(super) fn load_manifest(
     Ok(manifest)
 }
 
-pub(super) fn validate_manifest(source: &str, manifest: &Manifest) -> Result<(), String> {
+fn validate_manifest(source: &str, manifest: &Manifest) -> Result<(), String> {
     validate_manifest_header(source, manifest)?;
     let facts = inspect_manifest_entries(&manifest.entries, || false)?;
     if facts.size_bytes != manifest.size_bytes {

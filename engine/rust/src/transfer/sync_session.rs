@@ -19,6 +19,10 @@ use crate::provider::AirvaultProvider;
 use crate::timeouts;
 
 const LOCK_SYNC: &str = "/com.apple.itunes.lock_sync";
+const SYNC_WILL_START: &str = "com.apple.itunes-mobdev.syncWillStart";
+const SYNC_LOCK_REQUEST: &str = "com.apple.itunes-mobdev.syncLockRequest";
+const SYNC_DID_START: &str = "com.apple.itunes-mobdev.syncDidStart";
+const SYNC_DID_FINISH: &str = "com.apple.itunes-mobdev.syncDidFinish";
 /// Another host (Finder, iTunes) may hold the sync lock; wait briefly, then
 /// report the conflict rather than queueing behind it.
 const SYNC_LOCK_WAIT: Duration = Duration::from_secs(10);
@@ -49,28 +53,18 @@ impl SyncSession {
     async fn start(provider: &AirvaultProvider) -> Result<Self, idevice::IdeviceError> {
         let mut notifications =
             bounded::within(timeouts::PROBE, NotificationProxyClient::connect(provider)).await?;
-        let will_start = notifications.post_notification("com.apple.itunes-mobdev.syncWillStart");
-        if let Err(error) = bounded::within(timeouts::PROBE, will_start).await {
-            let _ = cleanup_step(
-                "syncDidFinish notification after syncWillStart failure",
-                notifications.post_notification("com.apple.itunes-mobdev.syncDidFinish"),
-            )
-            .await;
-            return Err(error);
-        }
-
         let file = match acquire(provider, &mut notifications).await {
             Ok(file) => file,
             Err(error) => {
                 if let Err(cleanup_error) = cleanup_step(
-                    "syncDidFinish notification after acquire failure",
-                    notifications.post_notification("com.apple.itunes-mobdev.syncDidFinish"),
+                    "syncDidFinish notification after start failure",
+                    notifications.post_notification(SYNC_DID_FINISH),
                 )
                 .await
                 {
                     tracing::warn!(
                         error = %cleanup_error,
-                        "sync lock acquisition failed and notification cleanup was incomplete"
+                        "sync session start failed and notification cleanup was incomplete"
                     );
                 }
                 return Err(error);
@@ -81,9 +75,7 @@ impl SyncSession {
             notifications,
             file,
         };
-        let did_start = session
-            .notifications
-            .post_notification("com.apple.itunes-mobdev.syncDidStart");
+        let did_start = session.notifications.post_notification(SYNC_DID_START);
         if let Err(error) = bounded::within(timeouts::PROBE, did_start).await {
             if let Err(cleanup_error) = session.finish().await {
                 tracing::warn!(
@@ -109,7 +101,7 @@ impl SyncSession {
         }
         if let Err(error) = cleanup_step(
             "syncDidFinish notification",
-            notifications.post_notification("com.apple.itunes-mobdev.syncDidFinish"),
+            notifications.post_notification(SYNC_DID_FINISH),
         )
         .await
         {
@@ -148,15 +140,18 @@ async fn cleanup_sync_file(mut file: FileGuard) -> Result<(), String> {
     }
 }
 
+/// syncWillStart → open the sync file → request and take its lock.
 async fn acquire(
     provider: &AirvaultProvider,
     notifications: &mut NotificationProxyClient,
 ) -> Result<FileGuard, idevice::IdeviceError> {
+    let will_start = notifications.post_notification(SYNC_WILL_START);
+    bounded::within(timeouts::PROBE, will_start).await?;
     let afc = bounded::within(timeouts::PROBE, AfcClient::connect(provider)).await?;
     let file =
         bounded::within(timeouts::PROBE, afc.open_owned(LOCK_SYNC, AfcFopenMode::Rw)).await?;
     let mut file = FileGuard::new(file);
-    let lock_request = notifications.post_notification("com.apple.itunes-mobdev.syncLockRequest");
+    let lock_request = notifications.post_notification(SYNC_LOCK_REQUEST);
     if let Err(error) = bounded::within(timeouts::PROBE, lock_request).await {
         return Err(preserve_acquire_error(file, error).await);
     }

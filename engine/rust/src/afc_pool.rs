@@ -13,6 +13,7 @@ use idevice::IdeviceError;
 use tokio::time::Instant;
 
 use crate::afc::Source;
+use crate::bounded;
 
 /// Covers the think time of a browsing burst, then releases the phone-side
 /// afcd instance and the netmuxd proxy.
@@ -32,32 +33,14 @@ pub(crate) struct PoolKey {
     pub(crate) source: Source,
 }
 
-/// The muxer transport a client was opened over; a client is only reused on
-/// the device's current preferred transport.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Transport {
-    Usb,
-    Network,
-    Unknown,
-}
-
-impl From<&Connection> for Transport {
-    fn from(connection: &Connection) -> Self {
-        match connection {
-            Connection::Usb => Self::Usb,
-            Connection::Network(_) => Self::Network,
-            Connection::Unknown(_) => Self::Unknown,
-        }
-    }
-}
-
 /// Where a checked-out client came from; it travels with the client's handle
-/// so the client can be returned to the right key when the handle closes.
+/// so the client can be returned to the right key when the handle closes. A
+/// client is only reused on the device's current preferred transport.
 #[derive(Clone, Debug)]
 pub(crate) struct ClientOrigin {
     pool: Weak<AfcPool>,
     key: PoolKey,
-    transport: Transport,
+    transport: Connection,
     created: Instant,
 }
 
@@ -74,7 +57,7 @@ impl ClientOrigin {
 struct IdleClient {
     id: u64,
     client: AfcClient,
-    transport: Transport,
+    transport: Connection,
     created: Instant,
     returned: Instant,
 }
@@ -108,7 +91,7 @@ impl AfcPool {
     pub(crate) async fn checkout(
         self: &Arc<Self>,
         key: &PoolKey,
-        transport: Transport,
+        transport: &Connection,
         connect: impl Future<Output = Result<AfcClient, IdeviceError>>,
     ) -> Result<(AfcClient, ClientOrigin), IdeviceError> {
         let udid = key.udid.as_str();
@@ -118,8 +101,8 @@ impl AfcPool {
                 tracing::debug!(udid, "AFC connection reused");
                 return Ok((idle.client, origin));
             }
-            let probe = tokio::time::timeout(VALIDATE_TIMEOUT, idle.client.get_file_info("/"));
-            if let Ok(Ok(_)) = probe.await {
+            let probe = bounded::within(VALIDATE_TIMEOUT, idle.client.get_file_info("/"));
+            if probe.await.is_ok() {
                 tracing::debug!(udid, "AFC connection validated and reused");
                 return Ok((idle.client, origin));
             }
@@ -143,24 +126,24 @@ impl AfcPool {
     fn origin(
         self: &Arc<Self>,
         key: &PoolKey,
-        transport: Transport,
+        transport: &Connection,
         created: Instant,
     ) -> ClientOrigin {
         ClientOrigin {
             pool: Arc::downgrade(self),
             key: key.clone(),
-            transport,
+            transport: transport.clone(),
             created,
         }
     }
 
     /// The newest live idle client for `key` on `transport`. Expired entries and
     /// entries on another transport (e.g. Wi-Fi once the cable is in) are dropped.
-    fn take_idle(&self, key: &PoolKey, transport: Transport) -> Option<IdleClient> {
+    fn take_idle(&self, key: &PoolKey, transport: &Connection) -> Option<IdleClient> {
         let mut state = crate::lock(&self.state);
         let entries = state.idle.get_mut(key)?;
         entries.retain(|entry| {
-            let reason = if entry.transport != transport {
+            let reason = if entry.transport != *transport {
                 "on another transport"
             } else if entry.expired() {
                 "expired"
@@ -193,7 +176,7 @@ impl AfcPool {
             entries.push(IdleClient {
                 id,
                 client,
-                transport: origin.transport,
+                transport: origin.transport.clone(),
                 created: origin.created,
                 returned: Instant::now(),
             });
@@ -256,7 +239,7 @@ mod tests {
     }
 
     /// Returns one idle client for `key` to the pool; the peer sees its socket.
-    fn seed(pool: &Arc<AfcPool>, key: &PoolKey, transport: Transport) -> DuplexStream {
+    fn seed(pool: &Arc<AfcPool>, key: &PoolKey, transport: &Connection) -> DuplexStream {
         let (idle, peer) = client();
         pool.origin(key, transport, Instant::now()).check_in(idle);
         peer
@@ -266,7 +249,7 @@ mod tests {
     async fn checkout(
         pool: &Arc<AfcPool>,
         key: &PoolKey,
-        transport: Transport,
+        transport: &Connection,
     ) -> (AfcClient, ClientOrigin, bool) {
         let connected = AtomicBool::new(false);
         let connect = async {
@@ -281,8 +264,8 @@ mod tests {
     async fn a_recent_client_is_reused_without_a_round_trip() {
         let pool = AfcPool::new();
         // A dead peer would fail any validation round trip.
-        drop(seed(&pool, &key("a"), Transport::Usb));
-        let (_, _, connected) = checkout(&pool, &key("a"), Transport::Usb).await;
+        drop(seed(&pool, &key("a"), &Connection::Usb));
+        let (_, _, connected) = checkout(&pool, &key("a"), &Connection::Usb).await;
         assert!(!connected);
         assert_eq!(pool.idle_count(&key("a")), 0);
     }
@@ -290,19 +273,19 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_older_client_is_validated_and_a_failed_one_replaced() {
         let pool = AfcPool::new();
-        let mut peer = seed(&pool, &key("a"), Transport::Usb);
+        let mut peer = seed(&pool, &key("a"), &Connection::Usb);
         tokio::time::advance(VALIDATE_AFTER_IDLE).await;
         let server = tokio::spawn(async move {
             file_info(&mut peer).await;
             peer
         });
-        let (validated, origin, connected) = checkout(&pool, &key("a"), Transport::Usb).await;
+        let (validated, origin, connected) = checkout(&pool, &key("a"), &Connection::Usb).await;
         assert!(!connected);
 
         origin.check_in(validated);
         tokio::time::advance(VALIDATE_AFTER_IDLE).await;
         drop(server.await.unwrap());
-        let (_, _, connected) = checkout(&pool, &key("a"), Transport::Usb).await;
+        let (_, _, connected) = checkout(&pool, &key("a"), &Connection::Usb).await;
         assert!(connected);
     }
 
@@ -310,7 +293,7 @@ mod tests {
     async fn an_idle_client_is_closed_when_its_timer_fires() {
         let pool = AfcPool::new();
         let start = Instant::now();
-        let mut peer = seed(&pool, &key("a"), Transport::Usb);
+        let mut peer = seed(&pool, &key("a"), &Connection::Usb);
         tokio::time::advance(IDLE_TIMEOUT - Duration::from_millis(1)).await;
         assert_eq!(pool.idle_count(&key("a")), 1);
         assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0, "socket closed");
@@ -321,15 +304,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn put_enforces_the_idle_cap_and_the_lifetime() {
         let pool = AfcPool::new();
-        let mut oldest = seed(&pool, &key("a"), Transport::Usb);
+        let mut oldest = seed(&pool, &key("a"), &Connection::Usb);
         let _newer = [
-            seed(&pool, &key("a"), Transport::Usb),
-            seed(&pool, &key("a"), Transport::Usb),
+            seed(&pool, &key("a"), &Connection::Usb),
+            seed(&pool, &key("a"), &Connection::Usb),
         ];
         assert_eq!(pool.idle_count(&key("a")), MAX_IDLE_PER_KEY);
         assert_eq!(oldest.read(&mut [0; 1]).await.unwrap(), 0, "oldest closed");
 
-        let origin = pool.origin(&key("b"), Transport::Usb, Instant::now());
+        let origin = pool.origin(&key("b"), &Connection::Usb, Instant::now());
         tokio::time::advance(MAX_LIFETIME).await;
         origin.check_in(client().0);
         assert_eq!(pool.idle_count(&key("b")), 0);
@@ -338,8 +321,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_client_on_another_transport_is_discarded() {
         let pool = AfcPool::new();
-        let _peer = seed(&pool, &key("a"), Transport::Network);
-        let (_, _, connected) = checkout(&pool, &key("a"), Transport::Usb).await;
+        let _peer = seed(
+            &pool,
+            &key("a"),
+            &Connection::Network([192, 168, 0, 2].into()),
+        );
+        let (_, _, connected) = checkout(&pool, &key("a"), &Connection::Usb).await;
         assert!(connected);
         assert_eq!(pool.idle_count(&key("a")), 0);
     }
@@ -352,9 +339,9 @@ mod tests {
             source: Source::AppDocuments("com.example".to_owned()),
         };
         let _peers = [
-            seed(&pool, &key("a"), Transport::Usb),
-            seed(&pool, &documents, Transport::Usb),
-            seed(&pool, &key("b"), Transport::Usb),
+            seed(&pool, &key("a"), &Connection::Usb),
+            seed(&pool, &documents, &Connection::Usb),
+            seed(&pool, &key("b"), &Connection::Usb),
         ];
         pool.forget("a");
         assert_eq!(pool.idle_count(&key("a")), 0);

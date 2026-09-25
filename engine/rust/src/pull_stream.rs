@@ -56,9 +56,10 @@ impl<T: Send + 'static> PullStream<T> {
         }
     }
 
-    /// One pull: the next item, or the rc to return instead — CONTINUE after a
-    /// quiet tick, CLOSED once cancelled or finished, or the producer's failure.
-    pub(crate) fn next(&self, err: *mut *mut c_char) -> Result<T, i32> {
+    /// One pull: hands the next item to `deliver` and returns 0, or returns
+    /// CONTINUE after a quiet tick, CLOSED once cancelled or finished, or the
+    /// producer's failure.
+    pub(crate) fn next(&self, err: *mut *mut c_char, deliver: impl FnOnce(T)) -> i32 {
         let mut receiver = crate::lock(&self.receiver);
         let pulled = block(async {
             tokio::select! {
@@ -68,10 +69,13 @@ impl<T: Send + 'static> PullStream<T> {
             }
         });
         match pulled {
-            Err(_) => Err(AV_STREAM_CONTINUE),
-            Ok(None) => Err(AV_STREAM_CLOSED),
-            Ok(Some(Ok(item))) => Ok(item),
-            Ok(Some(Err(failure))) => Err(write_failure(err, failure)),
+            Err(_) => AV_STREAM_CONTINUE,
+            Ok(None) => AV_STREAM_CLOSED,
+            Ok(Some(Ok(item))) => {
+                deliver(item);
+                0
+            }
+            Ok(Some(Err(failure))) => write_failure(err, failure),
         }
     }
 
