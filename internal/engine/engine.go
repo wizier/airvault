@@ -158,52 +158,8 @@ const (
 	PowerSleep
 )
 
-// HardwareInfo is a hardware/storage/battery snapshot. Every field is
-// best-effort — keys an iOS version doesn't expose stay zero/empty and are
-// omitted from the JSON.
-type HardwareInfo struct {
-	Serial        string `json:"serial,omitempty"`
-	ProductType   string `json:"productType,omitempty"` // lockdown identifier, e.g. "iPhone16,2"
-	ModelNumber   string `json:"modelNumber,omitempty"`
-	HardwareModel string `json:"hardwareModel,omitempty"`
-	Region        string `json:"region,omitempty"` // model region suffix, e.g. "LL/A"
-	WifiMac       string `json:"wifiMac,omitempty"`
-	BluetoothMac  string `json:"bluetoothMac,omitempty"`
-
-	PhoneNumber  string `json:"phoneNumber,omitempty"`
-	SIMs         []SIM  `json:"sims,omitempty"` // one entry per active SIM slot
-	BuildVersion string `json:"buildVersion,omitempty"`
-	TimeZone     string `json:"timeZone,omitempty"`
-
-	// FindMyEnabled reports com.apple.fmip IsAssociated — a restore blocker.
-	// Nil means the value could not be read, never "off".
-	FindMyEnabled *bool `json:"findMyEnabled,omitempty"`
-
-	DiskDataCapacity  uint64 `json:"diskDataCapacity,omitempty"`  // data partition, bytes
-	DiskDataAvailable uint64 `json:"diskDataAvailable,omitempty"` // free on data partition
-	DiskPhotos        uint64 `json:"diskPhotos,omitempty"`        // photo library, bytes
-	DiskMedia         uint64 `json:"diskMedia,omitempty"`         // media cache, bytes
-
-	BatteryHealthPct      uint64 `json:"batteryHealthPct,omitempty"` // reported health %, or capacity-based estimate
-	BatteryCycles         uint64 `json:"batteryCycles,omitempty"`
-	BatteryDesignCapacity uint64 `json:"batteryDesignCapacity,omitempty"` // mAh
-	BatteryMaxCapacity    uint64 `json:"batteryMaxCapacity,omitempty"`    // mAh, current full charge
-	BatteryVoltageMv      uint64 `json:"batteryVoltageMv,omitempty"`
-	BatteryAmperageMa     int64  `json:"batteryAmperageMa,omitempty"`  // negative = discharging
-	BatteryTemperature    int64  `json:"batteryTemperature,omitempty"` // centi-°C as reported
-	BatterySerial         string `json:"batterySerial,omitempty"`
-}
-
-// SIM is one cellular slot: friendly carrier ("MTS (RU)") and that slot's IMEI.
-type SIM struct {
-	Slot    string `json:"slot,omitempty"` // "Primary"/"Secondary", set only on dual-SIM
-	Carrier string `json:"carrier,omitempty"`
-	IMEI    string `json:"imei,omitempty"`
-}
-
 // App is one installed application. FileSharing is true when the app exposes
-// its Documents over house_arrest (drives the "Files" action). iOS does not
-// report per-app disk size over installation_proxy.
+// its Documents over house_arrest.
 type App struct {
 	BundleID    string `json:"bundleId"`
 	Name        string `json:"name"`
@@ -246,8 +202,8 @@ type AFCFile interface {
 }
 
 // afcError adapts the typed engine error to the session-owner contract: the
-// owning context's error wins, and a cancelled/closed native slot surfaces as
-// context.Canceled (a concurrent Close raced the call). Other kinds pass through.
+// owning context's error wins; otherwise a cancelled native slot was closed
+// under the call (e.g. after a timed-out read) and surfaces as io.ErrClosedPipe.
 func afcError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -257,7 +213,7 @@ func afcError(ctx context.Context, err error) error {
 	}
 	var engineErr *Error
 	if errors.As(err, &engineErr) && engineErr.Kind == ErrorCancelled {
-		return context.Canceled
+		return io.ErrClosedPipe
 	}
 	return err
 }

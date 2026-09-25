@@ -28,14 +28,15 @@ type Credentials struct {
 	token string
 }
 
-// Load uses the configured token or persists a generated one on first start.
-// show is the token to surface in the log — empty only when it came from env.
+// Load uses the configured (already trimmed) token or persists a generated one
+// on first start. show is the token to surface in the log — empty only when it
+// came from env.
 func Load(configDir, configured string) (*Credentials, string, error) {
-	if token := strings.TrimSpace(configured); token != "" {
-		if err := validateToken(token); err != nil {
+	if configured != "" {
+		if err := validateToken(configured); err != nil {
 			return nil, "", err
 		}
-		return &Credentials{token: token}, "", nil
+		return &Credentials{token: configured}, "", nil
 	}
 
 	path := filepath.Join(configDir, tokenFileName)
@@ -55,9 +56,7 @@ func Load(configDir, configured string) (*Credentials, string, error) {
 	}
 
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return nil, "", fmt.Errorf("generating auth token: %w", err)
-	}
+	_, _ = rand.Read(buf)
 	token := base64.RawURLEncoding.EncodeToString(buf)
 	if err := persistToken(configDir, path, token); err != nil {
 		return nil, "", err
@@ -66,9 +65,6 @@ func Load(configDir, configured string) (*Credentials, string, error) {
 }
 
 func (c *Credentials) Valid(username, token string) bool {
-	if c == nil {
-		return false
-	}
 	return secureEqual(username, Username) && secureEqual(token, c.token)
 }
 
@@ -92,10 +88,6 @@ func persistToken(dir, path, token string) error {
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("securing auth token: %w", err)
-	}
 	if _, err := tmp.WriteString(token + "\n"); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("writing auth token: %w", err)
@@ -140,9 +132,6 @@ func (c *Credentials) ValidSession(value string) bool {
 }
 
 func (c *Credentials) validSessionAt(value string, now time.Time) bool {
-	if c == nil {
-		return false
-	}
 	payload, sig, ok := strings.Cut(value, ".")
 	if !ok {
 		return false

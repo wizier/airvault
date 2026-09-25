@@ -213,26 +213,32 @@ func groupAlbum(files []devicefs.Path) []GalleryAsset {
 	return out
 }
 
+type MediaFileStat struct {
+	Size     int64  `json:"size"`
+	Modified *int64 `json:"modified,omitempty"`
+}
+
 // MediaStat returns one media file's size and modified time (a single device
 // stat) — e.g. to show a photo's date and size when it is opened.
-func (s *Service) MediaStat(ctx context.Context, udid, rawPath string) (devicefs.Entry, error) {
+func (s *Service) MediaStat(ctx context.Context, udid, rawPath string) (MediaFileStat, error) {
 	devicePath, err := parseRequiredPath(rawPath)
 	if err != nil {
-		return devicefs.Entry{}, err
+		return MediaFileStat{}, err
 	}
 	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "stat_failed")
 	if err != nil {
-		return devicefs.Entry{}, err
+		return MediaFileStat{}, err
 	}
 	defer release()
 	entry, err := session.Stat(devicePath)
 	if err != nil {
-		return devicefs.Entry{}, newEngineActionError("stat_failed", err)
+		return MediaFileStat{}, newEngineActionError("stat_failed", err)
 	}
 	if entry.Kind != devicefs.EntryFile {
-		return devicefs.Entry{}, &domain.ValidationError{Code: "media_file_required", Message: "path must identify a media file"}
+		return MediaFileStat{}, &domain.ValidationError{Code: "media_file_required", Message: "path must identify a media file"}
 	}
-	return entry, nil
+	// Stat always sizes a file entry.
+	return MediaFileStat{Size: *entry.Size, Modified: entry.Modified}, nil
 }
 
 // readThumbInSession resolves and reads one compatibility thumbnail on an
@@ -261,14 +267,17 @@ func readThumbInSession(session *devicefs.Session, dcimPath string) ([]byte, err
 // sessionDead reports a transport-level failure: the AFC session died (e.g. a
 // timed-out read closed it) while the request itself is still alive.
 func sessionDead(ctx context.Context, err error) bool {
-	return ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, io.ErrClosedPipe))
+	return ctx.Err() == nil && errors.Is(err, io.ErrClosedPipe)
 }
 
 // ThumbBatch reads a whole gallery page's thumbnails on one media session — one
 // lockdown handshake instead of one per tile. Missing thumbnails are omitted.
 func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []string) (map[string][]byte, error) {
 	if len(dcimPaths) == 0 {
-		return map[string][]byte{}, nil
+		return nil, &domain.ValidationError{Code: "paths_required", Message: "at least one path is required"}
+	}
+	if len(dcimPaths) > 128 {
+		return nil, &domain.ValidationError{Code: "too_many_paths", Message: "too many paths in one batch"}
 	}
 	return thumbBatch(ctx, func() (*devicefs.Session, func(), error) {
 		return s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "thumb_failed")

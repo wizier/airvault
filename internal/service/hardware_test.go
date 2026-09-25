@@ -1,6 +1,10 @@
-package engine
+package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wizier/airvault/internal/engine"
+)
 
 func TestFriendlyCarrier(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -34,13 +38,13 @@ func TestSlotLabel(t *testing.T) {
 func TestBatteryHealthMapping(t *testing.T) {
 	tests := []struct {
 		name       string
-		battery    rawBattery
+		battery    engine.BatteryGauge
 		wantHealth uint64
 		wantMax    uint64
 	}{
 		{
 			name: "normalized max capacity is not health",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				MaxCapacity:           100,
 				NominalChargeCapacity: 3829,
 				AppleRawMaxCapacity:   3800,
@@ -51,7 +55,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "raw capacity fallback",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				AppleRawMaxCapacity: 1521,
 				DesignCapacity:      1550,
 			},
@@ -60,7 +64,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "legacy max capacity in milliamp hours",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				MaxCapacity:    1397,
 				DesignCapacity: 1430,
 			},
@@ -69,7 +73,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "explicit compact OS percentage wins",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				MaximumCapacityPercent: 86,
 				NominalChargeCapacity:  3829,
 				DesignCapacity:         4352,
@@ -79,7 +83,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "explicit spaced OS percentage wins",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				MaximumCapacityPercent:           86,
 				MaximumCapacityPercentWithSpaces: 84,
 				NominalChargeCapacity:            3829,
@@ -90,7 +94,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "replacement battery is capped at one hundred",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				NominalChargeCapacity: 4500,
 				DesignCapacity:        4352,
 			},
@@ -99,7 +103,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "missing baseline omits health",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				NominalChargeCapacity: 3829,
 			},
 			wantHealth: 0,
@@ -107,7 +111,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 		},
 		{
 			name: "negative values are discarded",
-			battery: rawBattery{
+			battery: engine.BatteryGauge{
 				MaxCapacity:           -1,
 				NominalChargeCapacity: -1,
 				AppleRawMaxCapacity:   -1,
@@ -120,7 +124,7 @@ func TestBatteryHealthMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := (rawDeviceInfo{Battery: tt.battery}).toHardwareInfo()
+			got := hardwareInfo(engine.HardwareReport{Battery: tt.battery})
 			if got.BatteryHealthPct != tt.wantHealth {
 				t.Errorf("BatteryHealthPct = %d, want %d", got.BatteryHealthPct, tt.wantHealth)
 			}

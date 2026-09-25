@@ -24,7 +24,6 @@ const (
 	BackupCatalog      = "backup.catalog"
 	AppCatalog         = "app.catalog"
 	AppInstallProgress = "app.install.progress" // {installId, phase, percent}; droppable
-	DownloadProgress   = "download.progress"    // {downloadId, percent}; droppable
 	PairChanged        = "pair.changed"
 	PairTrust          = "pair.trust"    // trust-flow progress: {"udid","status","errorCode"?}
 	MuxerChanged       = "muxer.changed" // muxer went up or down, {"up":bool}
@@ -33,9 +32,9 @@ const (
 
 // Event is one published event. Data is JSON-encoded by the SSE handler.
 type Event struct {
-	ID   uint64 `json:"id"`
-	Type string `json:"type"`
-	Data any    `json:"data,omitempty"`
+	ID   uint64
+	Type string
+	Data any
 }
 
 // Bus fans events out to all current subscribers.
@@ -54,7 +53,7 @@ const historyLimit = 256
 // droppableProgress marks high-frequency progress events: never retained for
 // replay, and dropped (not a disconnect) when a subscriber can't keep up.
 func droppableProgress(t string) bool {
-	return t == BackupProgress || t == AppInstallProgress || t == DownloadProgress
+	return t == BackupProgress || t == AppInstallProgress
 }
 
 // New creates a Bus. Its random epoch marks event IDs as belonging to this

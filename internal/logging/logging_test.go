@@ -34,16 +34,3 @@ func TestContextHandlerLeavesOrdinaryRecordAlone(t *testing.T) {
 		t.Fatalf("ordinary record unexpectedly contains job id: %s", got)
 	}
 }
-
-func TestParseLevel(t *testing.T) {
-	level, err := ParseLevel("warn")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if level != slog.LevelWarn {
-		t.Fatalf("level = %s, want WARN", level)
-	}
-	if _, err := ParseLevel("verbose"); err == nil {
-		t.Fatal("invalid level was accepted")
-	}
-}

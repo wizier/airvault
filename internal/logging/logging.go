@@ -4,14 +4,11 @@ package logging
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/lmittmann/tint"
-	"github.com/mattn/go-isatty"
 )
 
 const timeFormat = "2006-01-02 15:04:05"
@@ -29,29 +26,17 @@ func WithJobID(ctx context.Context, id string) context.Context {
 
 // JobID returns the runtime correlation id carried by ctx, if any.
 func JobID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
 	id, _ := ctx.Value(jobIDKey{}).(string)
 	return id
-}
-
-// ParseLevel accepts the four levels exposed by AIRVAULT_LOG_LEVEL.
-func ParseLevel(raw string) (slog.Level, error) {
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(strings.ToUpper(strings.TrimSpace(raw)))); err != nil {
-		return 0, fmt.Errorf("must be debug, info, warn, or error: %w", err)
-	}
-	return level, nil
 }
 
 var root = slog.Default()
 
 // Setup installs the one text renderer used by Go and bridged Rust events.
 func Setup(level slog.Level) {
-	out := os.Stdout
-	fd := out.Fd()
-	root = newRoot(out, level, !isatty.IsTerminal(fd) && !isatty.IsCygwinTerminal(fd))
+	info, err := os.Stdout.Stat()
+	noColor := err != nil || info.Mode()&os.ModeCharDevice == 0
+	root = newRoot(os.Stdout, level, noColor)
 	slog.SetDefault(root.With("component", "go"))
 }
 

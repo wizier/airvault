@@ -2,15 +2,14 @@ package handler
 
 import (
 	"net/http"
-	"path"
 
-	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/service"
 
 	"github.com/labstack/echo/v5"
 )
 
 type listAppsResponse struct {
-	Apps []engine.App `json:"apps"`
+	Apps []service.App `json:"apps"`
 }
 
 // [GET] /api/devices/:udid/apps
@@ -53,45 +52,23 @@ func (h *Handler) listAppFiles(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return writeDeviceFiles(c, entries)
+	return c.JSON(http.StatusOK, deviceFilesResponse{Entries: entries})
 }
 
 // [GET] /api/devices/:udid/apps/:bundle/files/download?path=
 // Streams one file from the app's Documents to the browser as an attachment.
 func (h *Handler) downloadAppFile(c *echo.Context) error {
-	devPath, err := requiredPathParam(c)
-	if err != nil {
-		return err
-	}
-	downloadID, err := optionalDownloadID(c)
-	if err != nil {
-		return err
-	}
-	download, err := h.svc.OpenAppFileDownload(
-		c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath, downloadID,
-	)
-	if err != nil {
-		return err
-	}
-	defer download.Close()
-	return streamDeviceDownload(c, download, downloadFilename(devPath))
+	return serveDownload(c, func(devPath string) (*service.DeviceDownload, error) {
+		return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
+	})
 }
 
 // [GET] /api/devices/:udid/apps/:bundle/files/preview?path=
 // Inline image preview for app Documents — same native/HEIC path as media.
 func (h *Handler) previewAppFile(c *echo.Context) error {
-	devPath, err := requiredPathParam(c)
-	if err != nil {
-		return err
-	}
-	download, err := h.svc.OpenAppFileDownload(
-		c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath, "",
-	)
-	if err != nil {
-		return err
-	}
-	defer download.Close()
-	return streamImagePreview(c, download, path.Base(devPath))
+	return servePreview(c, func(devPath string) (*service.DeviceDownload, error) {
+		return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
+	})
 }
 
 // [DELETE] /api/devices/:udid/apps/:bundle/files?path=

@@ -2,16 +2,15 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
-	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/service"
 
 	"github.com/labstack/echo/v5"
 )
 
 type pairingStateResponse struct {
-	MuxerReady bool               `json:"muxerReady"`
-	USBDevices []engine.USBDevice `json:"usbDevices"`
+	MuxerReady bool                `json:"muxerReady"`
+	USBDevices []service.USBDevice `json:"usbDevices"`
 }
 
 type startPairingRequest struct {
@@ -46,11 +45,7 @@ func (h *Handler) startPairing(c *echo.Context) error {
 	if err := echo.BindBody(c, &request); err != nil {
 		return err
 	}
-	udid := strings.TrimSpace(request.UDID)
-	if udid == "" {
-		return newPublicError(http.StatusBadRequest, "udid_required", nil)
-	}
-	runID, err := h.svc.StartTrustFlow(c.Request().Context(), udid)
+	runID, err := h.svc.StartTrustFlow(c.Request().Context(), request.UDID)
 	if err != nil {
 		return err
 	}

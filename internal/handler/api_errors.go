@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -20,53 +19,14 @@ type errorBody struct {
 	Code string `json:"code"`
 }
 
-// publicError lets a handler attach a stable client-facing code to an otherwise
-// untyped error. The frontend owns presentation text; cause is retained only
-// for logs and errors.Is/errors.As.
+// publicError is a handler-authored failure with a stable client-facing code;
+// the frontend owns presentation text.
 type publicError struct {
 	status int
 	code   string
-	cause  error
 }
 
-func (e *publicError) Error() string {
-	if e.cause != nil {
-		return e.code + ": " + e.cause.Error()
-	}
-	return e.code
-}
-func (e *publicError) Unwrap() error { return e.cause }
-
-func newPublicError(status int, code string, cause error) error {
-	return &publicError{status: status, code: code, cause: cause}
-}
-
-func mapDomainError(err error) (int, errorBody, bool) {
-	var validation *domain.ValidationError
-	var action *domain.ActionError
-	switch {
-	case errors.As(err, &validation):
-		return http.StatusUnprocessableEntity, errorBody{Code: validation.Code}, true
-	case errors.As(err, &action):
-		return http.StatusConflict, errorBody{Code: action.Code}, true
-	case errors.Is(err, domain.ErrNotFound):
-		return http.StatusNotFound, errorBody{Code: "not_found"}, true
-	case errors.Is(err, domain.ErrDeviceOffline):
-		return http.StatusConflict, errorBody{Code: "device_offline"}, true
-	case errors.Is(err, domain.ErrPairingRequired):
-		return http.StatusConflict, errorBody{Code: "pairing_required"}, true
-	case errors.Is(err, domain.ErrPairingCleanup):
-		return http.StatusInternalServerError, errorBody{Code: "pairing_cleanup_failed"}, true
-	case errors.Is(err, domain.ErrBusy):
-		return http.StatusConflict, errorBody{Code: "resource_busy"}, true
-	case errors.Is(err, domain.ErrCancelled):
-		return http.StatusConflict, errorBody{Code: "operation_cancelled"}, true
-	case errors.Is(err, domain.ErrOperationState):
-		return http.StatusConflict, errorBody{Code: "operation_state_conflict"}, true
-	default:
-		return 0, errorBody{}, false
-	}
-}
+func (e *publicError) Error() string { return e.code }
 
 // errorHandler renders all HTTP/API failures through the same envelope. Echo
 // framework failures (routing, method, body size) are mapped as well as domain
@@ -74,7 +34,7 @@ func mapDomainError(err error) (int, errorBody, bool) {
 func (h *Handler) errorHandler(c *echo.Context, err error) {
 	// The SPA deliberately aborts stale refreshes when a newer event arrives.
 	// The client is already gone, so this is neither a 500 nor a useful response.
-	if errors.Is(err, context.Canceled) {
+	if c.Request().Context().Err() != nil {
 		return
 	}
 	if resp, _ := echo.UnwrapResponse(c.Response()); resp != nil && resp.Committed {
@@ -87,24 +47,36 @@ func (h *Handler) errorHandler(c *echo.Context, err error) {
 	}
 	status, body := mapAPIError(err)
 	if status >= http.StatusInternalServerError {
-		logErr := err
-		var public *publicError
-		if errors.As(err, &public) && public.cause != nil {
-			logErr = public.cause
-		}
-		slog.Error("request failed", "error", logErr, "path", c.Request().URL.Path, "status", status, "code", body.Code)
+		slog.Error("request failed", "error", err, "path", c.Request().URL.Path, "status", status, "code", body.Code)
 	}
 	_ = c.JSON(status, errorResponse{Error: body})
 }
 
 func mapAPIError(err error) (int, errorBody) {
 	var public *publicError
-
-	if errors.As(err, &public) {
+	var validation *domain.ValidationError
+	var action *domain.ActionError
+	switch {
+	case errors.As(err, &public):
 		return public.status, errorBody{Code: public.code}
-	}
-	if status, body, ok := mapDomainError(err); ok {
-		return status, body
+	case errors.As(err, &validation):
+		return http.StatusUnprocessableEntity, errorBody{Code: validation.Code}
+	case errors.As(err, &action):
+		return http.StatusConflict, errorBody{Code: action.Code}
+	case errors.Is(err, domain.ErrNotFound):
+		return http.StatusNotFound, errorBody{Code: "not_found"}
+	case errors.Is(err, domain.ErrDeviceOffline):
+		return http.StatusConflict, errorBody{Code: "device_offline"}
+	case errors.Is(err, domain.ErrPairingRequired):
+		return http.StatusConflict, errorBody{Code: "pairing_required"}
+	case errors.Is(err, domain.ErrPairingCleanup):
+		return http.StatusInternalServerError, errorBody{Code: "pairing_cleanup_failed"}
+	case errors.Is(err, domain.ErrBusy):
+		return http.StatusConflict, errorBody{Code: "resource_busy"}
+	case errors.Is(err, domain.ErrCancelled):
+		return http.StatusConflict, errorBody{Code: "operation_cancelled"}
+	case errors.Is(err, domain.ErrOperationState):
+		return http.StatusConflict, errorBody{Code: "operation_state_conflict"}
 	}
 	// echo.HTTPError and any other HTTPStatusCoder land here.
 	if status := echo.StatusCode(err); status >= 400 {

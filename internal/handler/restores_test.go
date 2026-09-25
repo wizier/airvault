@@ -3,10 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/wizier/airvault/internal/service"
 )
 
 func TestDefaultRestoreOptionsSurviveOmittedJSONFields(t *testing.T) {
-	opts := defaultRestoreOptions()
+	opts := restoreRequest(service.DefaultRestoreOptions())
 	if err := json.Unmarshal([]byte(`{"snapshotId":"snapshot-1"}`), &opts); err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +21,7 @@ func TestDefaultRestoreOptionsSurviveOmittedJSONFields(t *testing.T) {
 }
 
 func TestDefaultRestoreOptionsAllowExplicitOverrides(t *testing.T) {
-	opts := defaultRestoreOptions()
+	opts := restoreRequest(service.DefaultRestoreOptions())
 	body := []byte(`{
 		"snapshotId":"snapshot-1",
 		"systemFiles":false,

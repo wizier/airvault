@@ -50,9 +50,9 @@ func run() error {
 	defer stop()
 	cfg := config.Load()
 
-	level, err := airlog.ParseLevel(cfg.LogLevel)
-	if err != nil {
-		return fmt.Errorf("AIRVAULT_LOG_LEVEL: %w", err)
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		return fmt.Errorf("AIRVAULT_LOG_LEVEL must be debug, info, warn, or error: %w", err)
 	}
 	airlog.Setup(level)
 	if !engine.InitLogging(cfg.LogLevel) {

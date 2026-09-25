@@ -30,10 +30,10 @@ const (
 )
 
 type Entry struct {
-	Name     string    `json:"name"`
-	Kind     EntryKind `json:"kind"`
-	Size     *int64    `json:"size,omitempty"`
-	Modified *int64    `json:"modified,omitempty"`
+	Name     string
+	Kind     EntryKind
+	Size     *int64
+	Modified *int64
 }
 
 type opener interface {
@@ -275,15 +275,11 @@ func (f *File) Close() error {
 }
 
 // CopyTo streams the file and verifies the size reported when it was opened.
-func (f *File) CopyTo(ctx context.Context, destination io.Writer, onProgress func(done, total int64)) error {
+func (f *File) CopyTo(ctx context.Context, destination io.Writer) error {
 	stopCancellation := context.AfterFunc(ctx, func() { _ = f.Close() })
 	defer stopCancellation()
 	total := f.Size()
-	written, copyErr := io.CopyBuffer(&progressWriter{
-		writer: destination,
-		total:  total,
-		update: onProgress,
-	}, io.LimitReader(f, total), make([]byte, copyBufferSize))
+	written, copyErr := io.CopyBuffer(destination, io.LimitReader(f, total), make([]byte, copyBufferSize))
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return errors.Join(ctxErr, copyErr)
 	}
@@ -294,20 +290,4 @@ func (f *File) CopyTo(ctx context.Context, destination io.Writer, onProgress fun
 		return fmt.Errorf("copied %d bytes, expected %d: %w", written, total, io.ErrUnexpectedEOF)
 	}
 	return nil
-}
-
-type progressWriter struct {
-	writer io.Writer
-	total  int64
-	done   int64
-	update func(done, total int64)
-}
-
-func (w *progressWriter) Write(buffer []byte) (int, error) {
-	written, err := w.writer.Write(buffer)
-	w.done += int64(written)
-	if w.update != nil {
-		w.update(w.done, w.total)
-	}
-	return written, err
 }

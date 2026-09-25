@@ -6,54 +6,25 @@ import (
 	"sync"
 
 	"github.com/wizier/airvault/internal/devicefs"
-	"github.com/wizier/airvault/internal/events"
 )
 
 // DeviceDownload owns an open phone file and every lease held by its stream.
 type DeviceDownload struct {
-	file     *devicefs.File
-	progress func(done, total int64)
-	cleanup  func()
+	file    *devicefs.File
+	cleanup func()
 }
 
 func (d *DeviceDownload) Size() int64 { return d.file.Size() }
 
 func (d *DeviceDownload) CopyTo(ctx context.Context, destination io.Writer) error {
-	return d.file.CopyTo(ctx, destination, d.progress)
+	return d.file.CopyTo(ctx, destination)
 }
 
 func (d *DeviceDownload) Close() {
 	d.cleanup()
 }
 
-func (s *Service) downloadProgress(downloadID string) func(done, total int64) {
-	if downloadID == "" {
-		return nil
-	}
-	lastPercent := -1
-	return func(done, total int64) {
-		if total <= 0 {
-			return
-		}
-		percent := min(int(float64(done)*100/float64(total)), 100)
-		if percent == lastPercent {
-			return
-		}
-		lastPercent = percent
-		s.bus.Emit(events.DownloadProgress, map[string]any{
-			"downloadId": downloadID,
-			"percent":    percent,
-		})
-	}
-}
-
-func (s *Service) openDeviceDownload(
-	ctx context.Context,
-	udid string,
-	root devicefs.Root,
-	rawPath string,
-	progressID string,
-) (*DeviceDownload, error) {
+func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devicefs.Root, rawPath string) (*DeviceDownload, error) {
 	devicePath, err := parseRequiredPath(rawPath)
 	if err != nil {
 		return nil, err
@@ -70,8 +41,7 @@ func (s *Service) openDeviceDownload(
 		return nil, newEngineActionError("download_failed", err)
 	}
 	return &DeviceDownload{
-		file:     file,
-		progress: s.downloadProgress(progressID),
+		file: file,
 		cleanup: sync.OnceFunc(func() {
 			_ = file.Close()
 			release()
@@ -79,20 +49,14 @@ func (s *Service) openDeviceDownload(
 	}, nil
 }
 
-func (s *Service) OpenAppFileDownload(
-	ctx context.Context,
-	udid, bundleID, devicePath, downloadID string,
-) (*DeviceDownload, error) {
+func (s *Service) OpenAppFileDownload(ctx context.Context, udid, bundleID, devicePath string) (*DeviceDownload, error) {
 	root, err := appDocumentsRoot(bundleID)
 	if err != nil {
 		return nil, err
 	}
-	return s.openDeviceDownload(ctx, udid, root, devicePath, downloadID)
+	return s.openDeviceDownload(ctx, udid, root, devicePath)
 }
 
-func (s *Service) OpenMediaDownload(
-	ctx context.Context,
-	udid, devicePath, downloadID string,
-) (*DeviceDownload, error) {
-	return s.openDeviceDownload(ctx, udid, devicefs.Media(), devicePath, downloadID)
+func (s *Service) OpenMediaDownload(ctx context.Context, udid, devicePath string) (*DeviceDownload, error) {
+	return s.openDeviceDownload(ctx, udid, devicefs.Media(), devicePath)
 }

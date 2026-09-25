@@ -544,17 +544,14 @@ func (e *Engine) Power(ctx context.Context, device DeviceID, action PowerAction)
 	})
 }
 
-func (e *Engine) HardwareInfo(ctx context.Context, device DeviceID) (HardwareInfo, error) {
+func (e *Engine) HardwareReport(ctx context.Context, device DeviceID) (HardwareReport, error) {
 	cu := C.CString(string(device))
 	defer C.free(unsafe.Pointer(cu))
-	var raw rawDeviceInfo
-	err := e.reqJSON(ctx, &raw, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
+	var report HardwareReport
+	err := e.reqJSON(ctx, &report, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
 		return C.av_device_hardware(native, cu, out, e)
 	})
-	if err != nil {
-		return HardwareInfo{}, err
-	}
-	return raw.toHardwareInfo(), nil
+	return report, err
 }
 
 // ActivationState reads the live activation state ("Activated", "Unactivated", ...).

@@ -173,8 +173,7 @@ pub unsafe extern "C" fn av_log_init(cb: LogCb, level: *const c_char) -> i32 {
     guard(std::ptr::null_mut(), || {
         let level = unsafe { in_str(level) }
             .filter(|s| !s.is_empty())
-            .unwrap_or("info")
-            .to_ascii_lowercase();
+            .unwrap_or("info");
         let filter = format!("warn,airvault_shim={level}");
         let _ = LOG_CALLBACK.set(cb);
         let _ = LOG_FILTER.set(filter);

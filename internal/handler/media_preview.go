@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/jpeg"
-	"os"
+	"io"
 	"path"
 	"strings"
 
@@ -59,16 +59,11 @@ func nativeImageContentType(name string) string {
 	return "application/octet-stream"
 }
 
-// renderHEICPreview decodes a HEIC/HEIF file at srcPath and returns it as JPEG
-// bytes. Pure Go: gen2brain/heic runs a HEIC decoder compiled to WASM via
-// wazero — no cgo, no external binary. Orientation is applied by the decoder.
-func renderHEICPreview(srcPath string) ([]byte, error) {
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return nil, fmt.Errorf("open heic: %w", err)
-	}
-	defer f.Close()
-	img, err := heic.Decode(f)
+// renderHEICPreview decodes a HEIC/HEIF stream and returns it as JPEG bytes.
+// Pure Go: gen2brain/heic runs a HEIC decoder compiled to WASM via wazero — no
+// cgo, no external binary. Orientation is applied by the decoder.
+func renderHEICPreview(r io.Reader) ([]byte, error) {
+	img, err := heic.Decode(r)
 	if err != nil {
 		return nil, fmt.Errorf("decode heic: %w", err)
 	}

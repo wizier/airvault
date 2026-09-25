@@ -8,7 +8,6 @@ require (
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/lmittmann/tint v1.2.0
-	github.com/mattn/go-isatty v0.0.24
 	github.com/pressly/goose/v3 v3.27.3
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
@@ -33,6 +32,7 @@ require (
 	github.com/gohugoio/hugo v0.164.0 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect

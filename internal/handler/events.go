@@ -14,12 +14,8 @@ import (
 
 // [GET] /api/events
 func (h *Handler) streamEvents(c *echo.Context) error {
+	rc := startSSE(c)
 	res := c.Response()
-	res.Header().Set(echo.HeaderContentType, "text/event-stream")
-	res.Header().Set("Cache-Control", "no-cache")
-	res.Header().Set("X-Accel-Buffering", "no")
-
-	rc := http.NewResponseController(res)
 	// IDs are "<epoch>-<seq>"; a Last-Event-ID from another process (epoch
 	// mismatch) has no replayable history here and must trigger a resync.
 	lastEventID := c.Request().Header.Get("Last-Event-ID")
@@ -48,7 +44,7 @@ func (h *Handler) streamEvents(c *echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	ping := time.NewTicker(25 * time.Second)
+	ping := time.NewTicker(streamPingInterval)
 	defer ping.Stop()
 
 	for {

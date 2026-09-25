@@ -52,10 +52,3 @@ func TestSessionRejectsForeignSecret(t *testing.T) {
 		t.Fatal("a session signed by a different token must not validate")
 	}
 }
-
-func TestNilCredentialsRejectSession(t *testing.T) {
-	var c *Credentials
-	if c.ValidSession("anything") {
-		t.Fatal("nil credentials must never authenticate")
-	}
-}

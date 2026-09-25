@@ -4,11 +4,27 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/labstack/echo/v5"
 )
 
-// A stream may live indefinitely, but an individual write must not hold its
-// request goroutine forever when a client stops reading without disconnecting.
-const streamWriteTimeout = 15 * time.Second
+const (
+	// A stream may live indefinitely, but an individual write must not hold its
+	// request goroutine forever when a client stops reading without disconnecting.
+	streamWriteTimeout = 15 * time.Second
+	// A quiet stream still sends a comment this often so proxies don't reap it.
+	streamPingInterval = 25 * time.Second
+)
+
+// startSSE sets the event-stream headers and returns the controller that
+// flushes each frame.
+func startSSE(c *echo.Context) *http.ResponseController {
+	res := c.Response()
+	res.Header().Set(echo.HeaderContentType, "text/event-stream")
+	res.Header().Set("Cache-Control", "no-cache")
+	res.Header().Set("X-Accel-Buffering", "no")
+	return http.NewResponseController(res)
+}
 
 func writeStreamFrame(controller *http.ResponseController, writer io.Writer, frame string) (err error) {
 	if err := controller.SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {

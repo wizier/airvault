@@ -43,20 +43,6 @@ func (s *Service) Power(ctx context.Context, udid, action string) error {
 	return err
 }
 
-// HardwareInfo reads the hardware/storage/battery-health snapshot live from
-// the device (a couple of lockdown+diagnostics round-trips).
-func (s *Service) HardwareInfo(ctx context.Context, udid string) (engine.HardwareInfo, error) {
-	if err := s.reachableDevice(ctx, udid); err != nil {
-		return engine.HardwareInfo{}, err
-	}
-	hw, err := s.engine.HardwareInfo(ctx, engine.DeviceID(udid))
-	if err != nil {
-		slog.WarnContext(ctx, "hardware info: engine", "udid", udid, "error", err)
-		return engine.HardwareInfo{}, newEngineActionError("hardware_query_failed", err)
-	}
-	return hw, nil
-}
-
 // LiveBattery is passive telemetry: an on-demand charge read that never wakes
 // the phone and never drives presence. Unreachable surfaces as device-offline.
 func (s *Service) LiveBattery(ctx context.Context, udid string) (engine.Battery, error) {
@@ -73,8 +59,18 @@ func (s *Service) LiveBattery(ctx context.Context, udid string) (engine.Battery,
 	return battery, nil
 }
 
+// App is one installed application. FileSharing is true when the app exposes
+// its Documents over house_arrest (drives the "Files" action). iOS does not
+// report per-app disk size over installation_proxy.
+type App struct {
+	BundleID    string `json:"bundleId"`
+	Name        string `json:"name"`
+	Version     string `json:"version,omitempty"`
+	FileSharing bool   `json:"fileSharing,omitempty"`
+}
+
 // Apps lists the device's installed user applications.
-func (s *Service) Apps(ctx context.Context, udid string) ([]engine.App, error) {
+func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
 	}
@@ -83,7 +79,11 @@ func (s *Service) Apps(ctx context.Context, udid string) ([]engine.App, error) {
 		slog.WarnContext(ctx, "apps: engine", "udid", udid, "error", err)
 		return nil, newEngineActionError("app_list_failed", err)
 	}
-	return apps, nil
+	out := make([]App, len(apps))
+	for i, app := range apps {
+		out[i] = App(app)
+	}
+	return out, nil
 }
 
 // AppIcon fetches one app's home-screen icon (PNG bytes).
@@ -224,9 +224,17 @@ func (s *Service) openLeasedSession(ctx context.Context, udid string, root devic
 	return session, func() { _ = session.Close(); release() }, nil
 }
 
+// FileEntry is one row of a device directory listing.
+type FileEntry struct {
+	Name     string             `json:"name"`
+	Kind     devicefs.EntryKind `json:"kind"`
+	Size     *int64             `json:"size,omitempty"`
+	Modified *int64             `json:"modified,omitempty"`
+}
+
 // AppFiles lists one directory of an app's Documents container (house_arrest).
 // path "" or "/" is the Documents root; only apps with file sharing enabled.
-func (s *Service) AppFiles(ctx context.Context, udid, bundleID, rawPath string) ([]devicefs.Entry, error) {
+func (s *Service) AppFiles(ctx context.Context, udid, bundleID, rawPath string) ([]FileEntry, error) {
 	root, err := appDocumentsRoot(bundleID)
 	if err != nil {
 		return nil, err
@@ -239,7 +247,7 @@ func (s *Service) deviceFileList(
 	udid string,
 	root devicefs.Root,
 	rawPath, errorCode string,
-) ([]devicefs.Entry, error) {
+) ([]FileEntry, error) {
 	devicePath, err := devicefs.ParsePath(rawPath)
 	if err != nil {
 		return nil, &domain.ValidationError{Code: "invalid_path", Message: err.Error()}
@@ -254,7 +262,12 @@ func (s *Service) deviceFileList(
 		slog.WarnContext(ctx, "device files: engine", "udid", udid, "path", rawPath, "error", err)
 		return nil, newEngineActionError(errorCode, err)
 	}
-	return entries, nil
+	// Never nil, so an empty directory serializes as [].
+	out := make([]FileEntry, len(entries))
+	for i, entry := range entries {
+		out[i] = FileEntry(entry)
+	}
+	return out, nil
 }
 
 // AppFileDelete removes one file from an app's Documents container.
@@ -284,13 +297,24 @@ func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath 
 
 // MediaList lists one directory of the device media partition (com.apple.afc);
 // path "" or "/" is the media root (DCIM, Recordings, …). Read-only.
-func (s *Service) MediaList(ctx context.Context, udid, rawPath string) ([]devicefs.Entry, error) {
+func (s *Service) MediaList(ctx context.Context, udid, rawPath string) ([]FileEntry, error) {
 	return s.deviceFileList(ctx, udid, devicefs.Media(), rawPath, "media_list_failed")
+}
+
+// ConsoleLine is one structured record from the device's os_trace stream.
+type ConsoleLine struct {
+	Timestamp string `json:"ts"`
+	Level     string `json:"level"` // notice | info | debug | error | fault
+	Pid       uint32 `json:"pid"`
+	Image     string `json:"image"`
+	Message   string `json:"message"`
+	Subsystem string `json:"subsystem,omitempty"`
+	Category  string `json:"category,omitempty"`
 }
 
 // Console streams the device's structured system log to onLine until ctx
 // ends. The caller (the SSE handler) owns the transport; this only guards.
-func (s *Service) Console(ctx context.Context, udid string, onLine func(engine.ConsoleLine)) error {
+func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleLine)) error {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
 	}
@@ -308,7 +332,7 @@ func (s *Service) Console(ctx context.Context, udid string, onLine func(engine.C
 			slog.WarnContext(ctx, "console: engine", "udid", udid, "error", err)
 			return newEngineActionError("console_stream_failed", err)
 		}
-		onLine(line)
+		onLine(ConsoleLine(line))
 	}
 	return nil
 }

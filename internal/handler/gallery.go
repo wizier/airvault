@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/base64"
 	"net/http"
 	"strconv"
 
@@ -15,11 +14,6 @@ type galleryResponse struct {
 	Assets   []service.GalleryAsset `json:"assets"`
 	Total    int                    `json:"total"`
 	Revision string                 `json:"revision"`
-}
-
-type mediaStatResponse struct {
-	Size     int64  `json:"size"`
-	Modified *int64 `json:"modified,omitempty"`
 }
 
 // [GET] /api/devices/:udid/media/gallery?offset=&limit=&revision=
@@ -51,7 +45,7 @@ type thumbBatchRequest struct {
 }
 
 type thumbBatchResponse struct {
-	Thumbs map[string]string `json:"thumbs"` // dcim path -> base64 JPEG; missing thumbs omitted
+	Thumbs map[string][]byte `json:"thumbs"` // dcim path -> base64 JPEG; missing thumbs omitted
 }
 
 // [POST] /api/devices/:udid/media/thumbs  body: {paths:[…]}
@@ -62,35 +56,21 @@ func (h *Handler) mediaThumbs(c *echo.Context) error {
 	if err := echo.BindBody(c, &req); err != nil {
 		return err
 	}
-	if len(req.Paths) == 0 {
-		return &domain.ValidationError{Code: "paths_required", Message: "at least one path is required"}
-	}
-	if len(req.Paths) > 128 {
-		return &domain.ValidationError{Code: "too_many_paths", Message: "too many paths in one batch"}
-	}
 	thumbs, err := h.svc.ThumbBatch(c.Request().Context(), c.Param("udid"), req.Paths)
 	if err != nil {
 		return err
 	}
-	encoded := make(map[string]string, len(thumbs))
-	for path, data := range thumbs {
-		encoded[path] = base64.StdEncoding.EncodeToString(data)
-	}
-	return c.JSON(http.StatusOK, thumbBatchResponse{Thumbs: encoded})
+	return c.JSON(http.StatusOK, thumbBatchResponse{Thumbs: thumbs})
 }
 
 // [GET] /api/devices/:udid/media/stat?path=
 // One media file's size and modified time (a single device stat).
 func (h *Handler) mediaStat(c *echo.Context) error {
-	entry, err := h.svc.MediaStat(c.Request().Context(), c.Param("udid"), c.QueryParam("path"))
+	stat, err := h.svc.MediaStat(c.Request().Context(), c.Param("udid"), c.QueryParam("path"))
 	if err != nil {
 		return err
 	}
-	var size int64
-	if entry.Size != nil {
-		size = *entry.Size
-	}
-	return c.JSON(http.StatusOK, mediaStatResponse{Size: size, Modified: entry.Modified})
+	return c.JSON(http.StatusOK, stat)
 }
 
 func pagination(c *echo.Context, defaultLimit int) (int, int, error) {

@@ -58,14 +58,14 @@ func (h *Handler) Router() *echo.Echo {
 		ReferrerPolicy:     "same-origin",
 	}))
 	e.Use(echoMiddleware.GzipWithConfig(echoMiddleware.GzipConfig{
-		// SSE must flush immediately; downloads/previews/thumbnails carry already
-		// compressed media (JPEG/HEIC) with an exact Content-Length for browser
-		// progress — re-compressing them only wastes CPU and voids the length.
+		// SSE must flush immediately; downloads, previews, icons and wallpapers
+		// carry already compressed media (JPEG/HEIC/PNG) with an exact
+		// Content-Length — re-compressing them only wastes CPU and voids the length.
 		Skipper: func(c *echo.Context) bool {
 			p := c.Request().URL.Path
 			return p == "/api/events" || strings.HasSuffix(p, "/console") ||
 				strings.HasSuffix(p, "/download") || strings.HasSuffix(p, "/preview") ||
-				strings.HasSuffix(p, "/thumb")
+				strings.HasSuffix(p, "/icon") || strings.HasSuffix(p, "/wallpaper")
 		},
 	}))
 
@@ -77,14 +77,12 @@ func (h *Handler) Router() *echo.Echo {
 		return c.String(http.StatusOK, "ok")
 	})
 
-	api := e.Group("/api")
-	api.Use(apiAuthMiddleware(h.auth))
-	api.Use(udidGuard)
-
 	// Login session (token -> HttpOnly cookie). Open — it validates the token
-	// itself; everything else in this group requires a session or Basic auth.
-	api.POST("/session", h.createSession)
-	api.DELETE("/session", h.deleteSession)
+	// itself; everything under the /api group requires a session or Basic auth.
+	e.POST("/api/session", h.createSession)
+	e.DELETE("/api/session", h.deleteSession)
+
+	api := e.Group("/api", apiAuthMiddleware(h.auth))
 
 	// System and real-time state. The build version is baked into the SPA at
 	// build time (VITE_APP_VERSION), so it needs no endpoint.
@@ -105,7 +103,7 @@ func (h *Handler) Router() *echo.Echo {
 	api.POST("/pair/trust", h.startPairing)
 
 	// Everything below this group targets one registered device.
-	device := api.Group("/devices/:udid")
+	device := api.Group("/devices/:udid", udidGuard)
 	device.GET("/backups", h.listBackups)
 	device.POST("/backup", h.startBackup)
 	device.DELETE("/backups", h.deleteBackups)
@@ -145,10 +143,8 @@ func (h *Handler) Router() *echo.Echo {
 // in front of the DB-existence checks every operation already performs.
 func udidGuard(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
-		if u := c.Param("udid"); u != "" {
-			if domain.ValidateSource(u) != nil {
-				return domain.ErrNotFound
-			}
+		if domain.ValidateSource(c.Param("udid")) != nil {
+			return domain.ErrNotFound
 		}
 		return next(c)
 	}

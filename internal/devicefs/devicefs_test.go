@@ -68,7 +68,7 @@ func copyWithManager(
 		return err
 	}
 	defer file.Close()
-	return file.CopyTo(ctx, destination, nil)
+	return file.CopyTo(ctx, destination)
 }
 
 func TestCopyVerifiesOpeningSize(t *testing.T) {

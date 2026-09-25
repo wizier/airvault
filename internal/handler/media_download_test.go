@@ -16,6 +16,7 @@ type testDownload struct {
 }
 
 func (d *testDownload) Size() int64 { return int64(d.Reader.Size()) }
+func (d *testDownload) Close()      {}
 func (d *testDownload) CopyTo(_ context.Context, destination io.Writer) error {
 	_, err := io.Copy(destination, d)
 	return err
@@ -45,6 +46,7 @@ func TestStreamDeviceDownloadWritesCompleteAttachment(t *testing.T) {
 type failingDownload struct{}
 
 func (d *failingDownload) Size() int64 { return 10 }
+func (d *failingDownload) Close()      {}
 func (d *failingDownload) CopyTo(_ context.Context, destination io.Writer) error {
 	_, _ = destination.Write([]byte("short"))
 	return io.ErrUnexpectedEOF
@@ -58,14 +60,5 @@ func TestStreamDeviceDownloadReportsTruncatedSource(t *testing.T) {
 	err := streamDeviceDownload(context, &failingDownload{}, "file.bin")
 	if err != io.ErrUnexpectedEOF {
 		t.Fatalf("error = %v, want unexpected EOF", err)
-	}
-}
-
-func TestOptionalDownloadIDAcceptsOpaqueLANClientID(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "/download?downloadId=download-old-client-42", nil)
-	context := echo.New().NewContext(request, httptest.NewRecorder())
-	got, err := optionalDownloadID(context)
-	if err != nil || got != "download-old-client-42" {
-		t.Fatalf("download id = %q, %v", got, err)
 	}
 }

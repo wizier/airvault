@@ -21,15 +21,21 @@ func actionErrorCode(err error, fallback string) string {
 	return fallback
 }
 
+// USBDevice is a device reachable over USB, offered by the pairing wizard.
+type USBDevice struct {
+	UDID string `json:"udid"`
+	Name string `json:"name"`
+}
+
 // ListPairableUSB lists USB devices that are candidates for pairing: already-paired
 // ones are filtered out (the wizard only offers new phones), but a registered
 // device whose pairing broke still shows so it can be re-paired.
-func (s *Service) ListPairableUSB(ctx context.Context) ([]engine.USBDevice, error) {
+func (s *Service) ListPairableUSB(ctx context.Context) ([]USBDevice, error) {
 	all, err := s.engine.ListUSBDevices(ctx)
 	if err != nil {
 		return nil, newEngineActionError("pair_state_failed", err)
 	}
-	out := make([]engine.USBDevice, 0, len(all))
+	out := make([]USBDevice, 0, len(all))
 	for _, d := range all {
 		udid := string(d.DeviceID)
 		dev, err := s.store.Device.GetByUDID(ctx, udid)
@@ -40,7 +46,7 @@ func (s *Service) ListPairableUSB(ctx context.Context) ([]engine.USBDevice, erro
 		if err == nil && dev.Paired {
 			continue
 		}
-		out = append(out, d)
+		out = append(out, USBDevice{UDID: udid, Name: d.Name})
 	}
 	return out, nil
 }
@@ -84,7 +90,7 @@ func (s *Service) StartTrustFlow(ctx context.Context, udid string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if !slices.ContainsFunc(usb, func(device engine.USBDevice) bool { return string(device.DeviceID) == udid }) {
+	if !slices.ContainsFunc(usb, func(device USBDevice) bool { return device.UDID == udid }) {
 		return "", domain.ErrDeviceOffline
 	}
 	return s.launchCommand(s.app, runKindPairing, udid,

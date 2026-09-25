@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestPickThumbIsCaseInsensitive(t *testing.T) {
 }
 
 // thumbSession serves V2 thumbnail reads and then fails like a closed native
-// slot (context.Canceled) once okReads is exhausted.
+// slot (io.ErrClosedPipe) once okReads is exhausted.
 type thumbSession struct {
 	okReads int
 	reads   int
@@ -102,7 +103,7 @@ func (s *thumbSession) Remove(string) error                  { return nil }
 func (s *thumbSession) Close() error                         { return nil }
 func (s *thumbSession) ReadSmall(string) ([]byte, error) {
 	if s.reads >= s.okReads {
-		return nil, context.Canceled
+		return nil, io.ErrClosedPipe
 	}
 	s.reads++
 	return []byte("jpeg"), nil

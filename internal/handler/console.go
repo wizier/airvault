@@ -3,11 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"sync"
 	"time"
 
-	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/service"
 
 	"github.com/labstack/echo/v5"
 )
@@ -15,17 +14,12 @@ import (
 // [GET] /api/devices/:udid/console
 func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	udid := c.Param("udid")
+	rc := startSSE(c)
 	res := c.Response()
-	res.Header().Set(echo.HeaderContentType, "text/event-stream")
-	res.Header().Set("Cache-Control", "no-cache")
-	res.Header().Set("X-Accel-Buffering", "no")
-	rc := http.NewResponseController(res)
-	ctx, cancel := context.WithCancel(c.Request().Context())
-	defer cancel()
 
-	// The device can go quiet for long stretches; a heartbeat keeps proxies
-	// from reaping the stream. Writes come from two goroutines (records +
-	// pings), so they serialize on a mutex.
+	// The device can go quiet for long stretches, so pings keep the stream
+	// alive. Writes come from two goroutines (records + pings), so they
+	// serialize on a mutex.
 	var wmu sync.Mutex
 	write := func(payload string) error {
 		wmu.Lock()
@@ -36,16 +30,14 @@ func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 		return nil
 	}
 
-	ping := time.NewTicker(25 * time.Second)
-	defer ping.Stop()
-	stopPing := make(chan struct{})
+	ctx, cancel := context.WithCancel(c.Request().Context())
 	pingDone := make(chan struct{})
 	go func() {
 		defer close(pingDone)
+		ping := time.NewTicker(streamPingInterval)
+		defer ping.Stop()
 		for {
 			select {
-			case <-stopPing:
-				return
 			case <-ctx.Done():
 				return
 			case <-ping.C:
@@ -57,16 +49,13 @@ func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 		}
 	}()
 	// Join the pinger before returning so every write stays inside ServeHTTP.
-	defer func() { close(stopPing); <-pingDone }()
+	defer func() { cancel(); <-pingDone }()
 
-	err := h.svc.Console(ctx, udid, func(line engine.ConsoleLine) {
+	err := h.svc.Console(ctx, udid, func(line service.ConsoleLine) {
 		if ctx.Err() != nil {
 			return
 		}
-		data, jerr := json.Marshal(line)
-		if jerr != nil {
-			return
-		}
+		data, _ := json.Marshal(line) // strings and a uint32 cannot fail
 		if err := write("data: " + string(data) + "\n\n"); err != nil {
 			cancel()
 		}

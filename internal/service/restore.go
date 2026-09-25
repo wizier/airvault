@@ -90,15 +90,25 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	return runOutcome{}, nil
 }
 
-// RestoreOptions selects one immutable rollback point. Bound directly from the
-// POST /api/devices/:udid/restore request body.
+// RestoreOptions selects one immutable rollback point and how to apply it.
 type RestoreOptions struct {
-	SnapshotID             string `json:"snapshotId"`
-	Password               string `json:"password"`
-	SystemFiles            bool   `json:"systemFiles"`
-	Reboot                 bool   `json:"reboot"`
-	SettingsFromBackup     bool   `json:"settingsFromBackup"`
-	RemoveItemsNotRestored bool   `json:"removeItemsNotRestored"`
+	SnapshotID             string
+	Password               string
+	SystemFiles            bool
+	Reboot                 bool
+	SettingsFromBackup     bool
+	RemoveItemsNotRestored bool
+}
+
+// DefaultRestoreOptions is Finder's standard restore; callers override single
+// fields on top of it.
+func DefaultRestoreOptions() RestoreOptions {
+	return RestoreOptions{
+		SystemFiles:            true,
+		Reboot:                 true,
+		SettingsFromBackup:     true,
+		RemoveItemsNotRestored: true,
+	}
 }
 
 type restorePlan struct {
