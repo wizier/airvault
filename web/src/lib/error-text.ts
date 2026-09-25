@@ -31,7 +31,7 @@ const english = {
   too_many_paths: 'Too many files were requested at once',
   invalid_number: 'A numeric request value is not valid',
   invalid_gallery_page: 'The requested gallery page is not valid',
-  media_file_required: 'Select a media file',
+  file_required: 'Select a file',
   invalid_thumbnail_path: 'The thumbnail path is not valid',
   invalid_install_id: 'The installation identifier is invalid',
   ipa_required: 'Choose an .ipa file to install',

@@ -2,24 +2,19 @@ package service
 
 import (
 	"context"
-	"io"
 	"sync"
 
 	"github.com/wizier/airvault/internal/devicefs"
+	"github.com/wizier/airvault/internal/domain"
 )
 
 // DeviceDownload owns an open phone file and every lease held by its stream.
 type DeviceDownload struct {
-	file    *devicefs.File
+	*devicefs.File
 	cleanup func()
 }
 
-func (d *DeviceDownload) Size() int64 { return d.file.Size() }
-
-func (d *DeviceDownload) CopyTo(ctx context.Context, destination io.Writer) error {
-	return d.file.CopyTo(ctx, destination)
-}
-
+// Close closes the phone file and releases its lease; safe to call repeatedly.
 func (d *DeviceDownload) Close() {
 	d.cleanup()
 }
@@ -41,7 +36,7 @@ func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devi
 		return nil, newEngineActionError("download_failed", err)
 	}
 	return &DeviceDownload{
-		file: file,
+		File: file,
 		cleanup: sync.OnceFunc(func() {
 			_ = file.Close()
 			release()
@@ -59,4 +54,44 @@ func (s *Service) OpenAppFileDownload(ctx context.Context, udid, bundleID, devic
 
 func (s *Service) OpenMediaDownload(ctx context.Context, udid, devicePath string) (*DeviceDownload, error) {
 	return s.openDeviceDownload(ctx, udid, devicefs.Media(), devicePath)
+}
+
+type DeviceFileStat struct {
+	Size     int64  `json:"size"`
+	Modified *int64 `json:"modified,omitempty"`
+}
+
+// deviceFileStat returns one file's size and modified time (a single device
+// stat): a photo's details, or the check before a download starts.
+func (s *Service) deviceFileStat(ctx context.Context, udid string, root devicefs.Root, rawPath string) (DeviceFileStat, error) {
+	devicePath, err := parseRequiredPath(rawPath)
+	if err != nil {
+		return DeviceFileStat{}, err
+	}
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), "stat_failed")
+	if err != nil {
+		return DeviceFileStat{}, err
+	}
+	defer release()
+	entry, err := session.Stat(devicePath)
+	if err != nil {
+		return DeviceFileStat{}, newEngineActionError("stat_failed", err)
+	}
+	if entry.Kind != devicefs.EntryFile {
+		return DeviceFileStat{}, &domain.ValidationError{Code: "file_required", Message: "path must identify a file"}
+	}
+	// Stat always sizes a file entry.
+	return DeviceFileStat{Size: *entry.Size, Modified: entry.Modified}, nil
+}
+
+func (s *Service) AppFileStat(ctx context.Context, udid, bundleID, devicePath string) (DeviceFileStat, error) {
+	root, err := appDocumentsRoot(bundleID)
+	if err != nil {
+		return DeviceFileStat{}, err
+	}
+	return s.deviceFileStat(ctx, udid, root, devicePath)
+}
+
+func (s *Service) MediaStat(ctx context.Context, udid, devicePath string) (DeviceFileStat, error) {
+	return s.deviceFileStat(ctx, udid, devicefs.Media(), devicePath)
 }

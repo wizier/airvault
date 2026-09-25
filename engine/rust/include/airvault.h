@@ -207,13 +207,14 @@ int32_t av_afc_read_small(AvAfcSession *session,
                           AvError *error);
 
 /**
- * Transitions a session handle into one file for chunked reads. rc 0 or an
- * AV_ERROR_* kind.
+ * Transitions a session handle into one file for chunked reads, reporting its
+ * size and modified time (unix seconds, 0 if unknown). rc 0 or an AV_ERROR_* kind.
  */
 int32_t av_afc_file_open(AvAfcSession *session,
                          const uint8_t *path_ptr,
                          size_t path_len,
                          uint64_t *out_size,
+                         int64_t *out_modified,
                          AvAfcFile **out_file,
                          AvError *error);
 
@@ -226,6 +227,11 @@ int32_t av_afc_file_read(AvAfcFile *file,
                          size_t buffer_len,
                          size_t *out_read,
                          AvError *error);
+
+/**
+ * Moves the read cursor to an absolute offset. rc 0 or an AV_ERROR_* kind.
+ */
+int32_t av_afc_file_seek(AvAfcFile *file, uint64_t offset, AvError *error);
 
 /**
  * Signals cancellation without releasing the wrapper. Go calls this before

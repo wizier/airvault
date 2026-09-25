@@ -1,6 +1,7 @@
 package devicefs
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wizier/airvault/internal/engine"
 	"golang.org/x/sync/semaphore"
@@ -19,7 +21,9 @@ const (
 	// sessions. Keep a small per-phone cap so a thumbnail grid cannot open an
 	// unbounded number of lockdown services.
 	maxConcurrentSessions = 3
-	copyBufferSize        = 1 << 20
+	// Every native read is one device round trip of at most 1 MiB, so a file
+	// reads ahead that much whatever chunk size its caller asks for.
+	readAheadSize = 1 << 20
 )
 
 type EntryKind string
@@ -234,11 +238,17 @@ func (s *Session) ReadFile(path Path) ([]byte, error) {
 	return native.ReadSmall(physical)
 }
 
+// File is one device file as sized when it was opened; bytes appended later
+// are not part of it. It is an io.ReadSeeker for http.ServeContent.
 type File struct {
 	native  engine.AFCFile
 	release func()
 	size    int64
 	once    sync.Once
+
+	readAhead *bufio.Reader
+	offset    int64 // logical position, moved by Seek and Read
+	nativeAt  int64 // file position of readAhead's next byte
 }
 
 func (s *Session) OpenFile(path Path) (*File, error) {
@@ -258,12 +268,56 @@ func (s *Session) OpenFile(path Path) (*File, error) {
 		release()
 		return nil, err
 	}
-	return &File{native: nativeFile, release: release, size: nativeFile.Size()}, nil
+	return &File{
+		native:    nativeFile,
+		release:   release,
+		size:      nativeFile.Size(),
+		readAhead: bufio.NewReaderSize(nativeFile, readAheadSize),
+	}, nil
 }
 
-func (f *File) Read(buffer []byte) (int, error) { return f.native.Read(buffer) }
+func (f *File) Read(buffer []byte) (int, error) {
+	if f.offset >= f.size {
+		return 0, io.EOF
+	}
+	// Seek only moves the logical offset, so sizing the content (Seek End, then
+	// Start) costs no round trip; the device seeks once a read needs it.
+	if f.offset != f.nativeAt {
+		if err := f.native.SeekTo(f.offset); err != nil {
+			return 0, err
+		}
+		f.readAhead.Reset(f.native)
+		f.nativeAt = f.offset
+	}
+	read, err := f.readAhead.Read(buffer[:min(int64(len(buffer)), f.size-f.offset)])
+	f.offset += int64(read)
+	f.nativeAt = f.offset
+	if err == io.EOF {
+		return read, fmt.Errorf("file ended at %d of %d bytes: %w", f.offset, f.size, io.ErrUnexpectedEOF)
+	}
+	return read, err
+}
+
+func (f *File) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+	case io.SeekCurrent:
+		offset += f.offset
+	case io.SeekEnd:
+		offset += f.size
+	default:
+		return 0, errors.New("seek: invalid whence")
+	}
+	if offset < 0 {
+		return 0, errors.New("seek: negative position")
+	}
+	f.offset = offset
+	return offset, nil
+}
 
 func (f *File) Size() int64 { return f.size }
+
+func (f *File) ModTime() time.Time { return f.native.ModTime() }
 
 func (f *File) Close() error {
 	var err error
@@ -272,22 +326,4 @@ func (f *File) Close() error {
 		f.release()
 	})
 	return err
-}
-
-// CopyTo streams the file and verifies the size reported when it was opened.
-func (f *File) CopyTo(ctx context.Context, destination io.Writer) error {
-	stopCancellation := context.AfterFunc(ctx, func() { _ = f.Close() })
-	defer stopCancellation()
-	total := f.Size()
-	written, copyErr := io.CopyBuffer(destination, io.LimitReader(f, total), make([]byte, copyBufferSize))
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return errors.Join(ctxErr, copyErr)
-	}
-	if copyErr != nil {
-		return copyErr
-	}
-	if written != total {
-		return fmt.Errorf("copied %d bytes, expected %d: %w", written, total, io.ErrUnexpectedEOF)
-	}
-	return nil
 }

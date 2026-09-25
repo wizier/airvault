@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 // Config is immutable process-boundary configuration. Transfer requests never
@@ -199,6 +200,9 @@ type AFCSession interface {
 type AFCFile interface {
 	io.ReadCloser
 	Size() int64
+	ModTime() time.Time // zero if unknown
+	// SeekTo moves the device read cursor to an absolute offset (one round trip).
+	SeekTo(offset int64) error
 }
 
 // afcError adapts the typed engine error to the session-owner contract: the

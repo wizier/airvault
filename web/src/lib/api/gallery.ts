@@ -48,14 +48,3 @@ export async function mediaThumbsBatch(
   for (const [path, b64] of Object.entries(response.thumbs)) urls[path] = `data:image/jpeg;base64,${b64}`;
   return urls;
 }
-
-export interface MediaStat {
-  size: number;
-  modified?: number; // unix seconds; absent when AFC did not report it
-}
-
-/** One media file's size and modified time (a single on-demand device stat). */
-export async function mediaStat(udid: string, path: string, signal?: AbortSignal): Promise<MediaStat> {
-  const q = new URLSearchParams({ path });
-  return request<MediaStat>(`${mediaBase(udid)}/stat?${q}`, { signal });
-}

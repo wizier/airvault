@@ -22,7 +22,7 @@ const (
 )
 
 // Browser-renderable image types stream unchanged, keyed to their MIME type.
-// Both maps mirror PREVIEW_IMAGE_EXT in web/src/lib/preview.svelte.ts.
+// Both maps mirror PREVIEW_IMAGE_EXT in web/src/lib/components/PreviewImage.svelte.
 var nativeImageType = map[string]string{
 	".jpg":  "image/jpeg",
 	".jpeg": "image/jpeg",

@@ -121,6 +121,7 @@ func (h *Handler) Router() *echo.Echo {
 	device.GET("/apps/:bundle/icon", h.getAppIcon)
 	device.GET("/apps/:bundle/files", h.listAppFiles)
 	device.DELETE("/apps/:bundle/files", h.deleteAppFile)
+	device.GET("/apps/:bundle/files/stat", h.appFileStat)
 	device.GET("/apps/:bundle/files/download", h.downloadAppFile)
 	device.GET("/apps/:bundle/files/preview", h.previewAppFile)
 	device.GET("/media", h.listMedia)

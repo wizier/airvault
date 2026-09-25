@@ -55,10 +55,20 @@ func (h *Handler) listAppFiles(c *echo.Context) error {
 	return c.JSON(http.StatusOK, deviceFilesResponse{Entries: entries})
 }
 
+// [GET] /api/devices/:udid/apps/:bundle/files/stat?path=
+// One Documents file's size and modified time (a single device stat).
+func (h *Handler) appFileStat(c *echo.Context) error {
+	stat, err := h.svc.AppFileStat(c.Request().Context(), c.Param("udid"), c.Param("bundle"), c.QueryParam("path"))
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, stat)
+}
+
 // [GET] /api/devices/:udid/apps/:bundle/files/download?path=
-// Streams one file from the app's Documents to the browser as an attachment.
+// Serves one file from the app's Documents to the browser as an attachment.
 func (h *Handler) downloadAppFile(c *echo.Context) error {
-	return serveDownload(c, func(devPath string) (*service.DeviceDownload, error) {
+	return serveDownload(c, func(devPath string) (deviceDownload, error) {
 		return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
 	})
 }
@@ -66,7 +76,7 @@ func (h *Handler) downloadAppFile(c *echo.Context) error {
 // [GET] /api/devices/:udid/apps/:bundle/files/preview?path=
 // Inline image preview for app Documents — same native/HEIC path as media.
 func (h *Handler) previewAppFile(c *echo.Context) error {
-	return servePreview(c, func(devPath string) (*service.DeviceDownload, error) {
+	return servePreview(c, func(devPath string) (deviceDownload, error) {
 		return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
 	})
 }

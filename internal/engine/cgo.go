@@ -782,10 +782,11 @@ func (s *cgoAFCSession) ReadSmall(devicePath string) ([]byte, error) {
 
 func (s *cgoAFCSession) Open(devicePath string) (AFCFile, error) {
 	var size C.uint64_t
+	var modified C.int64_t
 	var file *C.AvAfcFile
 	err := s.call(devicePath, func(handle *C.AvAfcSession, path *C.uint8_t, pathLen C.size_t) error {
 		openErr := callEngineError(func(e *C.AvError) C.int32_t {
-			return C.av_afc_file_open(handle, path, pathLen, &size, &file, e)
+			return C.av_afc_file_open(handle, path, pathLen, &size, &modified, &file, e)
 		})
 		// Open consumes the session on every outcome. On success Rust has moved
 		// the slot into `file`, so closing this wrapper only releases its shell.
@@ -804,22 +805,29 @@ func (s *cgoAFCSession) Open(devicePath string) (AFCFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAFCFile(s.ctx, file, int64(size)), nil
+	var modTime time.Time
+	if modified > 0 {
+		modTime = time.Unix(int64(modified), 0)
+	}
+	return newAFCFile(s.ctx, file, int64(size), modTime), nil
 }
 
 type cgoAFCFile struct {
-	ctx    context.Context
-	handle nativeHandle[*C.AvAfcFile]
-	size   int64
+	ctx     context.Context
+	handle  nativeHandle[*C.AvAfcFile]
+	size    int64
+	modTime time.Time
 }
 
-func newAFCFile(ctx context.Context, handle *C.AvAfcFile, size int64) *cgoAFCFile {
-	file := &cgoAFCFile{ctx: ctx, handle: newNativeHandle(handle), size: size}
+func newAFCFile(ctx context.Context, handle *C.AvAfcFile, size int64, modTime time.Time) *cgoAFCFile {
+	file := &cgoAFCFile{ctx: ctx, handle: newNativeHandle(handle), size: size, modTime: modTime}
 	file.handle.closeOnContext(ctx, func() { _ = file.Close() })
 	return file
 }
 
 func (f *cgoAFCFile) Size() int64 { return f.size }
+
+func (f *cgoAFCFile) ModTime() time.Time { return f.modTime }
 
 func (f *cgoAFCFile) Read(buffer []byte) (int, error) {
 	if len(buffer) == 0 {
@@ -844,6 +852,17 @@ func (f *cgoAFCFile) Read(buffer []byte) (int, error) {
 		return 0, io.EOF
 	}
 	return int(read), nil
+}
+
+func (f *cgoAFCFile) SeekTo(offset int64) error {
+	handle, leave, ok := f.handle.enter()
+	if !ok {
+		return afcError(f.ctx, io.ErrClosedPipe)
+	}
+	defer leave()
+	return afcError(f.ctx, callEngineError(func(e *C.AvError) C.int32_t {
+		return C.av_afc_file_seek(handle, C.uint64_t(offset), e)
+	}))
 }
 
 func (f *cgoAFCFile) Close() error {

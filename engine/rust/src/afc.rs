@@ -11,10 +11,11 @@ use idevice::services::afc::errors::AfcError;
 use idevice::services::afc::file::OwnedFileDescriptor;
 use idevice::services::afc::{
     opcode::{AfcFopenMode, AfcOpcode},
-    AfcClient,
+    AfcClient, FileInfo,
 };
 use idevice::services::house_arrest::HouseArrestClient;
 use idevice::{IdeviceError, IdeviceService};
+use tokio::io::AsyncSeekExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::bounded::{cancel_or_timeout, Interrupt};
@@ -477,13 +478,13 @@ pub extern "C" fn av_afc_remove(
     })
 }
 
-/// Stat one path and reject a directory, returning the regular file's size.
-async fn regular_file_size(client: &mut AfcClient, path: &str) -> Result<usize, IdeviceError> {
+/// Stat one path and reject a directory.
+async fn regular_file_info(client: &mut AfcClient, path: &str) -> Result<FileInfo, IdeviceError> {
     let info = client.get_file_info(path).await?;
     if info.st_ifmt == "S_IFDIR" {
         return Err(IdeviceError::Afc(AfcError::ObjectIsDir));
     }
-    Ok(info.size)
+    Ok(info)
 }
 
 /// Reads one whole file of at most `cap` bytes and hands the client back. A
@@ -494,15 +495,15 @@ pub(crate) async fn read_small_file(
     path: &str,
     cap: usize,
 ) -> Result<(AfcClient, Vec<u8>), (Option<AfcClient>, EngineFailure)> {
-    let size = match regular_file_size(&mut client, path).await {
-        Ok(size) if size > cap => {
+    let size = match regular_file_info(&mut client, path).await {
+        Ok(info) if info.size > cap => {
             let failure = EngineFailure::new(
                 ErrorKind::Internal,
                 "AFC file is larger than the read buffer",
             );
             return Err((Some(client), failure));
         }
-        Ok(size) => size,
+        Ok(info) => info.size,
         // An AFC status reply proves the connection still works.
         Err(error @ IdeviceError::Afc(_)) => return Err((Some(client), error.into())),
         Err(error) => return Err((None, error.into())),
@@ -551,39 +552,41 @@ pub extern "C" fn av_afc_read_small(
     })
 }
 
-/// Transitions a session handle into one file for chunked reads. rc 0 or an
-/// AV_ERROR_* kind.
+/// Transitions a session handle into one file for chunked reads, reporting its
+/// size and modified time (unix seconds, 0 if unknown). rc 0 or an AV_ERROR_* kind.
 #[no_mangle]
 pub extern "C" fn av_afc_file_open(
     session: *mut AvAfcSession,
     path_ptr: *const u8,
     path_len: usize,
     out_size: *mut u64,
+    out_modified: *mut i64,
     out_file: *mut *mut AvAfcFile,
     error: *mut AvError,
 ) -> i32 {
     guard_error(error, || {
         let slot = unsafe { session_slot(session) }?;
-        if out_size.is_null() || out_file.is_null() {
+        if out_size.is_null() || out_modified.is_null() || out_file.is_null() {
             return Err(EngineFailure::invalid_argument("bad AFC file output"));
         }
         unsafe {
             *out_size = 0;
+            *out_modified = 0;
             *out_file = ptr::null_mut();
         }
         let path = unsafe { physical_path(path_ptr, path_len) }?;
         let mut client = slot.take_session()?;
-        let size = slot.run(
+        let info = slot.run(
             "AFC session cancelled",
             "opening AFC file timed out",
             async move {
                 let opened = async {
-                    let size = regular_file_size(&mut client, &path).await? as u64;
+                    let info = regular_file_info(&mut client, &path).await?;
                     let file = client.open_owned(path, AfcFopenMode::RdOnly).await?;
-                    Ok::<_, IdeviceError>((FileGuard::new(file), size))
+                    Ok::<_, IdeviceError>((FileGuard::new(file), info))
                 };
                 match opened.await {
-                    Ok((file, size)) => (Some(Resource::File(file)), Ok(size)),
+                    Ok((file, info)) => (Some(Resource::File(file)), Ok(info)),
                     Err(error) => (None, Err(error.into())),
                 }
             },
@@ -596,7 +599,8 @@ pub extern "C" fn av_afc_file_open(
             return Err(cancelled("AFC session cancelled"));
         }
         unsafe {
-            *out_size = size;
+            *out_size = info.size as u64;
+            *out_modified = info.modified.and_utc().timestamp();
             *out_file = Box::into_raw(Box::new(AvAfcFile { slot }));
         }
         Ok(())
@@ -647,6 +651,28 @@ pub extern "C" fn av_afc_file_read(
         )?;
         unsafe { copy_read(&bytes, buffer, out_read) };
         Ok(())
+    })
+}
+
+/// Moves the read cursor to an absolute offset. rc 0 or an AV_ERROR_* kind.
+#[no_mangle]
+pub extern "C" fn av_afc_file_seek(file: *mut AvAfcFile, offset: u64, error: *mut AvError) -> i32 {
+    guard_error(error, || {
+        let Some(file) = (unsafe { file.as_ref() }) else {
+            return Err(cancelled("AFC file is closed"));
+        };
+        let slot = &file.slot;
+        let mut guard = slot.take_file()?;
+        slot.run(
+            "AFC file cancelled",
+            "seeking AFC file timed out",
+            async move {
+                match guard.seek(std::io::SeekFrom::Start(offset)).await {
+                    Ok(_) => (Some(Resource::File(guard)), Ok(())),
+                    Err(error) => (None, Err(IdeviceError::from(error).into())),
+                }
+            },
+        )
     })
 }
 

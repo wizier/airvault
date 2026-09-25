@@ -213,34 +213,6 @@ func groupAlbum(files []devicefs.Path) []GalleryAsset {
 	return out
 }
 
-type MediaFileStat struct {
-	Size     int64  `json:"size"`
-	Modified *int64 `json:"modified,omitempty"`
-}
-
-// MediaStat returns one media file's size and modified time (a single device
-// stat) — e.g. to show a photo's date and size when it is opened.
-func (s *Service) MediaStat(ctx context.Context, udid, rawPath string) (MediaFileStat, error) {
-	devicePath, err := parseRequiredPath(rawPath)
-	if err != nil {
-		return MediaFileStat{}, err
-	}
-	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "stat_failed")
-	if err != nil {
-		return MediaFileStat{}, err
-	}
-	defer release()
-	entry, err := session.Stat(devicePath)
-	if err != nil {
-		return MediaFileStat{}, newEngineActionError("stat_failed", err)
-	}
-	if entry.Kind != devicefs.EntryFile {
-		return MediaFileStat{}, &domain.ValidationError{Code: "media_file_required", Message: "path must identify a media file"}
-	}
-	// Stat always sizes a file entry.
-	return MediaFileStat{Size: *entry.Size, Modified: entry.Modified}, nil
-}
-
 // readThumbInSession resolves and reads one compatibility thumbnail on an
 // already-open media session, so a batch reuses one session. iOS keeps them at
 // PhotoData/Thumbnails/V2/<dcimPath>/<code>.JPG (tiny JPEGs, videos included).

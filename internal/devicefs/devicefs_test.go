@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -34,17 +37,34 @@ func (s *fakeSession) Open(string) (engine.AFCFile, error) { return s.file, nil 
 func (s *fakeSession) ReadSmall(string) ([]byte, error)    { return nil, nil }
 func (s *fakeSession) Close() error                        { return nil }
 
+// fakeFile is a native device file that counts its round trips.
 type fakeFile struct {
 	*bytes.Reader
-	size int64
+	size        int64
+	reads       int
+	largestRead int
+	seeks       int
 }
 
 func newFakeFile(data string, size int64) *fakeFile {
 	return &fakeFile{Reader: bytes.NewReader([]byte(data)), size: size}
 }
 
-func (f *fakeFile) Size() int64  { return f.size }
-func (f *fakeFile) Close() error { return nil }
+func (f *fakeFile) Read(buffer []byte) (int, error) {
+	f.reads++
+	f.largestRead = max(f.largestRead, len(buffer))
+	return f.Reader.Read(buffer)
+}
+
+func (f *fakeFile) SeekTo(offset int64) error {
+	f.seeks++
+	_, err := f.Reader.Seek(offset, io.SeekStart)
+	return err
+}
+
+func (f *fakeFile) Size() int64        { return f.size }
+func (f *fakeFile) ModTime() time.Time { return time.Time{} }
+func (f *fakeFile) Close() error       { return nil }
 
 func managerForFile(file engine.AFCFile) *Manager {
 	return New(fakeOpener{open: func(context.Context) engine.AFCSession {
@@ -52,30 +72,25 @@ func managerForFile(file engine.AFCFile) *Manager {
 	}})
 }
 
-func copyWithManager(
-	ctx context.Context,
-	manager *Manager,
-	path Path,
-	destination io.Writer,
-) error {
-	session, err := manager.Open(ctx, "device", Media())
-	if err != nil {
-		return err
-	}
-	defer session.Close()
-	file, err := session.OpenFile(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.CopyTo(ctx, destination)
-}
-
-func TestCopyVerifiesOpeningSize(t *testing.T) {
+func openTestFile(t *testing.T, native engine.AFCFile) *File {
+	t.Helper()
 	path, err := ParsePath("file.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
+	session, err := managerForFile(native).Open(context.Background(), "device", Media())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := session.OpenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+func TestReadStopsAtOpeningSize(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		data    string
@@ -89,74 +104,58 @@ func TestCopyVerifiesOpeningSize(t *testing.T) {
 		{name: "grew", data: "abcd", size: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var destination bytes.Buffer
-			err := copyWithManager(
-				context.Background(), managerForFile(newFakeFile(test.data, test.size)), path, &destination,
-			)
-			switch test.wantErr {
-			case nil:
-				if err != nil {
-					t.Fatal(err)
-				}
-			default:
-				if !errors.Is(err, test.wantErr) {
-					t.Fatalf("error = %v, want %v", err, test.wantErr)
-				}
+			native := newFakeFile(test.data, test.size)
+			read, err := io.ReadAll(openTestFile(t, native))
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %v, want %v", err, test.wantErr)
 			}
-			if got, want := destination.String(), test.data[:min(len(test.data), int(test.size))]; got != want {
-				t.Fatalf("copied %q, want %q", got, want)
+			if got, want := string(read), test.data[:min(len(test.data), int(test.size))]; got != want {
+				t.Fatalf("read %q, want %q", got, want)
+			}
+			if test.wantErr == nil && native.reads != 1 {
+				t.Fatalf("native reads = %d, want 1", native.reads)
 			}
 		})
 	}
 }
 
-type blockingFile struct {
-	started   chan struct{}
-	closed    chan struct{}
-	readOnce  sync.Once
-	closeOnce sync.Once
-}
-
-func newBlockingFile() *blockingFile {
-	return &blockingFile{started: make(chan struct{}), closed: make(chan struct{})}
-}
-
-func (f *blockingFile) Read([]byte) (int, error) {
-	f.readOnce.Do(func() { close(f.started) })
-	<-f.closed
-	return 0, io.ErrClosedPipe
-}
-
-func (f *blockingFile) Size() int64 { return 1 << 20 }
-func (f *blockingFile) Close() error {
-	f.closeOnce.Do(func() { close(f.closed) })
-	return nil
-}
-
-func TestCopyCancellationClosesInFlightFile(t *testing.T) {
-	file := newBlockingFile()
-	path, err := ParsePath("file.bin")
-	if err != nil {
-		t.Fatal(err)
+// http.ServeContent sizes the file with two seeks and copies in 32 KiB reads.
+// Neither may cost a device round trip: a whole file takes one native read per
+// MiB and no seek, a range exactly one seek.
+func TestServeContentReadsAheadAndSeeksLazily(t *testing.T) {
+	data := make([]byte, 3*readAheadSize+7)
+	for i := range data {
+		data[i] = byte(i % 251)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- copyWithManager(ctx, managerForFile(file), path, io.Discard)
-	}()
-	select {
-	case <-file.started:
-	case <-time.After(time.Second):
-		t.Fatal("copy did not start reading")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("copy error = %v, want context cancellation", err)
+	serve := func(byteRange string) (*fakeFile, *httptest.ResponseRecorder) {
+		native := newFakeFile(string(data), int64(len(data)))
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		if byteRange != "" {
+			request.Header.Set("Range", byteRange)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("cancelled copy stayed blocked")
+		recorder := httptest.NewRecorder()
+		// Set as the handler does; ServeContent would otherwise sniff and rewind.
+		recorder.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(recorder, request, "file.bin", time.Time{}, openTestFile(t, native))
+		return native, recorder
+	}
+
+	native, recorder := serve("")
+	if !bytes.Equal(recorder.Body.Bytes(), data) {
+		t.Fatalf("full body differs (%d bytes)", recorder.Body.Len())
+	}
+	if native.seeks != 0 || native.reads != 4 || native.largestRead > readAheadSize {
+		t.Fatalf("full: seeks = %d, reads = %d, largest read = %d; want 0, 4, <= %d",
+			native.seeks, native.reads, native.largestRead, readAheadSize)
+	}
+
+	const start = readAheadSize + 5
+	native, recorder = serve(fmt.Sprintf("bytes=%d-", start))
+	if recorder.Code != http.StatusPartialContent || !bytes.Equal(recorder.Body.Bytes(), data[start:]) {
+		t.Fatalf("range: status %d, %d bytes", recorder.Code, recorder.Body.Len())
+	}
+	if native.seeks != 1 {
+		t.Fatalf("range: seeks = %d, want 1", native.seeks)
 	}
 }
 

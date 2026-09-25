@@ -5,9 +5,10 @@
   // pages in on scroll. A click opens the full-res image; videos offer Save.
   import { onMount } from 'svelte';
   import { ApiError, errMsg } from '../api/client';
-  import { galleryPage, mediaStat, mediaThumbsBatch, type GalleryAsset, type MediaStat } from '../api/gallery';
-  import { deviceFileSource } from '../api/files';
+  import { galleryPage, mediaThumbsBatch, type GalleryAsset } from '../api/gallery';
+  import { deviceFileSource, downloadFile, type FileStat } from '../api/files';
   import { formatBytes, formatDate } from '../format';
+  import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import PreviewImage, { isPreviewableImage } from './PreviewImage.svelte';
 
@@ -110,8 +111,11 @@
   }
 
   let lightbox = $state<GalleryAsset | null>(null);
-  let lbStat = $state<MediaStat | null>(null);
+  let lbStat = $state<FileStat | null>(null);
   let statCtrl: AbortController | null = null;
+  let saving = $state(false);
+  let saveError = $state<string | null>(null);
+  const saveCtrl = new AbortController();
 
   // Index of the open asset in the loaded roll, for prev/next navigation.
   const lbIndex = $derived(lightbox ? assets.findIndex((a) => a.path === lightbox!.path) : -1);
@@ -189,10 +193,12 @@
     // Date + size come from a single on-demand stat; aborting it drops a stale
     // response once the user has stepped to another photo.
     lbStat = null;
+    saveError = null;
     statCtrl?.abort();
     const ctrl = new AbortController();
     statCtrl = ctrl;
-    mediaStat(udid, a.path, ctrl.signal)
+    media
+      .stat(a.path, ctrl.signal)
       .then((s) => {
         if (!ctrl.signal.aborted) lbStat = s;
       })
@@ -208,6 +214,18 @@
     if (i < 0 || i >= assets.length) return;
     openLightbox(assets[i]);
     if (i >= assets.length - 12) void loadMore();
+  }
+
+  async function save(a: GalleryAsset): Promise<void> {
+    saving = true;
+    saveError = null;
+    try {
+      await downloadFile(media, a.path, a.name, saveCtrl.signal);
+    } catch (err) {
+      if (!saveCtrl.signal.aborted) saveError = errMsg(err, 'download_failed');
+    } finally {
+      saving = false;
+    }
   }
 
   function closeLightbox(): void {
@@ -233,6 +251,7 @@
       pageCtrl?.abort();
       pageCtrl = null;
       statCtrl?.abort();
+      saveCtrl.abort();
       resetThumbs();
     };
   });
@@ -464,10 +483,16 @@
                   : ''}{lbStat.size > 0 ? formatBytes(lbStat.size) : ''}
               </p>
             {/if}
+            <ErrorLine error={saveError} size="xs" />
           </div>
-          <a class="btn btn-primary btn-sm shrink-0" href={media.downloadUrl(a.path)} download={a.name}>
-            <Icon name="download" size={14} /> Save
-          </a>
+          <button type="button" class="btn btn-primary btn-sm shrink-0" disabled={saving} onclick={() => save(a)}>
+            {#if saving}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else}
+              <Icon name="download" size={14} />
+            {/if}
+            Save
+          </button>
         </div>
       </div>
     {/if}

@@ -5,7 +5,7 @@
   // open (inside {#if}), so per-open state resets by remount.
   import { onMount } from 'svelte';
   import { errMsg } from '../api/client';
-  import type { AFCEntry, FileSource } from '../api/files';
+  import { downloadFile, type AFCEntry, type FileSource } from '../api/files';
   import { formatBytes, formatDate } from '../format';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
@@ -42,6 +42,11 @@
   // server-side transcode — render inline; other types offer Save only.
   let preview = $state<AFCEntry | null>(null);
 
+  // The file whose download is being prepared (its stat is in flight).
+  let saving = $state<string | null>(null);
+  let saveError = $state<string | null>(null);
+  const saveCtrl = new AbortController();
+
   // Load a whole directory; one AFC listing already comes back folders-first.
   async function navigate(dir: string): Promise<void> {
     listCtrl?.abort();
@@ -64,7 +69,10 @@
 
   onMount(() => {
     void navigate('');
-    return () => listCtrl?.abort();
+    return () => {
+      listCtrl?.abort();
+      saveCtrl.abort();
+    };
   });
 
   const segments = $derived(path === '' ? [] : path.split('/'));
@@ -85,6 +93,18 @@
       deleteError = errMsg(err, 'file_delete_failed');
     } finally {
       deleting = null;
+    }
+  }
+
+  async function save(name: string): Promise<void> {
+    saving = name;
+    saveError = null;
+    try {
+      await downloadFile(source, child(name), name, saveCtrl.signal);
+    } catch (err) {
+      if (!saveCtrl.signal.aborted) saveError = errMsg(err, 'download_failed');
+    } finally {
+      if (saving === name) saving = null;
     }
   }
 </script>
@@ -108,6 +128,7 @@
     </div>
 
     <ErrorLine error={deleteError} size="xs" className="shrink-0" />
+    <ErrorLine error={saveError} size="xs" className="shrink-0" />
 
     {#if preview}
       {@const p = preview}
@@ -119,9 +140,19 @@
           <p class="truncate text-sm font-medium">{p.name}</p>
           {@render fileFacts(p)}
         </div>
-        <a class="btn btn-primary btn-sm shrink-0" href={source.downloadUrl(child(p.name))} download={p.name}>
-          <Icon name="download" size={14} /> Save
-        </a>
+        <button
+          type="button"
+          class="btn btn-primary btn-sm shrink-0"
+          disabled={saving === p.name}
+          onclick={() => save(p.name)}
+        >
+          {#if saving === p.name}
+            <span class="loading loading-spinner loading-xs"></span>
+          {:else}
+            <Icon name="download" size={14} />
+          {/if}
+          Save
+        </button>
       </div>
       <div class="flex min-h-0 basis-48 grow shrink items-center justify-center overflow-auto rounded-box bg-base-200 p-2">
         <PreviewImage src={source.previewUrl(child(p.name))} alt={p.name}>
@@ -226,15 +257,20 @@
                   </div>
                 {:else}
                   <div class="flex shrink-0 items-center gap-1">
-                    <a
+                    <button
+                      type="button"
                       class="btn btn-square btn-ghost btn-xs"
-                      href={source.downloadUrl(child(entry.name))}
-                      download={entry.name}
                       title="Download"
                       aria-label={`Download ${entry.name}`}
+                      disabled={saving === entry.name}
+                      onclick={() => save(entry.name)}
                     >
-                      <Icon name="download" size={15} />
-                    </a>
+                      {#if saving === entry.name}
+                        <span class="loading loading-spinner loading-xs"></span>
+                      {:else}
+                        <Icon name="download" size={15} />
+                      {/if}
+                    </button>
                     {#if source.remove}
                       <button
                         type="button"
