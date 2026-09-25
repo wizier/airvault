@@ -1,20 +1,21 @@
 <script lang="ts">
   // Route boundary only: resolve the requested device and compose the feature
-  // cards. Each card owns its requests, mutations, modals and transient state.
+  // cards. Each card owns its requests, mutations, modals and transient state;
+  // only the restore flow, opened from two cards, lives here.
   import { link, push } from 'svelte-spa-router';
-  import { errMsg } from '../lib/api/client';
   import BackupCard from '../lib/components/BackupCard.svelte';
   import BackupHistory from '../lib/components/BackupHistory.svelte';
   import DeviceOverviewCard from '../lib/components/DeviceOverviewCard.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import HardwareCard from '../lib/components/HardwareCard.svelte';
   import Icon from '../lib/components/Icon.svelte';
+  import RestoreModal from '../lib/components/RestoreModal.svelte';
   import { devicesStore } from '../lib/stores.svelte';
 
   let { params }: { params: { udid: string } } = $props();
   const udid = $derived(params.udid);
-  // The history's restore shortcut calls into the backup card's modal.
-  let backupCard = $state<ReturnType<typeof BackupCard> | null>(null);
+  // A history row preselects its snapshot; the modal mounts fresh per open.
+  let restoring = $state<{ preselect: string | null } | null>(null);
 
   $effect(() => devicesStore.start());
 
@@ -24,11 +25,7 @@
   $effect(() => {
     if (devicesStore.ready && !device) void push('/');
   });
-  const loadError = $derived(
-    !devicesStore.ready && devicesStore.error && !devicesStore.offline
-      ? errMsg(devicesStore.error, 'device_load_failed')
-      : null,
-  );
+  const loadError = $derived(devicesStore.loadError('device_load_failed'));
 </script>
 
 <div class="flex flex-col gap-6">
@@ -42,8 +39,18 @@
   {#if device}
     <DeviceOverviewCard {device} />
     <HardwareCard {udid} reachable={device.connection !== 'offline'} />
-    <BackupCard {device} bind:this={backupCard} />
-    <BackupHistory {device} onrestore={(snapshotId) => backupCard?.openRestore(snapshotId)} />
+    <BackupCard {device} onrestore={() => (restoring = { preselect: null })} />
+    <BackupHistory {device} onrestore={(snapshotId) => (restoring = { preselect: snapshotId })} />
+    {#if restoring}
+      <RestoreModal
+        udid={device.udid}
+        name={device.name}
+        iosVersion={device.iosVersion}
+        activationState={device.activationState}
+        preselect={restoring.preselect}
+        onclose={() => (restoring = null)}
+      />
+    {/if}
   {:else if loadError}
     <EmptyState icon="alert" tone="danger" title="Could not load device" message={loadError}>
       <button type="button" class="btn btn-primary btn-sm" onclick={() => devicesStore.refresh()}>Retry</button>

@@ -4,7 +4,6 @@
   // capped ring; the text filter shapes the view and shields matches from eviction.
   import { consoleUrl, type ConsoleLevel, type ConsoleLine } from '../api/console';
   import { errorText } from '../error-text';
-  import { modalOpen } from '../modal';
   import Icon from './Icon.svelte';
 
   const MAX_LINES = 2000;
@@ -12,15 +11,7 @@
    *  stream is a firehose (hundreds of records/sec); batching caps it at ≤5 renders/sec. */
   const FLUSH_MS = 200;
 
-  let {
-    udid,
-    name,
-    open = $bindable(false),
-  }: {
-    udid: string;
-    name: string;
-    open?: boolean;
-  } = $props();
+  let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
 
   /** A record with a stable identity, so the keyed {#each} only touches
    *  appended/dropped rows instead of re-rendering the whole ring buffer. */
@@ -33,10 +24,7 @@
   // incoming records are dropped and the view freezes so it can be read. The
   // EventSource stays connected either way, so resuming is instant.
   let streaming = $state(true);
-  let streamErrorCode = $state<string | null>(null);
-  const streamError = $derived(
-    streamErrorCode ? errorText(streamErrorCode, 'console_stream_failed') : null,
-  );
+  let streamError = $state<string | null>(null);
   let connected = $state(false);
   let logEl = $state<HTMLElement | null>(null);
   /** Bumped by Reconnect: reopens the stream, deliberately keeping the
@@ -49,13 +37,17 @@
    *  never collide with the resumed stream's new ones. */
   let seq = 0;
 
+  let dialog: HTMLDialogElement;
+  // A string: the parent's device object is replaced on every list refresh, and
+  // an unchanged URL must not reopen the stream (a new os_trace session).
+  const url = $derived(consoleUrl(udid));
+
   // One EventSource per open modal (auto-reconnects; backend failures arrive as
   // the 'error' event). Incoming records collect in a PLAIN buffer and hit the
   // reactive state on a timer — one render per flush, never one per record.
   $effect(() => {
-    if (!open) return;
     void streamNonce; // dependency: Reconnect re-runs this effect
-    streamErrorCode = null;
+    streamError = null;
 
     let pending: Row[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -75,10 +67,10 @@
       trimToBudget();
     }
 
-    const es = new EventSource(consoleUrl(udid));
+    const es = new EventSource(url);
     es.onopen = () => {
       connected = true;
-      streamErrorCode = null;
+      streamError = null;
     };
     es.onmessage = (e) => {
       if (!streaming) return; // paused: drop live records, freeze the view
@@ -100,13 +92,14 @@
         // In-band backend failure (device offline, session died). FATAL: stop
         // the EventSource — otherwise it auto-reconnects every few seconds,
         // re-attempting a device session forever. Reconnect is manual.
+        let code = 'console_stream_failed';
         try {
           const payload = JSON.parse(msg) as { code?: unknown };
-          streamErrorCode =
-            typeof payload.code === 'string' ? payload.code : 'console_stream_failed';
+          if (typeof payload.code === 'string') code = payload.code;
         } catch {
-          streamErrorCode = 'console_stream_failed';
+          /* keep the generic code */
         }
+        streamError = errorText(code, 'console_stream_failed');
         es.close();
       }
       connected = false;
@@ -197,7 +190,7 @@
   }
 </script>
 
-<dialog class="modal" {@attach modalOpen(open)} onclose={() => (open = false)}>
+<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
   <!-- Fixed height: a console is a terminal window — its size must not
        breathe with how many rows currently match. -->
   <div class="modal-box flex h-[85vh] w-11/12 max-w-5xl flex-col gap-3">
@@ -217,7 +210,7 @@
           Live system log of {name}
         </p>
       </div>
-      <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => (open = false)}>
+      <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => dialog.close()}>
         <Icon name="x" size={16} />
       </button>
     </div>

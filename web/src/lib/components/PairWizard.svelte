@@ -4,9 +4,9 @@
   // Wi-Fi sync (mandatory). A phone leaves usbDevices the moment it pairs;
   // devicesStore then owns its state.
   import { pairStateStore, devicesStore } from '../stores.svelte';
-  import { pairTrust } from '../events.svelte';
-  import { errMsg, errRef } from '../api/client';
-  import { errorRef, errorRefText, type ErrorRef } from '../error-text';
+  import { onPairTrust } from '../events.svelte';
+  import { errorCode } from '../api/client';
+  import { errorText } from '../error-text';
   import { startTrust as startTrustRequest } from '../api/pairing';
   import Icon from './Icon.svelte';
   import Pill from './Pill.svelte';
@@ -29,11 +29,7 @@
   const usbDevices = $derived(ps?.usbDevices ?? []);
   const muxerOffline = $derived(pairStateStore.ready && ps?.muxerReady === false);
   const backendOffline = $derived(pairStateStore.offline && !pairStateStore.ready);
-  const loadError = $derived(
-    !pairStateStore.ready && pairStateStore.error && !pairStateStore.offline
-      ? errMsg(pairStateStore.error, 'pair_state_failed')
-      : null,
-  );
+  const loadError = $derived(pairStateStore.loadError('pair_state_failed'));
   const loading = $derived(!pairStateStore.ready && pairStateStore.error === null);
 
   let step = $state(1);
@@ -61,11 +57,6 @@
     (devicesStore.data ?? []).filter((d) => d.connection === 'usb' && d.paired),
   );
 
-  function finish() {
-    if (selectedUdid) ondone?.(selectedUdid);
-    else onclose?.();
-  }
-
   // ---- Step 2: trust ----------------------------------------------------------
   // The trust flow runs SERVER-side: one POST starts it, and every status
   // transition arrives as a pair.trust SSE event (see events.svelte.ts).
@@ -74,19 +65,17 @@
     | { kind: 'pending' } // dialog is up on the phone
     | { kind: 'locked' } // phone must be unlocked first
     | { kind: 'denied' } // user tapped "Don't Trust"
-    | { kind: 'error'; error: ErrorRef };
+    | { kind: 'error'; code: string };
   let trust = $state<TrustState>({ kind: 'starting' });
-  const trustError = $derived(trust.kind === 'error' ? errorRefText(trust.error) : null);
-  const wifiAuthorizationFailed = $derived(
-    trust.kind === 'error' && trust.error.code === 'wifi_authorization_failed',
-  );
+  const trustError = $derived(trust.kind === 'error' ? errorText(trust.code, 'pairing_failed') : null);
+  const wifiAuthorizationFailed = $derived(trust.kind === 'error' && trust.code === 'wifi_authorization_failed');
 
   async function startTrust(udid: string) {
     trust = { kind: 'starting' };
     try {
       await startTrustRequest(udid);
     } catch (err) {
-      trust = { kind: 'error', error: errRef(err, 'pairing_failed') };
+      trust = { kind: 'error', code: errorCode(err, 'pairing_failed') };
     }
   }
 
@@ -97,32 +86,27 @@
   }
 
   // Map incoming pair.trust events for the selected device onto the UI state.
-  // Each event is consumed once — step/selection changes never replay the last one.
-  let seenSeq = pairTrust.seq; // non-reactive
-  $effect(() => {
-    if (pairTrust.seq === seenSeq) return;
-    seenSeq = pairTrust.seq;
-    if (step !== 2 || pairTrust.udid !== selectedUdid || !pairTrust.status) return;
-    switch (pairTrust.status) {
-      case 'paired':
-        step = 3;
-        break;
-      case 'trust_pending':
-        trust = { kind: 'pending' };
-        break;
-      case 'locked':
-        trust = { kind: 'locked' };
-        break;
-      case 'denied':
-        trust = { kind: 'denied' };
-        break;
-      default:
-        trust = {
-          kind: 'error',
-          error: errorRef(pairTrust.errorCode ?? 'pairing_failed', 'pairing_failed'),
-        };
-    }
-  });
+  $effect(() =>
+    onPairTrust((event) => {
+      if (step !== 2 || event.udid !== selectedUdid) return;
+      switch (event.status) {
+        case 'paired':
+          step = 3;
+          break;
+        case 'trust_pending':
+          trust = { kind: 'pending' };
+          break;
+        case 'locked':
+          trust = { kind: 'locked' };
+          break;
+        case 'denied':
+          trust = { kind: 'denied' };
+          break;
+        default:
+          trust = { kind: 'error', code: event.errorCode ?? 'pairing_failed' };
+      }
+    }),
+  );
 
   // After "Don't Trust", iOS won't show the dialog again on the same USB
   // session — watch presence and restart the flow when the cable is replugged.
@@ -348,7 +332,7 @@
             </p>
           </div>
           <div class="mt-1 flex flex-wrap justify-center gap-2">
-            <button type="button" class="btn btn-primary" onclick={finish}>
+            <button type="button" class="btn btn-primary" onclick={() => ondone?.(selectedUdid!)}>
               <Icon name="phone" size={15} /> Open device page
             </button>
             <button type="button" class="btn btn-ghost" onclick={() => onclose?.()}>Close</button>

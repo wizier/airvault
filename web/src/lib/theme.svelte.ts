@@ -13,7 +13,6 @@ const DAISY_THEME: Record<Theme, string> = {
 };
 
 function currentFromDom(): Theme {
-  if (typeof document === 'undefined') return 'dark';
   return document.documentElement.getAttribute('data-theme') === 'airvault'
     ? 'light'
     : 'dark';
@@ -28,9 +27,7 @@ class ThemeStore {
 
   set(next: Theme): void {
     this.value = next;
-    if (typeof document !== 'undefined') {
-      document.documentElement.setAttribute('data-theme', DAISY_THEME[next]);
-    }
+    document.documentElement.setAttribute('data-theme', DAISY_THEME[next]);
     try {
       localStorage.setItem(STORAGE_KEY, next);
     } catch {

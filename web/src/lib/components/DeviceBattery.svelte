@@ -7,11 +7,14 @@
   let { device, badge = false }: { device: Device; badge?: boolean } = $props();
   const res = $derived(batteryResources.for(device.udid));
   const battery = $derived(batteryUi(res.data));
+  // A boolean, so a device list refresh (a new device object) never restarts
+  // the poll or its immediate battery read.
+  const online = $derived(device.connection !== 'offline');
 
   // Offline devices are not polled — presence comes from SSE, whose connection
   // change re-runs this effect.
   $effect(() => {
-    if (device.connection === 'offline') return;
+    if (!online) return;
     const stop = res.start();
     const timer = setInterval(() => {
       if (!document.hidden) void res.refresh();
@@ -23,7 +26,7 @@
   });
 </script>
 
-{#if battery && device.connection !== 'offline'}
+{#if battery && online}
   <span
     class={`${badge ? 'badge badge-sm badge-ghost' : 'flex'} items-center gap-1 whitespace-nowrap font-medium tabular-nums ${battery.cls}`}
     title={battery.title}

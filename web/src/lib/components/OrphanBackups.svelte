@@ -3,47 +3,17 @@
   // never lingers unnoticed. A row opens the device page (browse, migrate or
   // delete individual points); the button here removes the whole source.
   import { link } from 'svelte-spa-router';
-  import { deleteDeviceBackups } from '../api/backups';
-  import { errRef } from '../api/client';
   import type { Device } from '../api/devices';
-  import type { ErrorRef } from '../error-text';
-  import { devicesStore, restoreSourcesStore } from '../stores.svelte';
+  import { deleteAllBackups } from '../stores.svelte';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
   import { deviceIcon, modelDisplayName } from '../device-ui';
   import { now } from '../clock';
-  import ErrorLine from './ErrorLine.svelte';
+  import ConfirmDialog from './ConfirmDialog.svelte';
   import Icon from './Icon.svelte';
 
   let { orphans }: { orphans: Device[] } = $props();
 
   let pending = $state<Device | null>(null);
-  let deleting = $state(false);
-  let failure = $state<ErrorRef | null>(null);
-  let dialog = $state<HTMLDialogElement | null>(null);
-
-  function askDelete(orphan: Device) {
-    pending = orphan;
-    failure = null;
-    dialog?.showModal();
-  }
-
-  async function confirmDelete() {
-    if (!pending || deleting) return;
-    const udid = pending.udid;
-    deleting = true;
-    failure = null;
-    try {
-      await deleteDeviceBackups(udid);
-      devicesStore.mutate((devices) => devices.filter((device) => device.udid !== udid));
-      restoreSourcesStore.mutate((sources) => sources.filter((source) => source.udid !== udid));
-      dialog?.close();
-      pending = null;
-    } catch (error) {
-      failure = errRef(error, 'device_action_failed');
-    } finally {
-      deleting = false;
-    }
-  }
 </script>
 
 <section class="flex flex-col gap-3">
@@ -92,7 +62,7 @@
           <button
             type="button"
             class="btn btn-error btn-outline btn-xs"
-            onclick={() => askDelete(orphan)}
+            onclick={() => (pending = orphan)}
           >
             <Icon name="trash" size={13} />
             Delete…
@@ -103,37 +73,23 @@
   </div>
 </section>
 
-<dialog
-  class="modal"
-  bind:this={dialog}
-  oncancel={(event) => deleting && event.preventDefault()}
-  onclose={() => (pending = null)}
->
-  <div class="modal-box">
-    <h3 class="text-lg font-bold">
-      Delete the backups of {pending ? (pending.name !== pending.udid ? pending.name : shortUdid(pending.udid)) : 'this phone'}?
-    </h3>
+{#if pending}
+  {@const orphan = pending}
+  <ConfirmDialog
+    title={`Delete the backups of ${orphan.name !== orphan.udid ? orphan.name : shortUdid(orphan.udid)}?`}
+    icon="trash"
+    confirmLabel="Delete backups"
+    busyLabel="Deleting…"
+    cancelLabel="Keep them"
+    failureCode="device_action_failed"
+    onconfirm={() => deleteAllBackups(orphan)}
+    onclose={() => (pending = null)}
+  >
     <p class="py-3 text-sm text-base-content/70">
-      {#if pending}
-        {pending.restorePoints === 1 ? 'The only restore point' : `All ${pending.restorePoints} restore points`}
-        of this phone will be removed{#if pending.diskBytes !== undefined}, freeing about
-          <span class="font-medium tabular-nums">{formatBytes(pending.diskBytes)}</span> on disk{/if}.
-        This can't be undone.
-      {/if}
+      {orphan.restorePoints === 1 ? 'The only restore point' : `All ${orphan.restorePoints} restore points`}
+      of this phone will be removed{#if orphan.diskBytes !== undefined}, freeing about
+        <span class="font-medium tabular-nums">{formatBytes(orphan.diskBytes)}</span> on disk{/if}.
+      This can't be undone.
     </p>
-    <ErrorLine {failure} className="mt-3" />
-    <div class="modal-action">
-      <button type="button" class="btn btn-ghost" disabled={deleting} onclick={() => dialog?.close()}>Keep them</button>
-      <button type="button" class="btn btn-error" disabled={deleting} onclick={confirmDelete}>
-        {#if deleting}
-          <span class="loading loading-spinner loading-xs"></span> Deleting…
-        {:else}
-          <Icon name="trash" size={15} /> Delete backups
-        {/if}
-      </button>
-    </div>
-  </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close" disabled={deleting}>close</button>
-  </form>
-</dialog>
+  </ConfirmDialog>
+{/if}

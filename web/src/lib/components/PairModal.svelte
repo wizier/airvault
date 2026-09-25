@@ -1,24 +1,23 @@
 <script lang="ts">
-  // Modal host for the pairing wizard. The wizard is mounted only while the
-  // modal is open, so its one-shot pair-state fetch and SSE reactions are scoped
-  // to the visible flow.
+  // Modal host for the pairing wizard. It is mounted only while open, so the
+  // wizard's one-shot pair-state fetch and SSE reactions are scoped to the
+  // visible flow.
   import { push } from 'svelte-spa-router';
-  import { modalOpen } from '../modal';
   import PairWizard from './PairWizard.svelte';
 
-  let { open = $bindable(false) }: { open?: boolean } = $props();
+  let { onclose }: { onclose: () => void } = $props();
+
+  let dialog: HTMLDialogElement;
 
   function goDevice(udid: string) {
-    open = false;
+    dialog.close();
     push(`/device/${encodeURIComponent(udid)}`);
   }
 </script>
 
-<dialog class="modal" {@attach modalOpen(open)} onclose={() => (open = false)}>
+<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
   <div class="modal-box max-w-2xl">
-    {#if open}
-      <PairWizard onclose={() => (open = false)} ondone={goDevice} />
-    {/if}
+    <PairWizard onclose={() => dialog.close()} ondone={goDevice} />
   </div>
   <form method="dialog" class="modal-backdrop">
     <button aria-label="Close">close</button>

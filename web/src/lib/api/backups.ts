@@ -43,6 +43,9 @@ export interface RestorePoint {
   deviceName?: string;
 }
 
+/** The cross-device list always names each point's source phone. */
+export type RestoreSource = RestorePoint & { udid: string };
+
 interface RestorePointsResponse {
   restorePoints: RestorePoint[];
 }
@@ -93,8 +96,8 @@ export async function snapshotsReclaimable(
   return response.reclaimableBytes;
 }
 
-export async function listRestoreSources(signal?: AbortSignal): Promise<RestorePoint[]> {
-  const response = await request<{ restoreSources: RestorePoint[] }>('/restore-sources', { signal });
+export async function listRestoreSources(signal?: AbortSignal): Promise<RestoreSource[]> {
+  const response = await request<{ restoreSources: RestoreSource[] }>('/restore-sources', { signal });
   return response.restoreSources;
 }
 

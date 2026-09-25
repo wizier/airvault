@@ -4,11 +4,10 @@
   // last-restore-error; only errors of the start request itself show inline,
   // where they can be corrected.
   import { startRestore, type RestorePoint } from '../api/backups';
-  import { errRef } from '../api/client';
-  import type { ErrorRef } from '../error-text';
+  import { errorCode } from '../api/client';
+  import { errorText } from '../error-text';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
-  import { modalOpen } from '../modal';
-  import { hardwareResources } from '../stores.svelte';
+  import { hardwareResources, restoreSourcesStore } from '../stores.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import PasswordField from './PasswordField.svelte';
@@ -19,8 +18,7 @@
     iosVersion,
     activationState,
     preselect = null,
-    sources,
-    open = $bindable(false),
+    onclose,
   }: {
     udid: string;
     name: string;
@@ -30,23 +28,20 @@
     activationState?: string;
     /** Snapshot to preselect on open instead of the default (own newest). */
     preselect?: string | null;
-    /** Every on-disk backup that could be applied (own + other phones'). */
-    sources: RestorePoint[];
-    open?: boolean;
+    onclose: () => void;
   } = $props();
 
-  const sourceKey = (s: RestorePoint) => s.snapshotId;
+  let dialog: HTMLDialogElement;
+  // Every on-disk backup that could be applied (own + other phones'), newest first.
+  $effect(() => restoreSourcesStore.start());
+  const sources = $derived(restoreSourcesStore.data ?? []);
   // Preselected snapshot or this phone's newest; never auto-pick a foreign phone.
   // Mount-time snapshot — `sources` refreshes while open must not clobber picks.
   // svelte-ignore state_referenced_locally
   const initialPoint =
-    (preselect ? sources.find((s) => sourceKey(s) === preselect) : null) ??
-    sources
-      .filter((s) => s.udid === udid)
-      .sort((a, b) => b.created.localeCompare(a.created))[0] ??
-    null;
-  let selectedUdid = $state(initialPoint ? initialPoint.udid ?? '' : '');
-  let selected = $state(initialPoint ? sourceKey(initialPoint) : '');
+    (preselect && sources.find((s) => s.snapshotId === preselect)) || sources.find((s) => s.udid === udid);
+  let selectedUdid = $state(initialPoint?.udid ?? '');
+  let selected = $state(initialPoint?.snapshotId ?? '');
   let password = $state('');
   // Standard restore follows Finder's effective behavior. Advanced controls
   // are phrased as exceptions, so every enabled switch is deliberate.
@@ -56,27 +51,23 @@
   let keepItemsNotInBackup = $state(false);
   let doNotRestart = $state(false);
   let busy = $state(false);
-  let failure = $state<ErrorRef | null>(null);
+  let failureCode = $state<string | null>(null);
+  const failure = $derived(failureCode && errorText(failureCode, 'restore_start_failed'));
 
   // The source phones present on disk (one entry each), this phone first.
   const phones = $derived.by(() => {
     const byUdid = new Map<string, string>();
     for (const s of sources) {
-      const key = s.udid ?? '';
-      if (!byUdid.has(key)) byUdid.set(key, key === udid ? 'This phone' : s.deviceName || shortUdid(key));
+      if (!byUdid.has(s.udid)) byUdid.set(s.udid, s.udid === udid ? 'This phone' : s.deviceName || shortUdid(s.udid));
     }
     return [...byUdid]
       .map(([id, name]) => ({ udid: id, name }))
       .sort((a, b) => (a.udid === udid ? -1 : b.udid === udid ? 1 : a.name.localeCompare(b.name)));
   });
-  const points = $derived(
-    sources
-      .filter((s) => (s.udid ?? '') === selectedUdid)
-      .sort((a, b) => b.created.localeCompare(a.created)),
-  );
-  const sel = $derived(points.find((s) => sourceKey(s) === selected) ?? null);
+  const points = $derived(sources.filter((s) => s.udid === selectedUdid));
+  const sel = $derived(points.find((s) => s.snapshotId === selected) ?? null);
   const crossDevice = $derived(sel !== null && sel.udid !== udid);
-  const wrongPassword = $derived(failure?.code === 'invalid_backup_password');
+  const wrongPassword = $derived(failureCode === 'invalid_backup_password');
   const overrideCount = $derived(
     Number(keepCurrentSettings) +
       Number(skipSystemFiles) +
@@ -129,7 +120,7 @@
   async function confirm() {
     if (busy || !sel) return;
     busy = true;
-    failure = null;
+    failureCode = null;
     try {
       await startRestore(udid, {
         snapshotId: sel.snapshotId,
@@ -140,9 +131,9 @@
         removeItemsNotRestored: !keepItemsNotInBackup,
       });
       password = '';
-      open = false;
+      dialog.close();
     } catch (err) {
-      failure = errRef(err, 'restore_start_failed');
+      failureCode = errorCode(err, 'restore_start_failed');
     } finally {
       busy = false;
     }
@@ -151,9 +142,10 @@
 
 <dialog
   class="modal"
-  {@attach modalOpen(open)}
+  bind:this={dialog}
+  {@attach (d) => d.showModal()}
   oncancel={(event) => busy && event.preventDefault()}
-  onclose={() => (open = false)}
+  {onclose}
 >
   <div class="modal-box flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
     <h3 class="shrink-0 text-lg font-bold">Restore {name}?</h3>
@@ -184,8 +176,8 @@
           disabled={busy || selectedUdid === ''}
         >
           <option value="" disabled>{selectedUdid === '' ? 'Choose a phone first' : 'Select a backup…'}</option>
-          {#each points as s (sourceKey(s))}
-            <option value={sourceKey(s)}>{backupLabel(s)}</option>
+          {#each points as s (s.snapshotId)}
+            <option value={s.snapshotId}>{backupLabel(s)}</option>
           {/each}
         </select>
       </label>
@@ -328,12 +320,12 @@
     </p>
 
     {#if !wrongPassword}
-      <ErrorLine {failure} className="mt-3" />
+      <ErrorLine error={failure} className="mt-3" />
     {/if}
     </div>
 
     <div class="modal-action shrink-0">
-      <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => (open = false)}>Cancel</button>
+      <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => dialog.close()}>Cancel</button>
       <button
         type="button"
         class="btn btn-error"

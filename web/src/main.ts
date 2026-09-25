@@ -7,6 +7,4 @@ if (!target) {
   throw new Error('AirVault: #app mount target not found');
 }
 
-const app = mount(App, { target });
-
-export default app;
+mount(App, { target });

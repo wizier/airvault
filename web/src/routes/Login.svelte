@@ -3,25 +3,23 @@
   import Logo from '../lib/components/Logo.svelte';
   import Icon from '../lib/components/Icon.svelte';
   import { login } from '../lib/api/session';
-  import { errRef } from '../lib/api/client';
-  import { errorRefText, type ErrorRef } from '../lib/error-text';
+  import { errMsg } from '../lib/api/client';
 
   let token = $state('');
   let busy = $state(false);
-  let failure = $state<ErrorRef | null>(null);
-  const error = $derived(failure ? errorRefText(failure) : null);
+  let error = $state<string | null>(null);
 
   async function submit(event: Event) {
     event.preventDefault();
     const value = token.trim();
     if (!value || busy) return;
     busy = true;
-    failure = null;
+    error = null;
     try {
       await login(value);
       push('/');
     } catch (err) {
-      failure = errRef(err, 'sign_in_failed');
+      error = errMsg(err, 'sign_in_failed');
     } finally {
       busy = false;
     }

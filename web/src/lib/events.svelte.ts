@@ -20,48 +20,38 @@ export function liveRun(udid: string): RunningProgress | null {
   return statusStore.data?.running.find((r) => r.udid === udid) ?? null;
 }
 
-/** Latest pair.trust event from the server-side trust flow (the wizard's
- *  source of pairing progress); seq disambiguates repeated statuses. */
-export const pairTrust = $state<{ udid: string; status: TrustStatus | ''; errorCode?: string; seq: number }>({
-  udid: '',
-  status: '',
-  seq: 0,
-});
+interface PairTrustEvent {
+  udid: string;
+  status: TrustStatus;
+  errorCode?: string;
+}
+
+const pairTrustHandlers = new Set<(event: PairTrustEvent) => void>();
+
+/** Receive pair.trust events, the server-side trust flow's progress; returns
+ *  the unsubscribe, so `$effect(() => onPairTrust(handler))` works. */
+export function onPairTrust(handler: (event: PairTrustEvent) => void): () => void {
+  pairTrustHandlers.add(handler);
+  return () => pairTrustHandlers.delete(handler);
+}
 
 interface InstallProgress {
   phase: 'staging' | 'installing';
   percent: number;
 }
 
-/** Per-id live progress channel: register a locally generated id, matching SSE
- *  frames land in `store`, unregistering clears the entry. */
-function liveProgress<T>() {
-  const store = $state<Record<string, T>>({});
-  const active = new Set<string>();
-  const register = (id: string): (() => void) => {
-    active.add(id);
-    return () => {
-      active.delete(id);
-      delete store[id];
-    };
+/** Live .ipa install phase and percent per install id this browser started. */
+export const installProgress = $state<Record<string, InstallProgress>>({});
+const activeInstalls = new Set<string>();
+
+/** Accept progress for this id until the returned function clears it. */
+export function registerInstall(id: string): () => void {
+  activeInstalls.add(id);
+  return () => {
+    activeInstalls.delete(id);
+    delete installProgress[id];
   };
-  const accept = (id: string, value: T): void => {
-    if (active.has(id)) store[id] = value;
-  };
-  return { store, register, accept };
 }
-
-/** Live .ipa install phase and percent per locally active installation. */
-const installs = liveProgress<InstallProgress>();
-export const installProgress = installs.store;
-export const registerInstall = installs.register;
-
-/** Download percent (0-100) per locally active download id.
- *  FileBrowser keys a download by a fresh id, reads this, and clears it when the
- *  fetch ends. */
-const downloads = liveProgress<number>();
-export const downloadProgress = downloads.store;
-export const registerDownload = downloads.register;
 
 // --- SSE payload shapes ----------------------------------------------------
 
@@ -76,22 +66,14 @@ interface DeviceUpdatedEvent {
 interface UdidEvent {
   udid: string;
 }
-interface BackupStartedEvent {
+interface RunEvent {
   runId: string;
   udid: string;
   /** Set when the run is a restore onto the device. */
   restore?: boolean;
 }
-interface BackupCompletedEvent {
-  runId: string;
-  udid: string;
-  restore?: boolean;
-}
-interface BackupFailedEvent {
-  runId: string;
-  udid: string;
+interface RunFailedEvent extends RunEvent {
   errorCode: string;
-  restore?: boolean;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -150,9 +132,9 @@ function patchConnection(udid: string, connection: Connection): void {
 /** Pull fresh data after a (re)connect so event-driven stores recover at once
  *  (GET /status also rebuilds live progress — terminal events may have been missed). */
 function resyncAll(): void {
-  statusStore.invalidate();
-  devicesStore.invalidate();
-  if (restoreSourcesStore.active) restoreSourcesStore.invalidate();
+  void statusStore.refresh();
+  void devicesStore.refresh();
+  if (restoreSourcesStore.active) void restoreSourcesStore.refresh();
   restorePointResources.invalidateActive();
   deviceAppsResources.invalidateActive();
 }
@@ -171,7 +153,7 @@ function backupFinished(
   dropRun(d.udid);
   if (!d.restore && state === 'completed') {
     restorePointResources.invalidate(d.udid);
-    if (restoreSourcesStore.active) restoreSourcesStore.invalidate();
+    if (restoreSourcesStore.active) void restoreSourcesStore.refresh();
   } else if (state === 'failed') {
     // Optimistic projection of the server's per-kind last-run error; the
     // refetch below confirms it.
@@ -191,6 +173,7 @@ function backupFinished(
 class EventsClient {
   #es: EventSource | null = null;
   #subscribers = 0;
+  #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Open the shared stream (or join it) and return a teardown that closes it
    *  once the last subscriber leaves: `$effect(() => eventsClient.start())`. */
@@ -210,17 +193,25 @@ class EventsClient {
     };
   }
 
-  #open(): void {
+  #open(reconnect = false): void {
+    clearTimeout(this.#reconnectTimer);
     const es = new EventSource('/api/events');
     this.#es = es;
 
-    let opened = false;
+    let resync = reconnect;
     es.onopen = () => {
-      if (opened) resyncAll();
-      opened = true;
+      if (resync) resyncAll();
+      resync = true;
     };
-    // No onerror handler on purpose: EventSource retries automatically, and the
-    // UI deliberately doesn't render SSE transport health (see Nav.svelte).
+    // EventSource retries network drops itself, but a non-200 answer (a 401
+    // after a token change, a proxy's 502 during a restart) closes it for good.
+    // Reopen it; the status refresh sends a 401 to the login page.
+    es.onerror = () => {
+      if (es.readyState !== EventSource.CLOSED) return;
+      this.#close();
+      this.#reconnectTimer = setTimeout(() => this.#open(true), 3_000);
+      void statusStore.refresh();
+    };
 
     // --- device lifecycle: list membership / metadata changed ---------------
     on<Record<string, never>>(es, 'stream.reset', () => resyncAll());
@@ -245,7 +236,7 @@ class EventsClient {
     });
 
     // --- backup lifecycle ---------------------------------------------------
-    on<BackupStartedEvent>(es, 'backup.started', (d) => {
+    on<RunEvent>(es, 'backup.started', (d) => {
       statusStore.mutate((s) => ({
         ...s,
         running: [
@@ -271,32 +262,25 @@ class EventsClient {
         running: [...s.running.filter((r) => r.udid !== d.udid), d],
       }));
     });
-    on<BackupCompletedEvent>(es, 'backup.completed', (d) => backupFinished(d, 'completed'));
-    on<BackupFailedEvent>(es, 'backup.failed', (d) => backupFinished(d, 'failed'));
-    on<BackupFailedEvent>(es, 'backup.cancelled', (d) => backupFinished(d, 'cancelled'));
+    on<RunEvent>(es, 'backup.completed', (d) => backupFinished(d, 'completed'));
+    on<RunFailedEvent>(es, 'backup.failed', (d) => backupFinished(d, 'failed'));
+    on<RunEvent>(es, 'backup.cancelled', (d) => backupFinished(d, 'cancelled'));
     on<UdidEvent>(es, 'backup.catalog', (d) => {
       restorePointResources.invalidate(d.udid);
-      if (restoreSourcesStore.active) restoreSourcesStore.invalidate();
+      if (restoreSourcesStore.active) void restoreSourcesStore.refresh();
       refreshDevices();
     });
     on<UdidEvent>(es, 'app.catalog', (d) => deviceAppsResources.invalidate(d.udid));
 
     // --- app install progress (only this browser's active install id) --------
     on<{ installId: string } & InstallProgress>(es, 'app.install.progress', (d) => {
-      installs.accept(d.installId, { phase: d.phase, percent: d.percent });
-    });
-    // --- device-file download progress (only this browser's active ids) -------
-    on<{ downloadId: string; percent: number }>(es, 'download.progress', (d) => {
-      downloads.accept(d.downloadId, d.percent);
+      if (activeInstalls.has(d.installId)) installProgress[d.installId] = { phase: d.phase, percent: d.percent };
     });
 
     // --- pairing wizard -----------------------------------------------------
     on<UdidEvent>(es, 'pair.changed', () => refreshPairState());
-    on<{ udid: string; status: TrustStatus; errorCode?: string }>(es, 'pair.trust', (d) => {
-      pairTrust.udid = d.udid;
-      pairTrust.status = d.status;
-      pairTrust.errorCode = d.errorCode;
-      pairTrust.seq += 1;
+    on<PairTrustEvent>(es, 'pair.trust', (d) => {
+      for (const handler of pairTrustHandlers) handler(d);
     });
 
     // --- muxer health -------------------------------------------------------
@@ -310,10 +294,9 @@ class EventsClient {
   }
 
   #close(): void {
-    if (this.#es !== null) {
-      this.#es.close();
-      this.#es = null;
-    }
+    clearTimeout(this.#reconnectTimer);
+    this.#es?.close();
+    this.#es = null;
   }
 }
 

@@ -18,11 +18,8 @@ const english = {
   forbidden: 'You do not have permission to do that',
   not_found: 'The requested item was not found',
   method_not_allowed: 'That action is not supported',
-  request_timeout: 'The request timed out',
-  conflict: 'The action conflicts with the current state',
   payload_too_large: 'The uploaded file is too large',
   unsupported_media_type: 'That file type is not supported',
-  validation_error: 'Check the submitted values and try again',
   invalid_udid: 'The device identifier is not valid',
   invalid_power_action: 'Choose restart, shutdown, or sleep',
   bundle_id_required: 'An application identifier is required',
@@ -36,7 +33,6 @@ const english = {
   invalid_gallery_page: 'The requested gallery page is not valid',
   media_file_required: 'Select a media file',
   invalid_thumbnail_path: 'The thumbnail path is not valid',
-  download_id_too_long: 'The download identifier is too long',
   invalid_install_id: 'The installation identifier is invalid',
   ipa_required: 'Choose an .ipa file to install',
   invalid_ipa: 'The selected file must be an .ipa',
@@ -46,7 +42,6 @@ const english = {
   backup_not_restorable: 'The selected backup is not confirmed restorable',
   backup_password_required: 'This backup is encrypted; enter its password',
   backup_ios_too_new: 'This backup needs a newer iOS; update the phone first',
-  rate_limited: 'Too many requests; try again shortly',
   upstream_error: 'A required service did not respond',
   service_unavailable: 'The service is temporarily unavailable',
   internal_error: 'AirVault could not complete the request',
@@ -58,7 +53,6 @@ const english = {
   find_my_enabled: 'Turn off Find My iPhone on the phone, then restore again',
   activation_lock: 'Activation Lock is on — sign out of the linked Apple Account on this phone, then restore again',
   activation_failed: 'Could not activate the phone with Apple — check the server internet access and try again',
-  device_unresponsive: "The iPhone isn't responding; wake it and try again",
   device_timeout: 'The iPhone did not respond in time',
   device_connection_interrupted: 'The connection to the iPhone was interrupted; reconnect it and try again',
   device_action_failed: 'The device action failed',
@@ -70,7 +64,6 @@ const english = {
   operation_cancelled: 'The operation was cancelled',
   operation_state_conflict: 'The operation has already moved to another state',
 
-  udid_required: 'Select a device first',
   pair_state_failed: 'Could not read the pairing state',
   pairing_failed: 'Pairing failed',
   wifi_authorization_failed:
@@ -112,13 +105,6 @@ const english = {
  * legitimately send a code that an older SPA does not know yet. */
 export type ErrorTextKey = keyof typeof english;
 
-export interface ErrorRef {
-  /** Stable machine-readable API or client error code. */
-  code: string;
-  /** Known UI catalogue key used if `code` is not known by this build. */
-  fallbackCode: ErrorTextKey;
-}
-
 const reportedUnknownCodes = new Set<string>();
 
 function isErrorTextKey(code: string): code is ErrorTextKey {
@@ -131,16 +117,8 @@ function reportUnknownCode(code: string): void {
   console.warn(`Unknown error code from API: ${code}`);
 }
 
-export function errorRef(code: string, fallbackCode: ErrorTextKey = 'unknown_error'): ErrorRef {
-  return { code, fallbackCode };
-}
-
 export function errorText(code: string, fallbackCode: ErrorTextKey = 'unknown_error'): string {
   if (isErrorTextKey(code)) return english[code];
   reportUnknownCode(code);
   return english[fallbackCode];
-}
-
-export function errorRefText(error: ErrorRef): string {
-  return errorText(error.code, error.fallbackCode);
 }

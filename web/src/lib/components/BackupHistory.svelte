@@ -4,16 +4,16 @@
   // deletion; the freed-space estimate covers the whole selection.
   import { untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { deleteSnapshots, snapshotsReclaimable, type RestorePoint } from '../api/backups';
-  import { ApiError, errMsg, errRef, isAbortError } from '../api/client';
+  import { snapshotsReclaimable, type RestorePoint } from '../api/backups';
+  import { isAbortError } from '../api/client';
   import type { Device } from '../api/devices';
-  import type { ErrorRef } from '../error-text';
+  import { blockedReason } from '../device-ui';
   import { liveRun } from '../events.svelte';
-  import { restorePointResources, restoreSourcesStore } from '../stores.svelte';
+  import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatDuration, relativeTime } from '../format';
   import { now } from '../clock';
+  import ConfirmDialog from './ConfirmDialog.svelte';
   import EmptyState from './EmptyState.svelte';
-  import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -26,19 +26,16 @@
   } = $props();
 
   const udid = $derived(device.udid);
-  const reachable = $derived(device.connection !== 'offline');
 
   const points = $derived(restorePointResources.for(udid));
   $effect(() => points.start());
   const restorePoints = $derived(points.data ?? []);
   const pointsLoaded = $derived(points.ready);
-  const pointsError = $derived(
-    !points.ready && points.error && !(points.error instanceof ApiError && points.error.offline)
-      ? errMsg(points.error, 'backup_history_failed')
-      : null,
-  );
+  const pointsError = $derived(points.loadError('backup_history_failed'));
 
-  const isRunning = $derived(liveRun(udid) !== null);
+  const live = $derived(liveRun(udid));
+  const isRunning = $derived(live !== null);
+  const restoreBlocked = $derived(blockedReason(device, live));
   // Checkboxes appear only in selection mode; leaving it drops the selection.
   let selecting = $state(false);
   const selected = new SvelteSet<string>();
@@ -47,9 +44,6 @@
   let reclaiming = $state(false);
   let reclaimError = $state(false);
   let reclaimCtrl: AbortController | null = null;
-  let deleting = $state(false);
-  let deleteFailure = $state<ErrorRef | null>(null);
-  let deleteDialog = $state<HTMLDialogElement | null>(null);
 
   // The selection acts only on listed points — a refresh may have dropped some.
   const selectedPoints = $derived(restorePoints.filter((point) => selected.has(point.snapshotId)));
@@ -83,8 +77,6 @@
     reclaimable = null;
     reclaiming = true;
     reclaimError = false;
-    deleteFailure = null;
-    deleteDialog?.showModal();
     // Honest "space freed": data no kept restore point still references.
     snapshotsReclaimable(udid, targets.map((point) => point.snapshotId), ctrl.signal)
       .then((bytes) => {
@@ -101,10 +93,6 @@
       });
   }
 
-  function askDeleteSelected() {
-    askDelete(selectedPoints);
-  }
-
   function closeDeleteDialog() {
     reclaimCtrl?.abort();
     reclaimCtrl = null;
@@ -113,26 +101,8 @@
   }
 
   async function confirmDelete() {
-    if (pending.length === 0 || deleting) return;
-    const ids = new Set(pending.map((point) => point.snapshotId));
-    deleting = true;
-    deleteFailure = null;
-    try {
-      await deleteSnapshots(udid, [...ids]);
-      points.mutate((current) => current.filter((point) => !ids.has(point.snapshotId)));
-      restoreSourcesStore.mutate((current) =>
-        current.filter((source) => !ids.has(source.snapshotId)),
-      );
-      stopSelecting();
-      deleteDialog?.close();
-      pending = [];
-      // Disk space frees in the background; a later backup.catalog event
-      // refreshes this list and the device sizes.
-    } catch (error) {
-      deleteFailure = errRef(error, 'snapshot_delete_failed');
-    } finally {
-      deleting = false;
-    }
+    await deleteRestorePoints(udid, pending.map((point) => point.snapshotId));
+    stopSelecting();
   }
 </script>
 
@@ -146,7 +116,7 @@
             type="button"
             class="btn btn-error btn-xs"
             disabled={isRunning || selectedPoints.length === 0}
-            onclick={askDeleteSelected}
+            onclick={() => askDelete(selectedPoints)}
             title={isRunning ? 'A backup or restore is running' : 'Delete the selected restore points'}
           >
             <Icon name="trash" size={13} />
@@ -162,15 +132,15 @@
     {/if}
   </div>
 
-  {#if !pointsLoaded}
-    <div class="flex items-center gap-3 rounded-box bg-base-100 p-4 text-sm text-base-content/60 shadow-sm">
-      <span class="loading loading-spinner loading-sm"></span>
-      Loading restore points…
-    </div>
-  {:else if pointsError}
+  {#if pointsError}
     <div role="alert" class="alert alert-error alert-soft">
       <Icon name="alert" size={16} />
       <span>{pointsError}</span>
+    </div>
+  {:else if !pointsLoaded}
+    <div class="flex items-center gap-3 rounded-box bg-base-100 p-4 text-sm text-base-content/60 shadow-sm">
+      <span class="loading loading-spinner loading-sm"></span>
+      Loading restore points…
     </div>
   {:else if restorePoints.length === 0}
     <EmptyState icon="clock" title="No restore points yet" message="Completed backups will appear here" />
@@ -230,13 +200,9 @@
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs"
-                    disabled={!reachable || isRunning}
+                    disabled={!!restoreBlocked}
                     onclick={() => onrestore?.(point.snapshotId)}
-                    title={!reachable
-                      ? 'Device is offline'
-                      : isRunning
-                        ? 'A backup or restore is running'
-                        : 'Restore this snapshot onto the phone'}
+                    title={restoreBlocked ?? 'Restore this snapshot onto the phone'}
                     aria-label="Restore this snapshot"
                   >
                     <Icon name="backup" size={13} />
@@ -261,21 +227,22 @@
   {/if}
 </section>
 
-<dialog
-  class="modal"
-  bind:this={deleteDialog}
-  oncancel={(event) => deleting && event.preventDefault()}
-  onclose={closeDeleteDialog}
->
-  <div class="modal-box">
-    <h3 class="text-lg font-bold">
-      {pending.length > 1 ? `Delete ${pending.length} restore points?` : 'Delete this restore point?'}
-    </h3>
+{#if pending.length > 0}
+  <ConfirmDialog
+    title={pending.length > 1 ? `Delete ${pending.length} restore points?` : 'Delete this restore point?'}
+    icon="trash"
+    confirmLabel="Delete"
+    busyLabel="Deleting…"
+    cancelLabel={pending.length > 1 ? 'Keep them' : 'Keep it'}
+    failureCode="snapshot_delete_failed"
+    onconfirm={confirmDelete}
+    onclose={closeDeleteDialog}
+  >
     <p class="py-3 text-sm text-base-content/70">
       {#if pending.length > 1}
         The {pending.length} selected restore points will be removed. Other restore points are not
         affected.
-      {:else if pending.length === 1}
+      {:else}
         The backup from
         <span class="font-medium">
           {formatDateTime(pending[0].created)}
@@ -295,21 +262,5 @@
         <span class="text-base-content/60">No reclaim estimate is available.</span>
       {/if}
     </p>
-    <ErrorLine failure={deleteFailure} className="mt-3" />
-    <div class="modal-action">
-      <button type="button" class="btn btn-ghost" disabled={deleting} onclick={() => deleteDialog?.close()}>
-        {pending.length > 1 ? 'Keep them' : 'Keep it'}
-      </button>
-      <button type="button" class="btn btn-error" disabled={deleting} onclick={confirmDelete}>
-        {#if deleting}
-          <span class="loading loading-spinner loading-xs"></span> Deleting…
-        {:else}
-          <Icon name="trash" size={15} /> Delete
-        {/if}
-      </button>
-    </div>
-  </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close" disabled={deleting}>close</button>
-  </form>
-</dialog>
+  </ConfirmDialog>
+{/if}

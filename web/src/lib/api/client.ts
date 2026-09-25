@@ -1,9 +1,4 @@
-import {
-  errorRef,
-  errorText,
-  type ErrorRef,
-  type ErrorTextKey,
-} from '../error-text';
+import { errorText, type ErrorTextKey } from '../error-text';
 
 const BASE = '/api';
 const CSRF_COOKIE = '_csrf';
@@ -59,15 +54,15 @@ function reportUnexpectedError(error: unknown): void {
   console.error('Unexpected client error', error);
 }
 
-export function errRef(error: unknown, fallbackCode: ErrorTextKey = 'unknown_error'): ErrorRef {
-  if (error instanceof ApiError) return errorRef(error.code, fallbackCode);
+/** The stable code of an API error; anything else is reported and mapped to the fallback. */
+export function errorCode(error: unknown, fallbackCode: ErrorTextKey): string {
+  if (error instanceof ApiError) return error.code;
   reportUnexpectedError(error);
-  return errorRef(fallbackCode, fallbackCode);
+  return fallbackCode;
 }
 
 export function errMsg(error: unknown, fallbackCode: ErrorTextKey = 'unknown_error'): string {
-  const ref = errRef(error, fallbackCode);
-  return errorText(ref.code, ref.fallbackCode);
+  return errorText(errorCode(error, fallbackCode), fallbackCode);
 }
 
 /** Fallback for responses without a backend error envelope (proxies, gateways);
@@ -83,8 +78,8 @@ function statusErrorCode(status: number): string {
   }
 }
 
-/** Build the same safe ApiError for JSON requests and attachment downloads. */
-export function apiErrorFromBody(
+/** Build the same safe ApiError for fetch and XHR responses. */
+function apiErrorFromBody(
   status: number,
   body: unknown,
   skipAuthRedirect = false,
@@ -102,7 +97,7 @@ export function apiErrorFromBody(
 }
 
 export function apiUrl(path: string): string {
-  return `${BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  return `${BASE}${path}`;
 }
 
 function cookieValue(name: string): string | undefined {
@@ -162,7 +157,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     signal: options.signal,
   };
 
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+  if (method !== 'GET') {
     const csrf = cookieValue(CSRF_COOKIE);
     if (csrf) init.headers = { ...init.headers, 'X-CSRF-Token': csrf };
   }

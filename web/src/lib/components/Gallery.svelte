@@ -4,27 +4,16 @@
   // tiles fetch thumbs near the viewport, far-off thumbs are evicted, the roll
   // pages in on scroll. A click opens the full-res image; videos offer Save.
   import { onMount } from 'svelte';
-  import { ApiError, errRef } from '../api/client';
+  import { ApiError, errMsg } from '../api/client';
   import { galleryPage, mediaStat, mediaThumbsBatch, type GalleryAsset, type MediaStat } from '../api/gallery';
   import { deviceFileSource } from '../api/files';
-  import { PreviewTransfer, isPreviewableImage } from '../preview.svelte';
-  import { Downloads } from '../download.svelte';
-  import { errorRefText, type ErrorRef } from '../error-text';
   import { formatBytes, formatDate } from '../format';
-  import { modalOpen } from '../modal';
-  import DownloadProgress from './DownloadProgress.svelte';
   import Icon from './Icon.svelte';
+  import PreviewImage, { isPreviewableImage } from './PreviewImage.svelte';
 
-  let {
-    udid,
-    name,
-    open = $bindable(false),
-  }: {
-    udid: string;
-    name: string;
-    open?: boolean;
-  } = $props();
+  let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
 
+  let dialog: HTMLDialogElement;
   const PAGE = 120;
   // Full-res image previews and Save downloads ride the media-partition FileSource.
   const media = $derived(deviceFileSource(udid));
@@ -33,16 +22,15 @@
   let revision = $state('');
   let loading = $state(false);
   let loadingMore = $state(false);
-  let failure = $state<ErrorRef | null>(null);
-  const error = $derived(failure ? errorRefText(failure) : null);
+  let error = $state<string | null>(null);
+  let moreError = $state<string | null>(null);
   let sentinel = $state<HTMLElement | null>(null);
   let scroller = $state<HTMLElement | null>(null);
-  let pageEpoch = 0;
   let pageCtrl: AbortController | null = null;
 
-  // Blob URLs keyed by path; MAX_THUMBS bounds how many stay alive.
+  // JPEG data URLs keyed by path; MAX_THUMBS bounds how many stay alive.
   let thumbs = $state<Record<string, string>>({});
-  let thumbCtrl: AbortController | null = null;
+  let thumbCtrl = new AbortController();
   const THUMB_BATCH = 30;
   const MAX_THUMBS = 600; // 5 × PAGE — thumbs beyond this are evicted once off-screen
   const near = new Set<string>(); // paths inside the tile observer's margin
@@ -62,18 +50,16 @@
   function flushThumbQueue(): void {
     flushTimer = 0;
     const ctrl = thumbCtrl;
-    const epoch = pageEpoch;
     const queued = thumbQueue;
     thumbQueue = [];
-    if (!ctrl) return;
     for (let i = 0; i < queued.length; i += THUMB_BATCH) {
       const slice = queued.slice(i, i + THUMB_BATCH);
       for (const path of slice) pendingThumbs.add(path);
       void mediaThumbsBatch(udid, slice, ctrl.signal)
-        .then((blobs) => {
-          if (ctrl.signal.aborted || epoch !== pageEpoch) return;
-          for (const [path, blob] of Object.entries(blobs)) {
-            if (near.has(path)) thumbs[path] = URL.createObjectURL(blob);
+        .then((urls) => {
+          if (ctrl.signal.aborted) return;
+          for (const [path, url] of Object.entries(urls)) {
+            if (near.has(path)) thumbs[path] = url;
           }
           trimThumbs();
         })
@@ -93,18 +79,19 @@
     for (const path of paths) {
       if (excess <= 0) return;
       if (near.has(path)) continue;
-      URL.revokeObjectURL(thumbs[path]);
       delete thumbs[path];
       excess--;
     }
   }
 
+  // Drop every thumb and cancel their requests; a later load starts over.
   function resetThumbs(): void {
+    thumbCtrl.abort();
+    thumbCtrl = new AbortController();
     clearTimeout(flushTimer);
     flushTimer = 0;
     thumbQueue = [];
     pendingThumbs.clear();
-    for (const url of Object.values(thumbs)) URL.revokeObjectURL(url);
     thumbs = {};
   }
 
@@ -123,14 +110,8 @@
   }
 
   let lightbox = $state<GalleryAsset | null>(null);
-  const pv = new PreviewTransfer();
   let lbStat = $state<MediaStat | null>(null);
-  let statSeq = 0;
   let statCtrl: AbortController | null = null;
-  let saveFailure = $state<ErrorRef | null>(null);
-  const saveError = $derived(saveFailure ? errorRefText(saveFailure) : null);
-
-  const downloads = new Downloads((error) => (saveFailure = error));
 
   // Index of the open asset in the loaded roll, for prev/next navigation.
   const lbIndex = $derived(lightbox ? assets.findIndex((a) => a.path === lightbox!.path) : -1);
@@ -140,16 +121,13 @@
   }
 
   async function load(): Promise<void> {
-    const epoch = ++pageEpoch;
     pageCtrl?.abort();
     const ctrl = new AbortController();
     pageCtrl = ctrl;
-    thumbCtrl?.abort();
-    const tctrl = new AbortController();
-    thumbCtrl = tctrl;
     loading = true;
     loadingMore = false;
-    failure = null;
+    error = null;
+    moreError = null;
     assets = [];
     resetThumbs();
     total = 0;
@@ -160,26 +138,26 @@
         limit: PAGE,
         signal: ctrl.signal,
       });
-      if (ctrl.signal.aborted || epoch !== pageEpoch) return;
+      if (ctrl.signal.aborted) return;
       assets = page.assets;
       total = page.total;
       revision = page.revision;
     } catch (err) {
-      if (!ctrl.signal.aborted && epoch === pageEpoch) failure = errRef(err, 'gallery_failed');
+      if (!ctrl.signal.aborted) error = errMsg(err, 'gallery_failed');
     } finally {
-      if (pageCtrl === ctrl) pageCtrl = null;
-      if (epoch === pageEpoch) loading = false;
+      if (pageCtrl === ctrl) {
+        pageCtrl = null;
+        loading = false;
+      }
     }
   }
 
   async function loadMore(): Promise<void> {
     if (loadingMore || loading || assets.length >= total) return;
-    const epoch = pageEpoch;
-    pageCtrl?.abort();
     const ctrl = new AbortController();
     pageCtrl = ctrl;
     loadingMore = true;
-    let failed = false;
+    moreError = null;
     try {
       const page = await galleryPage(udid, {
         offset: assets.length,
@@ -187,41 +165,36 @@
         revision,
         signal: ctrl.signal,
       });
-      if (ctrl.signal.aborted || epoch !== pageEpoch) return;
+      if (ctrl.signal.aborted) return;
       assets = [...assets, ...page.assets];
       total = page.total;
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'gallery_revision_changed') {
-        void load();
-      } else {
-        failed = true;
-      }
+      if (ctrl.signal.aborted) return;
+      if (err instanceof ApiError && err.code === 'gallery_revision_changed') void load();
+      // No automatic retry: the next scroll to the end or Retry pulls again.
+      else moreError = errMsg(err, 'gallery_failed');
     } finally {
-      if (pageCtrl === ctrl) pageCtrl = null;
-      if (epoch === pageEpoch) {
+      if (pageCtrl === ctrl) {
+        pageCtrl = null;
         loadingMore = false;
         // The observer fires only on transitions; if the sentinel never left
-        // view (short append or a failed page), re-arm the next pull here.
-        if (sentinelVisible) scheduleMore(failed ? 2000 : 0);
+        // view after a short append, re-arm the next pull here.
+        if (sentinelVisible && !moreError) scheduleMore();
       }
     }
   }
 
   function openLightbox(a: GalleryAsset): void {
-    pv.cancel();
     lightbox = a;
-    pv.begin(canPreview(a));
-    saveFailure = null;
-    // Date + size come from a single on-demand stat (ignore a stale response if
-    // the user has already stepped to another photo).
+    // Date + size come from a single on-demand stat; aborting it drops a stale
+    // response once the user has stepped to another photo.
     lbStat = null;
     statCtrl?.abort();
     const ctrl = new AbortController();
     statCtrl = ctrl;
-    const seq = ++statSeq;
     mediaStat(udid, a.path, ctrl.signal)
       .then((s) => {
-        if (!ctrl.signal.aborted && seq === statSeq) lbStat = s;
+        if (!ctrl.signal.aborted) lbStat = s;
       })
       .catch(() => {
         /* leave date/size out of the info line */
@@ -237,13 +210,7 @@
     if (i >= assets.length - 12) void loadMore();
   }
 
-  function saveAsset(a: GalleryAsset): void {
-    saveFailure = null;
-    void downloads.start(a.path, (id) => media.downloadUrl(a.path, id), a.name);
-  }
-
   function closeLightbox(): void {
-    pv.cancel();
     statCtrl?.abort();
     statCtrl = null;
     lightbox = null;
@@ -258,25 +225,16 @@
     return a.name.includes('.') ? (a.name.split('.').pop() ?? '').toUpperCase() : '';
   }
 
-  function dispose(): void {
-    pageEpoch += 1;
-    pageCtrl?.abort();
-    pageCtrl = null;
-    thumbCtrl?.abort();
-    thumbCtrl = null;
-    statCtrl?.abort();
-    statCtrl = null;
-    pv.cancel();
-    lightbox = null; // removing <img> aborts its HTTP request
-    downloads.cancelAll();
-    resetThumbs();
-  }
-
   // The parent mounts a fresh Gallery for every open, so the gallery session
   // belongs to this component instance rather than to a reactive state effect.
   onMount(() => {
     void load();
-    return dispose;
+    return () => {
+      pageCtrl?.abort();
+      pageCtrl = null;
+      statCtrl?.abort();
+      resetThumbs();
+    };
   });
 
   // Tiles entering the observer margin join `near` and queue their thumbs.
@@ -308,11 +266,11 @@
   let sentinelVisible = false;
   let moreTimer = 0;
 
-  function scheduleMore(delay: number): void {
+  function scheduleMore(): void {
     clearTimeout(moreTimer);
     moreTimer = window.setTimeout(() => {
       if (sentinelVisible) void loadMore();
-    }, delay);
+    });
   }
 
   // Infinite scroll: pull the next page when the sentinel nears the grid's
@@ -347,7 +305,7 @@
   }}
 />
 
-<dialog class="modal" {@attach modalOpen(open)} onclose={() => (open = false)}>
+<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
   <div class="modal-box relative flex h-[90vh] max-h-[90vh] w-full max-w-5xl flex-col gap-3">
     <div class="flex shrink-0 items-start justify-between gap-3">
       <div class="min-w-0">
@@ -367,7 +325,7 @@
         >
           <Icon name="refresh" size={16} />
         </button>
-        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => (open = false)}>
+        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => dialog.close()}>
           <Icon name="x" size={16} />
         </button>
       </div>
@@ -426,6 +384,12 @@
           <p class="flex items-center justify-center gap-2 p-3 text-sm text-base-content/60">
             <span class="loading loading-spinner loading-sm"></span>
           </p>
+        {:else if moreError}
+          <p class="flex items-center justify-center gap-2 p-3 text-sm text-error">
+            <Icon name="alert" size={14} stroke={2} />
+            {moreError}
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => loadMore()}>Retry</button>
+          </p>
         {/if}
       {/if}
     </div>
@@ -468,20 +432,7 @@
               <Icon name="arrowRight" size={18} />
             </button>
           {/if}
-          {#if canPreview(a) && !pv.error}
-            {@const requestId = pv.token}
-            {#if pv.loading}
-              <span class="loading loading-spinner loading-md"></span>
-            {/if}
-            <img
-              class="max-h-full max-w-full rounded object-contain"
-              class:hidden={pv.loading}
-              src={media.previewUrl(a.path)}
-              alt={a.name}
-              onload={() => pv.settled(requestId, false)}
-              onerror={() => pv.settled(requestId, true)}
-            />
-          {:else}
+          {#snippet noPreview()}
             <div class="flex flex-col items-center gap-3 text-center">
               {#if thumbs[a.path]}
                 <img src={thumbs[a.path]} alt={a.name} class="max-h-[55vh] max-w-full rounded" onerror={hideBroken} />
@@ -490,6 +441,13 @@
                 {a.kind === 'video' ? 'Video — Save to view it.' : "Couldn't render a preview — Save the original."}
               </p>
             </div>
+          {/snippet}
+          {#if canPreview(a)}
+            {#key a.path}
+              <PreviewImage src={media.previewUrl(a.path)} alt={a.name} fallback={noPreview} />
+            {/key}
+          {:else}
+            {@render noPreview()}
           {/if}
         </div>
 
@@ -506,15 +464,10 @@
                   : ''}{lbStat.size > 0 ? formatBytes(lbStat.size) : ''}
               </p>
             {/if}
-            {#if saveError}<p class="truncate text-xs text-error">{saveError}</p>{/if}
           </div>
-          {#if downloads.active(a.path)}
-            <DownloadProgress percent={downloads.percent(a.path)} oncancel={() => downloads.cancel(a.path)} size="sm" />
-          {:else}
-            <button type="button" class="btn btn-primary btn-sm shrink-0" onclick={() => saveAsset(a)}>
-              <Icon name="download" size={14} /> Save
-            </button>
-          {/if}
+          <a class="btn btn-primary btn-sm shrink-0" href={media.downloadUrl(a.path)} download={a.name}>
+            <Icon name="download" size={14} /> Save
+          </a>
         </div>
       </div>
     {/if}

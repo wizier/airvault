@@ -4,8 +4,7 @@
   import { link } from 'svelte-spa-router';
   import type { Device } from '../api/devices';
   import { now } from '../clock';
-  import { backupStatus, connectionUi, modelDisplayName, osName, stageUi } from '../device-ui';
-  import { errorText } from '../error-text';
+  import { connectionUi, lastBackupFailure, modelDisplayName, osName, stageUi } from '../device-ui';
   import { liveRun } from '../events.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime, shortUdid } from '../format';
   import DeviceFrame from './DeviceFrame.svelte';
@@ -17,15 +16,12 @@
 
   const conn = $derived(connectionUi(device.connection));
   const live = $derived(liveRun(device.udid));
-  const status = $derived(backupStatus(device, live));
-  const isRunning = $derived(status === 'running');
+  const isRunning = $derived(live !== null);
   const speed = $derived(formatSpeed(live?.speed));
   const progress = $derived(live?.progress ?? 0);
   const isRestore = $derived(live?.restore ?? false);
   const currentStage = $derived(stageUi(live?.stage, isRestore));
-  const lastFailureText = $derived(
-    errorText(device.lastRunErrors?.backup ?? 'backup_failed', 'backup_failed'),
-  );
+  const lastFailure = $derived(lastBackupFailure(device, live));
 
   // Discovery fills this metadata asynchronously; the shortened UDID keeps a
   // freshly Wi-Fi-registered device identifiable in the meantime.
@@ -116,8 +112,8 @@
               Last backup
             </span>
             <span class="flex items-center gap-1.5">
-              {#if status === 'failed'}
-                <span class="tooltip tooltip-left tooltip-error" data-tip={lastFailureText}>
+              {#if lastFailure}
+                <span class="tooltip tooltip-left tooltip-error" data-tip={lastFailure}>
                   <Icon name="alert" size={15} stroke={2} class="text-error" />
                 </span>
               {:else if device.lastBackup}

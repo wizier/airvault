@@ -9,8 +9,7 @@ export function shortUdid(udid: string): string {
 
 /** Compact relative time like "just now", "6m ago", "3h ago", "in 5h". Pass the
  *  live `$now` store to make the label tick; omit it for a static reading. */
-export function relativeTime(iso?: string | null, now: number = Date.now()): string {
-  if (!iso) return 'never';
+export function relativeTime(iso: string, now: number = Date.now()): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '—';
 

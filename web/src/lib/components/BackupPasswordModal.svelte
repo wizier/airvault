@@ -2,28 +2,29 @@
   // Backup-encryption password management (iOS "Encrypt local backup"):
   // enable = new password, change = old + new, disable = old only. The request
   // stays in the modal so device verdicts can be corrected and retried in place.
-  import { errRef, isAbortError } from '../api/client';
+  import { errorCode, isAbortError } from '../api/client';
   import { changeBackupPassword } from '../api/devices';
-  import { errorRef, type ErrorRef, type ErrorTextKey } from '../error-text';
-  import { modalOpen } from '../modal';
+  import { errorText, type ErrorTextKey } from '../error-text';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import PasswordField from './PasswordField.svelte';
 
   export type PasswordMode = 'enable' | 'change' | 'disable';
 
-  let { udid, name, mode = $bindable(null) }: {
+  let { udid, name, mode, onclose }: {
     udid: string;
     name: string;
-    /** Which operation to show; null = closed. */
-    mode?: PasswordMode | null;
+    mode: PasswordMode;
+    onclose: () => void;
   } = $props();
 
+  let dialog: HTMLDialogElement;
   let oldPw = $state('');
   let newPw = $state('');
   let confirmPw = $state('');
   let busy = $state(false);
-  let failure = $state<ErrorRef | null>(null);
+  let failureCode = $state<string | null>(null);
+  const failure = $derived(failureCode && errorText(failureCode, 'backup_password_change_failed'));
   let requestController: AbortController | null = null;
 
   const title = $derived(
@@ -45,26 +46,24 @@
   });
 
   // Device verdicts are stable service codes; UI copy is never parsed.
-  const deviceLocked = $derived(failure?.code === 'device_locked' && !validationError);
+  const deviceLocked = $derived(failureCode === 'device_locked' && !validationError);
   const wrongPassword = $derived(
-    needsOld && failure?.code === 'invalid_backup_password' && !validationError,
+    needsOld && failureCode === 'invalid_backup_password' && !validationError,
   );
 
-  function cancel() {
+  function close() {
     requestController?.abort();
-    requestController = null;
-    busy = false;
-    mode = null;
+    onclose();
   }
 
   async function submit() {
-    if (busy || !mode) return;
+    if (busy) return;
     if (validationError) {
-      failure = errorRef(validationError, validationError);
+      failureCode = validationError;
       return;
     }
     busy = true;
-    failure = null;
+    failureCode = null;
     const controller = new AbortController();
     requestController = controller;
     try {
@@ -74,10 +73,10 @@
         needsNew ? newPw : '',
         controller.signal,
       );
-      mode = null;
+      dialog.close();
     } catch (err) {
       if (isAbortError(err)) return;
-      failure = errRef(err, 'backup_password_change_failed');
+      failureCode = errorCode(err, 'backup_password_change_failed');
     } finally {
       if (requestController === controller) requestController = null;
       busy = false;
@@ -85,15 +84,7 @@
   }
 </script>
 
-<dialog
-  class="modal"
-  {@attach modalOpen(mode !== null)}
-  oncancel={(e) => {
-    e.preventDefault();
-    cancel();
-  }}
-  onclose={cancel}
->
+<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} onclose={close}>
   <div class="modal-box">
     <h3 class="text-lg font-bold">{title}</h3>
 
@@ -160,11 +151,11 @@
         </div>
       </div>
     {:else if !wrongPassword}
-      <ErrorLine {failure} className="mt-3" />
+      <ErrorLine error={failure} className="mt-3" />
     {/if}
 
     <div class="modal-action">
-      <button type="button" class="btn btn-ghost" onclick={cancel}>Cancel</button>
+      <button type="button" class="btn btn-ghost" onclick={() => dialog.close()}>Cancel</button>
       <button
         type="button"
         class={`btn ${mode === 'disable' ? 'btn-error' : 'btn-primary'}`}

@@ -2,106 +2,85 @@
   // Backup snapshot, live transfer controls, encryption and restore. History is a
   // separate feature card but both react to the same SSE invalidation.
   import { startBackup } from '../api/backups';
-  import { errRef } from '../api/client';
+  import { errMsg } from '../api/client';
   import type { Device } from '../api/devices';
   import { cancelRun } from '../api/runs';
   import { liveRun } from '../events.svelte';
-  import { errorRef, errorText, type ErrorRef } from '../error-text';
+  import { errorText } from '../error-text';
   import { restoreSourcesStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime } from '../format';
-  import { modalOpen } from '../modal';
   import { now } from '../clock';
-  import { backupStatus, stageUi } from '../device-ui';
+  import { blockedReason, lastBackupFailure, stageUi } from '../device-ui';
   import BackupPasswordModal, { type PasswordMode } from './BackupPasswordModal.svelte';
+  import ConfirmDialog from './ConfirmDialog.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import Pill from './Pill.svelte';
-  import RestoreModal from './RestoreModal.svelte';
 
-  let { device }: { device: Device } = $props();
+  let {
+    device,
+    onrestore,
+  }: {
+    device: Device;
+    /** Open the restore flow with the default snapshot. */
+    onrestore: () => void;
+  } = $props();
 
   const udid = $derived(device.udid);
   const reachable = $derived(device.connection !== 'offline');
   const live = $derived(liveRun(udid));
   const isRestore = $derived(live?.restore ?? false);
   const isCancelling = $derived(live?.cancelling ?? false);
-  const status = $derived(backupStatus(device, live));
-  const isRunning = $derived(status === 'running');
+  const isRunning = $derived(live !== null);
   const isBackupRunning = $derived(isRunning && !isRestore);
   const isRestoreRunning = $derived(isRunning && isRestore);
   const speed = $derived(formatSpeed(live?.speed));
-  const lastRunFailed = $derived(status === 'failed');
-  const lastFailureText = $derived(
-    errorText(device.lastRunErrors?.backup ?? 'backup_failed', 'backup_failed'),
-  );
+  const lastFailure = $derived(lastBackupFailure(device, live));
+  // ChangePassword and restores talk to the same backupd that is busy during a transfer.
+  const blocked = $derived(blockedReason(device, live));
 
   let busy = $state(false);
-  let cancelFailure = $state<ErrorRef | null>(null);
   let cancelRequestedFor = $state<string | null>(null);
-  // The confirm dialog closes itself the moment the run ends or starts cancelling.
-  let cancelAsked = $state(false);
-  const cancelOpen = $derived(cancelAsked && live !== null && !isCancelling);
+  // The confirm dialog belongs to one run: it closes the moment that run ends
+  // or starts cancelling.
+  let cancelAskedFor = $state<string | null>(null);
+  const cancelOpen = $derived(live !== null && cancelAskedFor === live.runId && !isCancelling);
   const cancelPending = $derived(isCancelling || cancelRequestedFor === live?.runId);
-  let actionFailure = $state<ErrorRef | null>(null);
+  let actionError = $state<string | null>(null);
   // The server records each restore's terminal error; it shows in the Restore
   // section until the next restore run replaces or clears it.
-  const restoreFailure = $derived(
+  const restoreError = $derived(
     !isRunning && device.lastRunErrors?.restore
-      ? errorRef(device.lastRunErrors.restore, 'restore_failed')
+      ? errorText(device.lastRunErrors.restore, 'restore_failed')
       : null,
   );
 
   async function backup() {
     if (busy || isRunning) return;
     busy = true;
-    actionFailure = null;
+    actionError = null;
     try {
       await startBackup(udid);
     } catch (error) {
-      actionFailure = errRef(error, 'backup_start_failed');
+      actionError = errMsg(error, 'backup_start_failed');
     } finally {
       busy = false;
     }
   }
 
-  function askCancel() {
-    if (!live || cancelPending) return;
-    cancelFailure = null;
-    cancelAsked = true;
-  }
-
-  async function confirmCancel() {
-    if (!live || cancelPending) return;
-    const runID = live.runId;
-    cancelRequestedFor = runID;
-    cancelFailure = null;
+  async function cancelCurrentRun(runId: string) {
+    cancelRequestedFor = runId;
     try {
-      await cancelRun(runID);
-      cancelAsked = false;
+      await cancelRun(runId);
     } catch (error) {
       // A terminal/cancelling SSE can legitimately beat the HTTP response.
-      if (!isCancelling && live?.runId === runID) {
-        cancelFailure = errRef(error, 'backup_cancel_failed');
-        cancelRequestedFor = null;
-      }
+      if (isCancelling || live?.runId !== runId) return;
+      cancelRequestedFor = null;
+      throw error;
     }
   }
 
   let passwordMode = $state<PasswordMode | null>(null);
-  // ChangePassword talks to the same backupd that is busy during a transfer.
-  const passwordBlocked = $derived(!reachable || isRunning);
-  const passwordBlockedTitle = $derived(
-    !reachable ? 'Device is offline' : isRunning ? 'A backup or restore is running' : undefined,
-  );
-
-  let restoreOpen = $state(false);
-  let restorePreselect = $state<string | null>(null);
-
-  /** History-row shortcut: open the restore modal with this snapshot chosen. */
-  export function openRestore(snapshotId: string) {
-    restorePreselect = snapshotId;
-    restoreOpen = true;
-  }
 
   $effect(() => restoreSourcesStore.start());
   const sources = $derived(restoreSourcesStore.data ?? []);
@@ -124,7 +103,7 @@
         <button
           type="button"
           class="btn btn-ghost btn-sm text-error"
-          onclick={askCancel}
+          onclick={() => (cancelAskedFor = live.runId)}
           title={isRestore
             ? 'Stop this restore before it completes'
             : 'Stop this attempt and discard the data received during it'}
@@ -186,8 +165,8 @@
             {#if stored.sizeBytes}<span>· {formatBytes(stored.sizeBytes)}</span>{/if}
             {#if stored.encrypted}<span>· encrypted</span>{/if}
             {#if stored.iosVersion}<span>· iOS {stored.iosVersion}</span>{/if}
-            {#if lastRunFailed}
-              <span class="tooltip tooltip-error" data-tip={lastFailureText}>
+            {#if lastFailure}
+              <span class="tooltip tooltip-error" data-tip={lastFailure}>
                 <Pill tone="red" dot>Last run failed</Pill>
               </span>
             {/if}
@@ -197,8 +176,8 @@
         {:else}
           <p class="mt-0.5 flex items-center gap-2 text-xs text-base-content/60">
             <span>Never backed up</span>
-            {#if lastRunFailed}
-              <span class="tooltip tooltip-error" data-tip={lastFailureText}>
+            {#if lastFailure}
+              <span class="tooltip tooltip-error" data-tip={lastFailure}>
                 <Pill tone="red" dot>Failed</Pill>
               </span>
             {/if}
@@ -240,7 +219,7 @@
       {@render runProgress()}
     {/if}
 
-    <ErrorLine failure={actionFailure} size="xs" />
+    <ErrorLine error={actionError} size="xs" />
 
     <div class="flex flex-col gap-3 border-t border-base-300 pt-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -260,8 +239,8 @@
             <button
               type="button"
               class="btn btn-ghost btn-sm"
-              disabled={passwordBlocked}
-              title={passwordBlockedTitle}
+              disabled={!!blocked}
+              title={blocked}
               onclick={() => (passwordMode = 'change')}
             >
               Change password…
@@ -269,8 +248,8 @@
             <button
               type="button"
               class="btn btn-ghost btn-sm text-error"
-              disabled={passwordBlocked}
-              title={passwordBlockedTitle}
+              disabled={!!blocked}
+              title={blocked}
               onclick={() => (passwordMode = 'disable')}
             >
               Turn off…
@@ -279,8 +258,8 @@
             <button
               type="button"
               class="btn btn-outline btn-sm"
-              disabled={passwordBlocked}
-              title={passwordBlockedTitle}
+              disabled={!!blocked}
+              title={blocked}
               onclick={() => (passwordMode = 'enable')}
             >
               <Icon name="lock" size={14} /> Set password…
@@ -317,18 +296,9 @@
           <button
             type="button"
             class="btn btn-outline btn-sm"
-            disabled={!reachable || isRunning || !hasRestoreSource}
-            onclick={() => {
-              restorePreselect = null;
-              restoreOpen = true;
-            }}
-            title={!hasRestoreSource
-              ? 'No valid backup on disk'
-              : !reachable
-                ? 'Device is offline'
-                : isRunning
-                  ? 'A backup or restore is running'
-                  : 'Put a stored snapshot onto the phone'}
+            disabled={!!blocked || !hasRestoreSource}
+            onclick={onrestore}
+            title={!hasRestoreSource ? 'No valid backup on disk' : (blocked ?? 'Put a stored snapshot onto the phone')}
           >
             <Icon name="backup" size={14} /> Restore…
           </button>
@@ -337,19 +307,24 @@
       {#if isRestoreRunning}
         {@render runProgress()}
       {/if}
-      <ErrorLine failure={restoreFailure} size="xs" />
+      <ErrorLine error={restoreError} size="xs" />
     </div>
   </div>
 </div>
 
-<dialog
-  class="modal"
-  {@attach modalOpen(cancelOpen)}
-  oncancel={(event) => cancelPending && event.preventDefault()}
-  onclose={() => (cancelAsked = false)}
->
-  <div class="modal-box">
-    <h3 class="text-lg font-bold">Cancel this {isRestore ? 'restore' : 'backup'}?</h3>
+{#if cancelOpen && live}
+  {@const runId = live.runId}
+  <ConfirmDialog
+    title={`Cancel this ${isRestore ? 'restore' : 'backup'}?`}
+    icon="x"
+    confirmLabel={isRestore ? 'Stop restore' : 'Discard attempt'}
+    busyLabel="Cancelling…"
+    cancelLabel="Keep running"
+    errorClass=""
+    failureCode="backup_cancel_failed"
+    onconfirm={() => cancelCurrentRun(runId)}
+    onclose={() => (cancelAskedFor = null)}
+  >
     <p class="py-3 text-sm text-base-content/70">
       {#if isRestore}
         The restore will stop before completing. The stored backup itself will not be changed.
@@ -357,42 +332,10 @@
         This unfinished attempt and all data received during it will be discarded. Existing completed restore points will not be changed.
       {/if}
     </p>
-    <ErrorLine failure={cancelFailure} />
-    <div class="modal-action">
-      <button type="button" class="btn btn-ghost" disabled={cancelPending} onclick={() => (cancelAsked = false)}>Keep running</button>
-      <button
-        type="button"
-        class="btn btn-error"
-        disabled={cancelPending}
-        onclick={confirmCancel}
-      >
-        {#if cancelPending}
-          <span class="loading loading-spinner loading-xs"></span>
-          Cancelling…
-        {:else}
-          <Icon name="x" size={15} />
-          {isRestore ? 'Stop restore' : 'Discard attempt'}
-        {/if}
-      </button>
-    </div>
-  </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close" disabled={cancelPending}>close</button>
-  </form>
-</dialog>
+  </ConfirmDialog>
+{/if}
 
 <!-- Mounted fresh per open: per-open form state resets by remount. -->
 {#if passwordMode !== null}
-  <BackupPasswordModal udid={device.udid} name={device.name} bind:mode={passwordMode} />
-{/if}
-{#if restoreOpen}
-  <RestoreModal
-    udid={device.udid}
-    name={device.name}
-    iosVersion={device.iosVersion}
-    activationState={device.activationState}
-    preselect={restorePreselect}
-    {sources}
-    bind:open={restoreOpen}
-  />
+  <BackupPasswordModal udid={device.udid} name={device.name} mode={passwordMode} onclose={() => (passwordMode = null)} />
 {/if}

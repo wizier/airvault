@@ -4,17 +4,20 @@
 import type { RunningProgress, RunStage } from './api/backups';
 import type { BatteryState, Connection, Device } from './api/devices';
 import type { IconName } from './components/icons';
+import { errorText } from './error-text';
 
 export type Tone = 'green' | 'amber' | 'red' | 'slate';
 
-type BackupStatus = 'running' | 'failed' | 'success' | 'never';
+/** Why the last backup failed, while no run is live; null when it did not. */
+export function lastBackupFailure(device: Device, live: RunningProgress | null): string | null {
+  const code = device.lastRunErrors?.backup;
+  return code && !live ? errorText(code, 'backup_failed') : null;
+}
 
-/** Backup status as a pure projection of facts the client already holds: a
- *  live run wins, then the last run's failure code, then any restore point. */
-export function backupStatus(device: Device, live: RunningProgress | null): BackupStatus {
-  if (live !== null) return 'running';
-  if (device.lastRunErrors?.backup) return 'failed';
-  return device.lastBackup ? 'success' : 'never';
+/** Why a device action that needs the phone to itself is disabled, if it is. */
+export function blockedReason(device: Device, live: RunningProgress | null): string | null {
+  if (device.connection === 'offline') return 'Device is offline';
+  return live ? 'A backup or restore is running' : null;
 }
 
 export function connectionUi(c: Connection): { tone: Tone; label: string; icon: IconName } {

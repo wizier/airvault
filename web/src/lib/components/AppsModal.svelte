@@ -4,47 +4,30 @@
   // Per row: browse Documents (file-sharing apps) and uninstall; the toolbar
   // installs an .ipa with live percent over SSE.
   import { appIconUrl, installApp, uninstallApp, type DeviceApp } from '../api/apps';
-  import { errMsg, errRef } from '../api/client';
+  import { errMsg } from '../api/client';
   import { appFileSource } from '../api/files';
   import { clientId } from '../client-id';
   import { installProgress, liveRun, registerInstall } from '../events.svelte';
-  import { errorRefText, type ErrorRef } from '../error-text';
-  import { modalOpen } from '../modal';
   import { deviceAppsResources } from '../stores.svelte';
   import FileBrowser from './FileBrowser.svelte';
   import Icon from './Icon.svelte';
 
-  let {
-    udid,
-    name,
-    open = $bindable(false),
-  }: {
-    udid: string;
-    name: string;
-    open?: boolean;
-  } = $props();
+  let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
 
+  let dialog: HTMLDialogElement;
   let search = $state('');
   const appsResource = $derived(deviceAppsResources.for(udid));
   const live = $derived(liveRun(udid));
   const runActive = $derived(live !== null);
   const restoreRunning = $derived(live?.restore ?? false);
   const apps = $derived(appsResource.data ?? []);
-  const loading = $derived(appsResource.loading && !appsResource.ready);
-  const error = $derived(
-    !appsResource.ready && appsResource.error
-      ? errMsg(appsResource.error, 'app_list_failed')
-      : null,
-  );
+  const error = $derived(appsResource.loadError('app_list_failed'));
+  const loading = $derived(!appsResource.ready && !error);
 
   let installId = $state<string | null>(null);
   const installing = $derived(installId !== null);
   let uploadPct = $state(0);
-  type Note = { text: string; tone: 'ok' } | { error: ErrorRef; tone: 'error' };
-  let note = $state<Note | null>(null);
-  const noteText = $derived(
-    note?.tone === 'error' ? errorRefText(note.error) : note?.text,
-  );
+  let note = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
   // Uninstall: inline two-step confirm avoids a blocking native dialog.
   let confirmUninstall = $state<string | null>(null);
@@ -88,7 +71,7 @@
       await installApp(udid, file, id, (percent) => (uploadPct = percent));
       note = { text: `Installed ${file.name}`, tone: 'ok' };
     } catch (err) {
-      note = { error: errRef(err, 'app_install_failed'), tone: 'error' };
+      note = { text: errMsg(err, 'app_install_failed'), tone: 'error' };
     } finally {
       unregister();
       installId = null;
@@ -104,7 +87,7 @@
       appsResource.mutate((current) => current.filter((app) => app.bundleId !== bundleId));
       confirmUninstall = null;
     } catch (err) {
-      note = { error: errRef(err, 'app_uninstall_failed'), tone: 'error' };
+      note = { text: errMsg(err, 'app_uninstall_failed'), tone: 'error' };
     } finally {
       uninstalling = null;
     }
@@ -128,7 +111,7 @@
   });
 </script>
 
-<dialog class="modal" {@attach modalOpen(open)} onclose={() => (open = false)}>
+<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
   <div class="modal-box flex h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden">
     <div class="flex shrink-0 flex-col gap-3">
       <div class="flex items-start justify-between gap-3">
@@ -136,7 +119,7 @@
           <h3 class="text-lg font-bold">Apps</h3>
           <p class="mt-0.5 text-sm text-base-content/60">Apps installed on {name}</p>
         </div>
-        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => (open = false)}>
+        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => dialog.close()}>
           <Icon name="x" size={16} />
         </button>
       </div>
@@ -190,7 +173,7 @@
           class={`alert py-2 ${note.tone === 'error' ? 'alert-error alert-soft' : 'alert-success alert-soft'}`}
         >
           <Icon name={note.tone === 'error' ? 'alert' : 'check'} size={13} stroke={2} />
-          <span class="text-sm">{noteText}</span>
+          <span class="text-sm">{note.text}</span>
         </div>
       {/if}
     </div>
@@ -287,9 +270,6 @@
     title={`Files — ${filesApp.name}`}
     subtitle="The app's Documents folder on the device"
     rootLabel="Documents"
-    bind:open={() => filesApp !== null, (v) => {
-      // Closing drops the browsed app; the next open mounts a fresh FileBrowser.
-      if (!v) filesApp = null;
-    }}
+    onclose={() => (filesApp = null)}
   />
 {/if}

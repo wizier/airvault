@@ -1,4 +1,5 @@
 import { request } from './client';
+import { mediaBase } from './files';
 
 // One camera-roll item. live marks a photo with a paired .MOV (Live Photo).
 export interface GalleryAsset {
@@ -14,10 +15,6 @@ interface GalleryPage {
   revision: string;
 }
 
-function base(udid: string): string {
-  return `/devices/${encodeURIComponent(udid)}/media`;
-}
-
 interface GalleryPageOptions {
   offset: number;
   limit: number;
@@ -28,7 +25,7 @@ interface GalleryPageOptions {
 export async function galleryPage(udid: string, options: GalleryPageOptions): Promise<GalleryPage> {
   const q = new URLSearchParams({ offset: String(options.offset), limit: String(options.limit) });
   if (options.revision) q.set('revision', options.revision);
-  return request<GalleryPage>(`${base(udid)}/gallery?${q}`, { signal: options.signal });
+  return request<GalleryPage>(`${mediaBase(udid)}/gallery?${q}`, { signal: options.signal });
 }
 
 interface ThumbBatchResponse {
@@ -36,23 +33,20 @@ interface ThumbBatchResponse {
 }
 
 /** Reads many thumbnails in one request (one AFC session server-side). Returns a
- *  path -> JPEG Blob map; paths with no thumbnail are absent. */
+ *  path -> JPEG data URL map; paths with no thumbnail are absent. */
 export async function mediaThumbsBatch(
   udid: string,
   paths: string[],
   signal?: AbortSignal,
-): Promise<Record<string, Blob>> {
-  const response = await request<ThumbBatchResponse>(`${base(udid)}/thumbs`, {
+): Promise<Record<string, string>> {
+  const response = await request<ThumbBatchResponse>(`${mediaBase(udid)}/thumbs`, {
     method: 'POST',
     body: { paths },
     signal,
   });
-  const blobs: Record<string, Blob> = {};
-  for (const [path, b64] of Object.entries(response.thumbs)) {
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    blobs[path] = new Blob([bytes], { type: 'image/jpeg' });
-  }
-  return blobs;
+  const urls: Record<string, string> = {};
+  for (const [path, b64] of Object.entries(response.thumbs)) urls[path] = `data:image/jpeg;base64,${b64}`;
+  return urls;
 }
 
 export interface MediaStat {
@@ -63,5 +57,5 @@ export interface MediaStat {
 /** One media file's size and modified time (a single on-demand device stat). */
 export async function mediaStat(udid: string, path: string, signal?: AbortSignal): Promise<MediaStat> {
   const q = new URLSearchParams({ path });
-  return request<MediaStat>(`${base(udid)}/stat?${q}`, { signal });
+  return request<MediaStat>(`${mediaBase(udid)}/stat?${q}`, { signal });
 }

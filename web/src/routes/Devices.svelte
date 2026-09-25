@@ -2,15 +2,13 @@
   // Home: the device list. Click a device to drill into its page — backups and
   // management all live there. Pairing opens as a modal.
   import { statusStore, devicesStore } from '../lib/stores.svelte';
-  import { errMsg } from '../lib/api/client';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import DeviceTile from '../lib/components/DeviceTile.svelte';
   import OrphanBackups from '../lib/components/OrphanBackups.svelte';
   import PairModal from '../lib/components/PairModal.svelte';
   import Icon from '../lib/components/Icon.svelte';
 
-  // Ref-counted subscribes; SSE keeps both fresh while mounted.
-  $effect(() => statusStore.start());
+  // Ref-counted subscribe (Nav holds statusStore); SSE keeps it fresh while mounted.
   $effect(() => devicesStore.start());
 
   const devices = $derived(devicesStore.data ?? []);
@@ -19,11 +17,7 @@
   const phones = $derived(devices.filter((device) => !device.orphaned));
   const orphans = $derived(devices.filter((device) => device.orphaned));
   const showOffline = $derived(devicesStore.offline && !devicesStore.ready);
-  const loadError = $derived(
-    !devicesStore.ready && devicesStore.error && !devicesStore.offline
-      ? errMsg(devicesStore.error, 'devices_load_failed')
-      : null,
-  );
+  const loadError = $derived(devicesStore.loadError('devices_load_failed'));
   const showEmpty = $derived(devicesStore.ready && phones.length === 0);
   // Exception-only: daemon is fine but the device muxer under it is not
   // (global backend unreachability is App.svelte's job).
@@ -92,4 +86,6 @@
   {/if}
 </div>
 
-<PairModal bind:open={pairOpen} />
+{#if pairOpen}
+  <PairModal onclose={() => (pairOpen = false)} />
+{/if}
