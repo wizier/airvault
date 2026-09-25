@@ -15,11 +15,19 @@ import (
 // ReconcileBackupStore resolves interrupted transitions, then rebuilds the
 // catalog from the manifests on disk. It returns every source — agreeing IDs
 // cannot rule out orphaned pool objects — for the background collection pass.
+// A source it cannot read is logged and left as it is, never failing startup.
 func (s *Service) ReconcileBackupStore(ctx context.Context) ([]string, error) {
-	if err := s.objects.ReconcileStaging(); err != nil {
-		return nil, fmt.Errorf("resolve object staging state: %w", err)
+	sources, err := s.objects.ListSources()
+	if err != nil {
+		return nil, fmt.Errorf("list object sources: %w", err)
 	}
-	sources, err := s.reconcileCatalogFromStore(ctx)
+	for _, source := range sources {
+		// A stranded envelope only blocks this source's collection.
+		if err := s.objects.ReconcileSourceStaging(source); err != nil {
+			slog.ErrorContext(ctx, "staging reconcile: source skipped", "source", source, "error", err)
+		}
+	}
+	sources, err = s.reconcileCatalogFromStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("rebuild backup catalog: %w", err)
 	}
@@ -44,7 +52,14 @@ func (s *Service) reconcileCatalogFromStore(ctx context.Context) ([]string, erro
 	for _, source := range diskSources {
 		ids, err := s.objects.ListSnapshotIDs(source)
 		if err != nil {
-			return nil, fmt.Errorf("list manifests for source %s: %w", source, err)
+			// Without a listing none of this source's rows can be judged stale.
+			slog.ErrorContext(ctx, "catalog reconcile: source skipped", "source", source, "error", err)
+			for id, owner := range unaccounted {
+				if owner == source {
+					delete(unaccounted, id)
+				}
+			}
+			continue
 		}
 		for _, id := range ids {
 			if err := ctx.Err(); err != nil {

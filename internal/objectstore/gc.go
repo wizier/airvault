@@ -30,7 +30,7 @@ func (s *Store) ensureCollectable(source string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if !hiddenEntry(entry.Name()) {
+		if validateSnapshotID(entry.Name()) == nil {
 			return fmt.Errorf("collect source %q: staging snapshot exists", source)
 		}
 	}
@@ -151,11 +151,11 @@ func collectableObjects(source, objectsRoot string, live *LiveSet) ([]string, ma
 	garbage := make([]string, 0)
 	seen := make(map[string]struct{}, len(live.objects))
 	for _, prefix := range prefixes {
-		if hiddenEntry(prefix.Name()) {
-			continue
+		if !validLowerHex(prefix.Name(), objectPrefixLength) {
+			continue // not the store's
 		}
-		if !validLowerHex(prefix.Name(), objectPrefixLength) || !prefix.IsDir() {
-			return nil, nil, fmt.Errorf("unexpected object prefix %q", prefix.Name())
+		if !prefix.IsDir() {
+			return nil, nil, fmt.Errorf("object prefix %q is not a directory", prefix.Name())
 		}
 		entries, err := os.ReadDir(filepath.Join(objectsRoot, prefix.Name()))
 		if err != nil {
@@ -163,20 +163,15 @@ func collectableObjects(source, objectsRoot string, live *LiveSet) ([]string, ma
 		}
 		for _, entry := range entries {
 			objectRef := entry.Name()
-			if hiddenEntry(objectRef) {
-				continue
+			if validateObjectRef(objectRef) != nil || objectRef[:objectPrefixLength] != prefix.Name() {
+				continue // not the store's
 			}
 			info, err := entry.Info()
 			if err != nil {
 				return nil, nil, err
 			}
-			if validateObjectRef(objectRef) != nil ||
-				objectRef[:objectPrefixLength] != prefix.Name() ||
-				!info.Mode().IsRegular() {
-				return nil, nil, fmt.Errorf(
-					"unexpected object entry %q",
-					filepath.Join(prefix.Name(), objectRef),
-				)
+			if !info.Mode().IsRegular() {
+				return nil, nil, fmt.Errorf("object %q is not a regular file", filepath.Join(prefix.Name(), objectRef))
 			}
 			if expectedSize, exists := live.objects[objectRef]; exists {
 				if info.Size() != expectedSize {

@@ -616,24 +616,27 @@ mod tests {
     }
 
     #[test]
-    fn writing_duplicate_repairs_a_damaged_pool_object() {
-        let (_root, session) = test_session();
+    fn writing_duplicate_keeps_the_stored_object_and_heals_a_truncated_one() {
+        let (root, session) = test_session();
         let content = b"correct bytes";
         write_object(&session, "first.bin", content);
 
         let object_ref = entry_ref(&session, "first.bin");
         let object_path = object_path(&session, "first.bin");
-        let mut corrupted = content.to_vec();
-        corrupted[0] ^= 0xff;
-        fs::write(&object_path, corrupted).unwrap();
+        // Marks the stored file: a duplicate of the right length must not replace it.
+        let mut stored = content.to_vec();
+        stored[0] ^= 0xff;
+        fs::write(&object_path, &stored).unwrap();
 
         write_object(&session, "second.bin", content);
 
         assert_eq!(entry_ref(&session, "second.bin"), object_ref);
-        assert_eq!(fs::read(&object_path).unwrap(), content);
+        assert_eq!(fs::read(&object_path).unwrap(), stored);
+        let temporaries = root.0.join(format!("{SOURCE}/staging/{SNAPSHOT}/objects"));
+        assert_eq!(fs::read_dir(temporaries).unwrap().count(), 0);
 
         // A truncated object is damage the writer can prove and still holds the
-        // bytes for, so it heals too instead of failing the run.
+        // bytes for, so it heals instead of failing the run.
         fs::write(&object_path, &content[..4]).unwrap();
         write_object(&session, "third.bin", content);
 

@@ -22,7 +22,7 @@ func TestReconcileStagingClearsEnvelopeOfUnreadableManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.ReconcileStaging(); err != nil {
+	if err := store.ReconcileSourceStaging(source); err != nil {
 		t.Fatalf("unreadable manifest blocked staging reconciliation: %v", err)
 	}
 	if _, err := os.Stat(stagingDir); !errors.Is(err, fs.ErrNotExist) {

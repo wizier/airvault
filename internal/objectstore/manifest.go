@@ -181,6 +181,11 @@ func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
 		}
 		return nil, fmt.Errorf("decode object manifest %q: trailing data: %w", relative, err)
 	}
+	// A newer format is a newer writer's, not damage: it is kept, and collection
+	// stops for its source instead of sweeping what it references.
+	if manifest.Version > formatVersion {
+		return nil, fmt.Errorf("manifest %q uses newer format %d", relative, manifest.Version)
+	}
 	if err := validateManifestHeader(relative, manifest); err != nil {
 		return nil, corrupt(err)
 	}

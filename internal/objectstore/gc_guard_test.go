@@ -120,6 +120,48 @@ func TestCollectRefusesMutableStaging(t *testing.T) {
 	}
 }
 
+// Finder, SMB and NAS droppings are not the store's: every listing skips them,
+// they never block collection and are never removed.
+func TestForeignEntriesAreSkippedAndKept(t *testing.T) {
+	store, source := newTestStore(t)
+	sourceRoot := filepath.Join(store.root, source)
+	dirs := []string{
+		filepath.Join(sourceRoot, "staging", "@eaDir"),
+		filepath.Join(sourceRoot, "snapshots", "@eaDir"),
+		filepath.Join(sourceRoot, "objects", "@eaDir"),
+	}
+	files := []string{
+		filepath.Join(sourceRoot, "snapshots", ".DS_Store"),
+		filepath.Join(sourceRoot, "objects", "Thumbs.db"),
+		filepath.Join(sourceRoot, "objects", obj1[:objectPrefixLength], "desktop.ini"),
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range files {
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.ReconcileSourceStaging(source); err != nil {
+		t.Fatalf("staging reconcile: %v", err)
+	}
+	if ids, err := store.ListSnapshotIDs(source); err != nil || !slices.Equal(ids, []string{genA, genB}) {
+		t.Fatalf("ListSnapshotIDs = %v, %v; want [%s %s]", ids, err, genA, genB)
+	}
+	if _, err := collectAll(t, store, source); err != nil {
+		t.Fatalf("collection: %v", err)
+	}
+	for _, path := range append(dirs, files...) {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("foreign entry %s was removed: %v", path, err)
+		}
+	}
+}
+
 // No path into a source may leave the store root through a symlink: the
 // operation is refused and nothing outside the root is touched.
 func TestSourcePathRefusesASubtreeReachedThroughASymlink(t *testing.T) {

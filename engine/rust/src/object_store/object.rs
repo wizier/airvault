@@ -122,17 +122,28 @@ impl ObjectWriter {
         }
         // One writer per source (store lease + single session), so the
         // lstat→rename window cannot race and the lstat doubles as the symlink
-        // check. These bytes hash to the target name, so republishing heals it.
+        // check.
         let newly_created = match fs::symlink_metadata(&target) {
+            // Keep a stored copy of the right length: renaming this unsynced file
+            // over it could lose bytes older snapshots rely on if power fails.
+            Ok(metadata) if metadata.is_file() && metadata.len() == self.size => {
+                fs::remove_file(&self.temporary).map_err(|error| {
+                    ObjectFailure::from_io(
+                        format!("discard deduplicated object {:?}", self.key),
+                        &error,
+                    )
+                })?;
+                false
+            }
+            // A wrong length is provable damage; these bytes hash to the name, so
+            // republishing heals it.
             Ok(metadata) if metadata.is_file() => {
-                if metadata.len() != self.size {
-                    tracing::warn!(
-                        object = %object_ref,
-                        expected = self.size,
-                        found = metadata.len(),
-                        "replacing a damaged pool object"
-                    );
-                }
+                tracing::warn!(
+                    object = %object_ref,
+                    expected = self.size,
+                    found = metadata.len(),
+                    "replacing a damaged pool object"
+                );
                 fs::rename(&self.temporary, &target).map_err(|error| {
                     ObjectFailure::from_io(
                         format!("republish deduplicated object {:?}", self.key),

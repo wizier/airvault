@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -494,6 +495,48 @@ func TestReclaimStopsWhenCorruptManifestCannotBeRemoved(t *testing.T) {
 		t.Fatal("reclaim succeeded without removing the corrupt manifest")
 	}
 	requirePathsPresent(t, paths[:len(paths)-1]...)
+}
+
+// A source whose directory cannot be read never fails startup: the others
+// reconcile, and its own rows stay until it reads again.
+func TestStartupSkipsASourceItCannotRead(t *testing.T) {
+	svc, root := newSnapshotCleanupService(t)
+	const broken, healthy = "testphoneudid0051", "testphoneudid0052"
+	const healthyID = "dddddddd-0000-4000-8000-000000000004"
+	writePublishedSnapshot(t, root, broken, cleanupTestSnapshot)
+	reconcileStore(t, svc)
+	// A directory under a manifest's name is damage, not a dropping.
+	damaged := filepath.Join(root, broken, "snapshots", healthyID+".json")
+	if err := os.Mkdir(damaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePublishedSnapshot(t, root, healthy, healthyID)
+
+	reconcileStore(t, svc)
+	for _, id := range []string{cleanupTestSnapshot, healthyID} {
+		if _, err := svc.store.Backup.Get(context.Background(), id); err != nil {
+			t.Fatalf("snapshot %s is not cataloged: %v", id, err)
+		}
+	}
+}
+
+// A newer format's manifest belongs to a newer AirVault: it is neither admitted
+// nor dropped as corrupt, and collection stops rather than sweep what it reaches.
+func TestNewerFormatManifestIsKeptAndStopsCollection(t *testing.T) {
+	svc, root := newSnapshotCleanupService(t)
+	const source = "testphoneudid0053"
+	const newerID = "dddddddd-0000-4000-8000-000000000004"
+	paths := writePublishedSnapshot(t, root, source, cleanupTestSnapshot)
+	newer := filepath.Join(root, source, "snapshots", newerID+".json")
+	writeTestFile(t, newer, []byte(`{"version":2}`))
+	orphan := filepath.Join(root, source, "objects", "ff", strings.Repeat("f", 64))
+	writeTestFile(t, orphan, []byte("unreferenced"))
+
+	reconcileStore(t, svc)
+	svc.scrub(context.Background(), []string{source})
+	svc.wg.Wait()
+	requireNotCataloged(t, svc, newerID)
+	requirePathsPresent(t, append(paths, newer, orphan)...)
 }
 
 // Reconcile opens only manifests new to the catalog: a corrupt newcomer is

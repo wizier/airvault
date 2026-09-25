@@ -213,23 +213,9 @@ func (s *Store) DiscardStaging(source, snapshotID string) error {
 	return syncExistingDirectory(filepath.Dir(directory))
 }
 
-// ReconcileStaging resolves every filesystem transaction: published manifests
-// finish their durability boundary, unpublished ones are discarded.
-func (s *Store) ReconcileStaging() error {
-	sources, err := s.ListSources()
-	if err != nil {
-		return err
-	}
-	for _, source := range sources {
-		if err := s.ReconcileSourceStaging(source); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ReconcileSourceStaging is ReconcileStaging for one device — the runtime entry
-// point when a run dies without unwinding through its own cleanup.
+// ReconcileSourceStaging resolves a device's filesystem transactions: published
+// manifests finish their durability boundary, unpublished ones are discarded.
+// Startup runs it per source, as does a run that dies without its own cleanup.
 func (s *Store) ReconcileSourceStaging(source string) error {
 	stagingRoot, err := s.sourcePath(source, "staging")
 	if err != nil {
@@ -241,11 +227,8 @@ func (s *Store) ReconcileSourceStaging(source string) error {
 	}
 	for _, entry := range entries {
 		snapshotID := entry.Name()
-		if hiddenEntry(snapshotID) {
-			continue
-		}
-		if !entry.IsDir() || validateSnapshotID(snapshotID) != nil {
-			return fmt.Errorf("unexpected staging entry %q for source %q", snapshotID, source)
+		if validateSnapshotID(snapshotID) != nil {
+			continue // not the store's
 		}
 		published, openErr := s.OpenSnapshot(source, snapshotID)
 		if openErr == nil {
@@ -287,13 +270,6 @@ func readDirIfExists(directory string) ([]os.DirEntry, error) {
 	return entries, err
 }
 
-// hiddenEntry reports Finder/SMB metadata droppings (.DS_Store, AppleDouble).
-// The store's own names are never dot-prefixed, so listings skip these instead
-// of failing closed; anything else unexpected still aborts.
-func hiddenEntry(name string) bool {
-	return strings.HasPrefix(name, ".")
-}
-
 type snapshotManifestFile struct {
 	id   string
 	size int64
@@ -301,7 +277,8 @@ type snapshotManifestFile struct {
 
 // listSnapshotManifests is the single definition of what belongs in a source's
 // snapshots directory: catalog rebuild, object liveness and the footprint all
-// read it and must agree.
+// read it and must agree. Like every store listing it only sees names the store
+// writes; Finder, SMB or NAS droppings are skipped and never removed.
 func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, error) {
 	dir, err := s.sourcePath(source, "snapshots")
 	if err != nil {
@@ -313,20 +290,16 @@ func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, er
 	}
 	var manifests []snapshotManifestFile
 	for _, entry := range entries {
-		name := entry.Name()
-		if hiddenEntry(name) {
-			continue
+		id, isManifest := strings.CutSuffix(entry.Name(), ".json")
+		if !isManifest || validateSnapshotID(id) != nil {
+			continue // not the store's
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil, err
 		}
-		if !info.Mode().IsRegular() || !strings.HasSuffix(name, ".json") {
-			return nil, fmt.Errorf("unexpected snapshots manifest entry %q", name)
-		}
-		id := strings.TrimSuffix(name, ".json")
-		if err := validateSnapshotID(id); err != nil {
-			return nil, fmt.Errorf("unexpected snapshots manifest %q: %w", name, err)
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("snapshot manifest %q is not a regular file", entry.Name())
 		}
 		manifests = append(manifests, snapshotManifestFile{id: id, size: info.Size()})
 	}
