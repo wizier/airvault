@@ -275,13 +275,14 @@ int32_t av_app_install(AvEngine *engine,
                        AvError *error);
 
 /**
- * Fetches one app icon into an owned binary buffer.
+ * Reads the icons for a JSON array of bundle ids into out_json as
+ * {"<bundleId>": "<base64 PNG>"}; apps without a readable icon are absent.
  */
-int32_t av_app_icon(AvEngine *engine,
-                    const char *udid,
-                    const char *bundle_id,
-                    AvBuffer *out,
-                    AvError *error);
+int32_t av_app_icons(AvEngine *engine,
+                     const char *udid,
+                     const char *bundle_ids_json,
+                     char **out_json,
+                     AvError *error);
 
 /**
  * Uninstalls an app by bundle id (installation_proxy).

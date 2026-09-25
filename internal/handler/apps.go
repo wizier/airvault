@@ -22,16 +22,26 @@ func (h *Handler) listApps(c *echo.Context) error {
 	return c.JSON(http.StatusOK, listAppsResponse{Apps: apps})
 }
 
-// [GET] /api/devices/:udid/apps/:bundle/icon
-func (h *Handler) getAppIcon(c *echo.Context) error {
-	udid := c.Param("udid")
-	bundle := c.Param("bundle")
-	png, err := h.svc.AppIcon(c.Request().Context(), udid, bundle)
-	if err != nil {
-		return err // 404 / 409 offline
+type appIconsRequest struct {
+	BundleIDs []string `json:"bundleIds"`
+}
+
+type appIconsResponse struct {
+	Icons map[string][]byte `json:"icons"` // bundle id -> base64 PNG; apps without an icon omitted
+}
+
+// [POST] /api/devices/:udid/apps/icons  body: {bundleIds:[…]}
+// The whole batch reads over one springboard connection, like /media/thumbs.
+func (h *Handler) appIcons(c *echo.Context) error {
+	var req appIconsRequest
+	if err := echo.BindBody(c, &req); err != nil {
+		return err
 	}
-	c.Response().Header().Set("Cache-Control", "public, max-age=86400")
-	return c.Blob(http.StatusOK, "image/png", png)
+	icons, err := h.svc.AppIcons(c.Request().Context(), c.Param("udid"), req.BundleIDs)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, appIconsResponse{Icons: icons})
 }
 
 // [DELETE] /api/devices/:udid/apps/:bundle

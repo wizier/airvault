@@ -11,23 +11,22 @@ import (
 
 // Event type constants.
 const (
-	DeviceAdded        = "device.added"
-	DeviceUpdated      = "device.updated"
-	DeviceRemoved      = "device.removed"
-	DeviceOnline       = "device.online"
-	DeviceOffline      = "device.offline"
-	BackupStarted      = "backup.started"
-	BackupProgress     = "backup.progress"
-	BackupDone         = "backup.completed"
-	BackupFailed       = "backup.failed"
-	BackupCancelled    = "backup.cancelled"
-	BackupCatalog      = "backup.catalog"
-	AppCatalog         = "app.catalog"
-	AppInstallProgress = "app.install.progress" // {installId, phase, percent}; droppable
-	PairChanged        = "pair.changed"
-	PairTrust          = "pair.trust"    // trust-flow progress: {"udid","status","errorCode"?}
-	MuxerChanged       = "muxer.changed" // muxer went up or down, {"up":bool}
-	StreamReset        = "stream.reset"
+	DeviceAdded     = "device.added"
+	DeviceUpdated   = "device.updated"
+	DeviceRemoved   = "device.removed"
+	DeviceOnline    = "device.online"
+	DeviceOffline   = "device.offline"
+	BackupStarted   = "backup.started"
+	BackupProgress  = "backup.progress"
+	BackupDone      = "backup.completed"
+	BackupFailed    = "backup.failed"
+	BackupCancelled = "backup.cancelled"
+	BackupCatalog   = "backup.catalog"
+	AppCatalog      = "app.catalog"
+	PairChanged     = "pair.changed"
+	PairTrust       = "pair.trust"    // trust-flow progress: {"udid","status","errorCode"?}
+	MuxerChanged    = "muxer.changed" // muxer went up or down, {"up":bool}
+	StreamReset     = "stream.reset"
 )
 
 // Event is one published event. Data is JSON-encoded by the SSE handler.
@@ -53,7 +52,7 @@ const historyLimit = 256
 // droppableProgress marks high-frequency progress events: never retained for
 // replay, and dropped (not a disconnect) when a subscriber can't keep up.
 func droppableProgress(t string) bool {
-	return t == BackupProgress || t == AppInstallProgress
+	return t == BackupProgress
 }
 
 // New creates a Bus. Its random epoch marks event IDs as belonging to this

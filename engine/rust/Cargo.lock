@@ -21,6 +21,7 @@ dependencies = [
 name = "airvault_shim"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "idevice",
  "plist",
  "serde",

@@ -14,7 +14,7 @@ import (
 
 // [GET] /api/events
 func (h *Handler) streamEvents(c *echo.Context) error {
-	rc := startSSE(c)
+	rc := startStream(c, "text/event-stream")
 	res := c.Response()
 	// IDs are "<epoch>-<seq>"; a Last-Event-ID from another process (epoch
 	// mismatch) has no replayable history here and must trigger a resync.

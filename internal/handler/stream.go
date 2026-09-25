@@ -16,11 +16,11 @@ const (
 	streamPingInterval = 25 * time.Second
 )
 
-// startSSE sets the event-stream headers and returns the controller that
-// flushes each frame.
-func startSSE(c *echo.Context) *http.ResponseController {
+// startStream sets the headers of an unbuffered streaming response (SSE or
+// NDJSON) and returns the controller that flushes each frame.
+func startStream(c *echo.Context, contentType string) *http.ResponseController {
 	res := c.Response()
-	res.Header().Set(echo.HeaderContentType, "text/event-stream")
+	res.Header().Set(echo.HeaderContentType, contentType)
 	res.Header().Set("Cache-Control", "no-cache")
 	res.Header().Set("X-Accel-Buffering", "no")
 	return http.NewResponseController(res)

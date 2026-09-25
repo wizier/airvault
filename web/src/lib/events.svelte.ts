@@ -35,24 +35,6 @@ export function onPairTrust(handler: (event: PairTrustEvent) => void): () => voi
   return () => pairTrustHandlers.delete(handler);
 }
 
-interface InstallProgress {
-  phase: 'staging' | 'installing';
-  percent: number;
-}
-
-/** Live .ipa install phase and percent per install id this browser started. */
-export const installProgress = $state<Record<string, InstallProgress>>({});
-const activeInstalls = new Set<string>();
-
-/** Accept progress for this id until the returned function clears it. */
-export function registerInstall(id: string): () => void {
-  activeInstalls.add(id);
-  return () => {
-    activeInstalls.delete(id);
-    delete installProgress[id];
-  };
-}
-
 // --- SSE payload shapes ----------------------------------------------------
 
 interface DeviceOnlineEvent {
@@ -271,11 +253,6 @@ class EventsClient {
       refreshDevices();
     });
     on<UdidEvent>(es, 'app.catalog', (d) => deviceAppsResources.invalidate(d.udid));
-
-    // --- app install progress (only this browser's active install id) --------
-    on<{ installId: string } & InstallProgress>(es, 'app.install.progress', (d) => {
-      if (activeInstalls.has(d.installId)) installProgress[d.installId] = { phase: d.phase, percent: d.percent };
-    });
 
     // --- pairing wizard -----------------------------------------------------
     on<UdidEvent>(es, 'pair.changed', () => refreshPairState());

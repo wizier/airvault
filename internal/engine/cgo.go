@@ -638,14 +638,20 @@ func (e *Engine) ListApps(ctx context.Context, device DeviceID) ([]App, error) {
 	return apps, err
 }
 
-func (e *Engine) AppIcon(ctx context.Context, device DeviceID, bundleID string) ([]byte, error) {
+// AppIcons reads home-screen icon PNGs by bundle id over one springboard
+// connection; apps without a readable icon are absent from the map.
+func (e *Engine) AppIcons(ctx context.Context, device DeviceID, bundleIDs []string) (map[string][]byte, error) {
+	encoded, _ := json.Marshal(bundleIDs) // a string slice always encodes
 	cu := C.CString(string(device))
 	defer C.free(unsafe.Pointer(cu))
-	cb := C.CString(bundleID)
-	defer C.free(unsafe.Pointer(cb))
-	return e.reqBytes(ctx, func(native *C.AvEngine, out *C.AvBuffer, e *C.AvError) C.int32_t {
-		return C.av_app_icon(native, cu, cb, out, e)
+	cids := C.CString(string(encoded))
+	defer C.free(unsafe.Pointer(cids))
+	// The shim sends base64 strings, which encoding/json decodes into []byte.
+	var icons map[string][]byte
+	err := e.reqJSON(ctx, &icons, func(native *C.AvEngine, out **C.char, e *C.AvError) C.int32_t {
+		return C.av_app_icons(native, cu, cids, out, e)
 	})
+	return icons, err
 }
 
 // Wallpaper fetches the rendered lock-screen (lockScreen) or home-screen preview.

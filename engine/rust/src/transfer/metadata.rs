@@ -1,5 +1,6 @@
 //! Backup `Info.plist` construction and restore app-list staging.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::SystemTime;
@@ -13,6 +14,7 @@ use idevice::{IdeviceError, IdeviceService};
 use plist::Value;
 
 use crate::afc::{read_small_file, FileGuard};
+use crate::apps::read_app_icons;
 use crate::provider::{authed_lockdown, AirvaultProvider};
 use crate::timeouts;
 
@@ -236,19 +238,8 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
         .browse(Some(Value::Dictionary(options)))
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let mut springboard = SpringBoardServicesClient::connect(provider)
-        .await
-        .map(Some)
-        .unwrap_or_else(|error| {
-            tracing::warn!(
-                ?error,
-                "sbservices unavailable; app census continues without placeholder icons"
-            );
-            None
-        });
-
-    let mut applications = plist::Dictionary::new();
     let mut installed = Vec::new();
+    let mut restorable = Vec::new();
     for app in &apps {
         let Some(dictionary) = app.as_dictionary() else {
             continue;
@@ -267,34 +258,32 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
         ) else {
             continue;
         };
+        restorable.push((bundle.to_owned(), sinf, metadata));
+    }
+
+    let bundle_ids: Vec<String> = restorable
+        .iter()
+        .map(|(bundle, ..)| bundle.clone())
+        .collect();
+    let mut icons = match SpringBoardServicesClient::connect(provider).await {
+        Ok(mut springboard) => read_app_icons(&mut springboard, &bundle_ids).await,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "sbservices unavailable; app census continues without placeholder icons"
+            );
+            HashMap::new()
+        }
+    };
+    let mut applications = plist::Dictionary::new();
+    for (bundle, sinf, metadata) in restorable {
         let mut application = plist::Dictionary::new();
         application.insert("ApplicationSINF".into(), sinf.clone());
-        if let Some(client) = springboard.as_mut() {
-            match client.get_icon_pngdata(bundle.to_owned()).await {
-                Ok(png) if !png.is_empty() => {
-                    application.insert("PlaceholderIcon".into(), Value::Data(png));
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    let client_usable = matches!(
-                        &error,
-                        IdeviceError::UnexpectedResponse(_)
-                            | IdeviceError::NotFound
-                            | IdeviceError::GetProhibited
-                    );
-                    tracing::warn!(
-                        ?error,
-                        client_usable,
-                        "sbservices icon read failed; census continues without this icon"
-                    );
-                    if !client_usable {
-                        springboard = None;
-                    }
-                }
-            }
+        if let Some(png) = icons.remove(&bundle) {
+            application.insert("PlaceholderIcon".into(), Value::Data(png));
         }
         application.insert("iTunesMetadata".into(), metadata.clone());
-        applications.insert(bundle.into(), Value::Dictionary(application));
+        applications.insert(bundle, Value::Dictionary(application));
     }
 
     tracing::debug!(

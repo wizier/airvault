@@ -23,7 +23,7 @@ idevice = { version = "0.1.68", default-features = false, features = [
     "diagnostics_relay",     # av_power (restart/shutdown/sleep) + battery health
     "syslog_relay",          # gates os_trace_relay too — av_console_* (device console)
     "installation_proxy",    # av_apps (list) + av_app_install (install a user .ipa)
-    "springboardservices",   # av_app_icon (home-screen icon PNGs)
+    "springboardservices",   # av_app_icons + backup census (home-screen icon PNGs)
     "afc",                   # av_app_install stages the .ipa via AFC before installing
     "house_arrest",          # av_app_files_* reads an app's Documents container over AFC
     "notification_proxy",    # the iTunes sync-session dance around backups
@@ -36,6 +36,8 @@ plist = "1"
 # C-ABI JSON payloads (device lists, hardware info, console records).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Icon PNGs inside av_app_icons' JSON; plist already brings this version in.
+base64 = "0.22.1"
 # SHA-256 manifest seal plus streaming object hashes verified during restore.
 sha2 = "0.10"
 # HostID generation for freshly created pairing records.

@@ -1,13 +1,14 @@
 <script lang="ts">
   // Installed applications: fetched fresh per open, client-side search, USER
-  // apps only. Icons load lazily per row from the device (browser-cached).
+  // apps only. Icons load in batches for rows near the viewport.
   // Per row: browse Documents (file-sharing apps) and uninstall; the toolbar
-  // installs an .ipa with live percent over SSE.
-  import { appIconUrl, installApp, uninstallApp, type DeviceApp } from '../api/apps';
+  // installs an .ipa with live percent streamed in the install response.
+  import { onMount, untrack } from 'svelte';
+  import { appIcons, cachedAppIcons, installApp, uninstallApp, type DeviceApp, type InstallProgress } from '../api/apps';
   import { errMsg } from '../api/client';
   import { appFileSource } from '../api/files';
-  import { clientId } from '../client-id';
-  import { installProgress, liveRun, registerInstall } from '../events.svelte';
+  import { createBatchLoader } from '../batch-loader';
+  import { liveRun } from '../events.svelte';
   import { deviceAppsResources } from '../stores.svelte';
   import FileBrowser from './FileBrowser.svelte';
   import Icon from './Icon.svelte';
@@ -24,9 +25,9 @@
   const error = $derived(appsResource.loadError('app_list_failed'));
   const loading = $derived(!appsResource.ready && !error);
 
-  let installId = $state<string | null>(null);
-  const installing = $derived(installId !== null);
+  let installing = $state(false);
   let uploadPct = $state(0);
+  let installState = $state<InstallProgress | null>(null);
   let note = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
   // Uninstall: inline two-step confirm avoids a blocking native dialog.
@@ -42,10 +43,9 @@
     filesApp ? appFileSource(udid, filesApp.bundleId, !writeBusy) : null,
   );
 
-  const installState = $derived(installId ? installProgress[installId] : undefined);
   const installPct = $derived(installState?.percent ?? uploadPct);
-  // Without an SSE frame a finished upload is already on its way to the phone;
-  // unknown future SSE phases read as 'Installing', never as 'Uploading'.
+  // Before the phone's first progress line a finished upload is already on its
+  // way to the phone; unknown future phases read as 'Installing', never as 'Uploading'.
   const installStage = $derived(
     installState
       ? installState.phase === 'staging'
@@ -62,19 +62,23 @@
     const file = input.files?.[0];
     input.value = ''; // let the same file be re-picked later
     if (!file || writeBusy) return;
-    const id = clientId('install');
-    const unregister = registerInstall(id);
     uploadPct = 0;
-    installId = id;
+    installState = null;
+    installing = true;
     note = null;
     try {
-      await installApp(udid, file, id, (percent) => (uploadPct = percent));
+      await installApp(
+        udid,
+        file,
+        (percent) => (uploadPct = percent),
+        (progress) => (installState = progress),
+      );
       note = { text: `Installed ${file.name}`, tone: 'ok' };
     } catch (err) {
       note = { text: errMsg(err, 'app_install_failed'), tone: 'error' };
     } finally {
-      unregister();
-      installId = null;
+      installing = false;
+      installState = null;
     }
   }
 
@@ -109,6 +113,53 @@
       (a) => a.name.toLowerCase().includes(needle) || a.bundleId.toLowerCase().includes(needle),
     );
   });
+
+  // PNG data URLs by bundle id; '' marks an app the phone has no icon for.
+  let icons = $state<Record<string, string>>(untrack(() => ({ ...cachedAppIcons(udid) })));
+  let scroller = $state<HTMLElement | null>(null);
+  let iconIO = $state<IntersectionObserver | null>(null);
+  const rowBundles = new WeakMap<Element, string>();
+  const iconLoader = createBatchLoader<string>({
+    batchSize: 30,
+    debounceMs: 120,
+    fetchBatch: (bundleIds, signal) => appIcons(udid, bundleIds, signal),
+    onBatch: (bundleIds, urls) => {
+      for (const bundleId of bundleIds) icons[bundleId] = urls[bundleId] ?? '';
+    },
+  });
+
+  // Registers a row with the icon observer; detach forgets it.
+  function rowIcon(bundleId: string) {
+    return (el: Element) => {
+      const io = iconIO;
+      if (!io) return;
+      rowBundles.set(el, bundleId);
+      io.observe(el);
+      return () => io.unobserve(el);
+    };
+  }
+
+  // Rows entering the observer margin queue their icon.
+  $effect(() => {
+    if (!scroller) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const bundleId = rowBundles.get(entry.target);
+          if (bundleId && entry.isIntersecting && icons[bundleId] === undefined) iconLoader.queue(bundleId);
+        }
+      },
+      { root: scroller, rootMargin: '600px 0px' },
+    );
+    iconIO = io;
+    return () => {
+      io.disconnect();
+      iconIO = null;
+    };
+  });
+
+  // Closing the modal cancels icon batches still in flight.
+  onMount(() => () => iconLoader.reset());
 </script>
 
 <dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
@@ -178,7 +229,7 @@
       {/if}
     </div>
 
-    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200">
+    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200" bind:this={scroller}>
       {#if loading}
         <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
           <span class="loading loading-spinner loading-sm"></span>
@@ -196,14 +247,20 @@
       {:else}
         <ul class="divide-y divide-base-300/60">
           {#each visible as app (app.bundleId)}
-            <li class="flex items-center gap-3 px-4 py-2">
-              <img
-                src={appIconUrl(udid, app.bundleId)}
-                alt=""
-                loading="lazy"
-                class="h-9 w-9 shrink-0 rounded-[22%] bg-base-300/60 object-cover"
-                onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
-              />
+            <li class="flex items-center gap-3 px-4 py-2" {@attach rowIcon(app.bundleId)}>
+              {#if icons[app.bundleId]}
+                <img
+                  src={icons[app.bundleId]}
+                  alt=""
+                  class="h-9 w-9 shrink-0 rounded-[22%] bg-base-300/60 object-cover"
+                  onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
+                />
+              {:else}
+                <!-- Grey tile while loading; an app without an icon keeps an empty slot. -->
+                <span
+                  class={`h-9 w-9 shrink-0 rounded-[22%] ${icons[app.bundleId] === undefined ? 'bg-base-300/60' : ''}`}
+                ></span>
+              {/if}
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-medium">{app.name}</p>
                 <p class="truncate font-mono text-xs text-base-content/50">{app.bundleId}</p>

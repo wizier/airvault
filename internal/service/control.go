@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 
 	"github.com/wizier/airvault/internal/devicefs"
 	"github.com/wizier/airvault/internal/domain"
@@ -86,18 +87,28 @@ func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
 	return out, nil
 }
 
-// AppIcon fetches one app's home-screen icon (PNG bytes).
-func (s *Service) AppIcon(ctx context.Context, udid, bundleID string) ([]byte, error) {
+// maxAppIconBatch matches the engine's per-call cap.
+const maxAppIconBatch = 100
+
+// AppIcons reads a batch of home-screen icons (PNG bytes by bundle id) over
+// one springboard connection. Apps without a readable icon are absent.
+func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string) (map[string][]byte, error) {
+	if len(bundleIDs) == 0 || slices.Contains(bundleIDs, "") {
+		return nil, &domain.ValidationError{Code: "bundle_id_required", Message: "non-empty bundle ids are required"}
+	}
+	if len(bundleIDs) > maxAppIconBatch {
+		return nil, &domain.ValidationError{Code: "too_many_bundle_ids", Message: "too many bundle ids in one batch"}
+	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
 	}
-	png, err := s.engine.AppIcon(ctx, engine.DeviceID(udid), bundleID)
+	icons, err := s.engine.AppIcons(ctx, engine.DeviceID(udid), bundleIDs)
 	if err != nil {
-		// An <img> just shows its fallback — no need to humanize, only log.
-		slog.DebugContext(ctx, "app icon: engine", "udid", udid, "bundle", bundleID, "error", err)
-		return nil, domain.ErrNotFound
+		// The web keeps its placeholders, so the failure is only logged.
+		slog.DebugContext(ctx, "app icons: engine", "udid", udid, "count", len(bundleIDs), "error", err)
+		return nil, newEngineActionError("app_icons_failed", err)
 	}
-	return png, nil
+	return icons, nil
 }
 
 // Wallpaper fetches SpringBoard's rendered lock- or home-screen preview.
@@ -115,8 +126,8 @@ func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) (
 }
 
 // InstallApp persists an uploaded .ipa, then serializes its device installation.
-// installID correlates droppable SSE progress with the initiating browser.
-func (s *Service) InstallApp(ctx context.Context, udid, installID string, ipa io.Reader) error {
+// onProgress receives each distinct phase/percent while the device works.
+func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, onProgress func(engine.InstallProgress)) error {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
 	}
@@ -134,19 +145,15 @@ func (s *Service) InstallApp(ctx context.Context, udid, installID string, ipa io
 	}
 	ipaPath := tmp.Name()
 	err = s.runCommand(ctx, runKindInstall, udid, func(ctx context.Context) error {
-		// AFC staging and installation_proxy progress stream over SSE while this
-		// synchronous POST holds.
 		last := engine.InstallProgress{Percent: -1}
-		onProgress := func(progress engine.InstallProgress) {
+		reportChange := func(progress engine.InstallProgress) {
 			if progress == last {
 				return
 			}
 			last = progress
-			s.bus.Emit(events.AppInstallProgress, map[string]any{
-				"installId": installID, "phase": progress.Phase, "percent": progress.Percent,
-			})
+			onProgress(progress)
 		}
-		if err := s.engine.InstallApp(ctx, engine.DeviceID(udid), ipaPath, onProgress); err != nil {
+		if err := s.engine.InstallApp(ctx, engine.DeviceID(udid), ipaPath, reportChange); err != nil {
 			slog.DebugContext(ctx, "app install: engine", "udid", udid, "error", err)
 			return newEngineActionError("app_install_failed", err)
 		}

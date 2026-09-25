@@ -14,7 +14,7 @@ import (
 // [GET] /api/devices/:udid/console
 func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	udid := c.Param("udid")
-	rc := startSSE(c)
+	rc := startStream(c, "text/event-stream")
 	res := c.Response()
 
 	// The device can go quiet for long stretches, so pings keep the stream

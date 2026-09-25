@@ -33,7 +33,6 @@ const english = {
   invalid_gallery_page: 'The requested gallery page is not valid',
   file_required: 'Select a file',
   invalid_thumbnail_path: 'The thumbnail path is not valid',
-  invalid_install_id: 'The installation identifier is invalid',
   ipa_required: 'Choose an .ipa file to install',
   invalid_ipa: 'The selected file must be an .ipa',
   backup_password_change_empty: 'Enter the old and/or new backup password',

@@ -1,9 +1,11 @@
 //! Installed applications: the user-app list, .ipa install/uninstall and
 //! home-screen icons.
 
+use std::collections::HashMap;
 use std::ffi::c_char;
 use std::time::Duration;
 
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use idevice::services::afc::{errors::AfcError, opcode::AfcFopenMode, AfcClient};
 use idevice::services::installation_proxy::InstallationProxyClient;
 use idevice::services::springboardservices::SpringBoardServicesClient;
@@ -14,8 +16,8 @@ use tracing::Instrument;
 use crate::afc::FileGuard;
 use crate::engine_error::{EngineFailure, ErrorKind};
 use crate::ffi::{
-    block_bounded, engine_udid, guard_error, opt_owned, out_buffer, out_str, req_str, to_json,
-    AvBuffer, AvEngine, AvError,
+    block_bounded, engine_udid, guard_error, opt_owned, out_str, req_str, to_json, AvEngine,
+    AvError,
 };
 use crate::logging::operation_span;
 use crate::provider::{provider_for, EngineContext};
@@ -230,39 +232,79 @@ pub extern "C" fn av_app_install(
     })
 }
 
-/// One app's home-screen icon PNG.
-async fn app_icon_inner(
-    context: &EngineContext,
-    udid: &str,
-    bundle_id: &str,
-) -> Result<Vec<u8>, IdeviceError> {
-    let provider = provider_for(context, udid).await?;
-    let mut sb = SpringBoardServicesClient::connect(&provider).await?;
-    sb.get_icon_pngdata(bundle_id.to_owned()).await
+/// Most icons one av_app_icons call reads.
+const MAX_ICON_BATCH: usize = 100;
+
+/// Home-screen icon PNGs by bundle id, read over one springboard connection.
+/// A failed or empty icon is left out; a broken connection ends the batch
+/// with what it already has.
+pub(crate) async fn read_app_icons(
+    springboard: &mut SpringBoardServicesClient,
+    bundle_ids: &[String],
+) -> HashMap<String, Vec<u8>> {
+    let mut icons = HashMap::new();
+    for bundle_id in bundle_ids {
+        match springboard.get_icon_pngdata(bundle_id.clone()).await {
+            Ok(png) if !png.is_empty() => {
+                icons.insert(bundle_id.clone(), png);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // These fail one icon; any other error means the connection is gone.
+                let connection_usable = matches!(
+                    &error,
+                    IdeviceError::UnexpectedResponse(_)
+                        | IdeviceError::NotFound
+                        | IdeviceError::GetProhibited
+                );
+                tracing::debug!(%bundle_id, ?error, connection_usable, "app icon read failed");
+                if !connection_usable {
+                    break;
+                }
+            }
+        }
+    }
+    icons
 }
 
-/// Fetches one app icon into an owned binary buffer.
+async fn app_icons_inner(
+    context: &EngineContext,
+    udid: &str,
+    bundle_ids: &[String],
+) -> Result<HashMap<String, Vec<u8>>, IdeviceError> {
+    let provider = provider_for(context, udid).await?;
+    let mut springboard = SpringBoardServicesClient::connect(&provider).await?;
+    Ok(read_app_icons(&mut springboard, bundle_ids).await)
+}
+
+/// Reads the icons for a JSON array of bundle ids into out_json as
+/// {"<bundleId>": "<base64 PNG>"}; apps without a readable icon are absent.
 #[no_mangle]
-pub extern "C" fn av_app_icon(
+pub extern "C" fn av_app_icons(
     engine: *mut AvEngine,
     udid: *const c_char,
-    bundle_id: *const c_char,
-    out: *mut AvBuffer,
+    bundle_ids_json: *const c_char,
+    out_json: *mut *mut c_char,
     error: *mut AvError,
 ) -> i32 {
     guard_error(error, || {
         let (engine, udid) = unsafe { engine_udid(engine, udid) }?;
-        let bundle = unsafe { req_str(bundle_id, "bad bundle id") }?;
-        let png = block_bounded(
-            timeouts::UI_CALL,
-            "app icon timed out",
-            app_icon_inner(engine.context(), &udid, &bundle),
-        )?;
-        if !out_buffer(out, png) {
-            return Err(EngineFailure::invalid_argument(
-                "missing app icon output buffer",
-            ));
+        let json = unsafe { req_str(bundle_ids_json, "bad bundle id list") }?;
+        let bundle_ids: Vec<String> = serde_json::from_str(&json)
+            .map_err(|e| EngineFailure::invalid_argument(format!("bad bundle id list: {e}")))?;
+        if bundle_ids.len() > MAX_ICON_BATCH {
+            return Err(EngineFailure::invalid_argument("too many bundle ids"));
         }
+        let icons = block_bounded(
+            timeouts::DEVICE_WORK,
+            "app icons timed out",
+            app_icons_inner(engine.context(), &udid, &bundle_ids),
+        )?;
+        let encoded: HashMap<String, String> = icons
+            .into_iter()
+            .map(|(bundle_id, png)| (bundle_id, BASE64_STANDARD.encode(png)))
+            .collect();
+        out_str(out_json, &to_json(&encoded));
         Ok(())
     })
 }

@@ -7,6 +7,7 @@
   import { ApiError, errMsg } from '../api/client';
   import { galleryPage, mediaThumbsBatch, type GalleryAsset } from '../api/gallery';
   import { deviceFileSource, downloadFile, type FileStat } from '../api/files';
+  import { createBatchLoader } from '../batch-loader';
   import { formatBytes, formatDate } from '../format';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
@@ -31,46 +32,24 @@
 
   // JPEG data URLs keyed by path; MAX_THUMBS bounds how many stay alive.
   let thumbs = $state<Record<string, string>>({});
-  let thumbCtrl = new AbortController();
-  const THUMB_BATCH = 30;
   const MAX_THUMBS = 600; // 5 × PAGE — thumbs beyond this are evicted once off-screen
   const near = new Set<string>(); // paths inside the tile observer's margin
-  const pendingThumbs = new Set<string>();
-  let thumbQueue: string[] = [];
-  let flushTimer = 0;
   let tileIO = $state<IntersectionObserver | null>(null);
   const tilePaths = new WeakMap<Element, string>();
+  const thumbLoader = createBatchLoader<string>({
+    batchSize: 30,
+    debounceMs: 120,
+    fetchBatch: (paths, signal) => mediaThumbsBatch(udid, paths, signal),
+    onBatch: (_paths, urls) => {
+      for (const [path, url] of Object.entries(urls)) {
+        if (near.has(path)) thumbs[path] = url;
+      }
+      trimThumbs();
+    },
+  });
 
   function queueThumb(path: string): void {
-    if (thumbs[path] !== undefined || pendingThumbs.has(path) || thumbQueue.includes(path)) return;
-    thumbQueue.push(path);
-    // Small debounce so a scroll burst of tiles lands in one full batch.
-    if (!flushTimer) flushTimer = window.setTimeout(flushThumbQueue, 120);
-  }
-
-  function flushThumbQueue(): void {
-    flushTimer = 0;
-    const ctrl = thumbCtrl;
-    const queued = thumbQueue;
-    thumbQueue = [];
-    for (let i = 0; i < queued.length; i += THUMB_BATCH) {
-      const slice = queued.slice(i, i + THUMB_BATCH);
-      for (const path of slice) pendingThumbs.add(path);
-      void mediaThumbsBatch(udid, slice, ctrl.signal)
-        .then((urls) => {
-          if (ctrl.signal.aborted) return;
-          for (const [path, url] of Object.entries(urls)) {
-            if (near.has(path)) thumbs[path] = url;
-          }
-          trimThumbs();
-        })
-        .catch(() => {
-          /* transient batch failure: those tiles retry on their next approach */
-        })
-        .finally(() => {
-          for (const path of slice) pendingThumbs.delete(path);
-        });
-    }
+    if (thumbs[path] === undefined) thumbLoader.queue(path);
   }
 
   // Evict thumbs of tiles far off-screen, oldest-fetched first.
@@ -87,12 +66,7 @@
 
   // Drop every thumb and cancel their requests; a later load starts over.
   function resetThumbs(): void {
-    thumbCtrl.abort();
-    thumbCtrl = new AbortController();
-    clearTimeout(flushTimer);
-    flushTimer = 0;
-    thumbQueue = [];
-    pendingThumbs.clear();
+    thumbLoader.reset();
     thumbs = {};
   }
 

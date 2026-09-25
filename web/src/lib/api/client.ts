@@ -119,31 +119,56 @@ function parseBody(text: string): { data: unknown; json: boolean } {
   }
 }
 
-/** POST multipart data with browser-to-server progress. Fetch does not expose
- * upload progress, so this deliberately uses the browser's native XHR channel. */
-export function uploadForm(
+/** POST multipart data with browser-to-server progress, then read the server's
+ * NDJSON progress stream: each line goes to onServerProgress until a
+ * {"done":true} line resolves or an {"error":…} line rejects. A non-200 answer
+ * is an ordinary JSON error. Fetch does not expose upload progress, so this
+ * deliberately uses the browser's native XHR channel. */
+export function uploadForm<P>(
   path: string,
   body: FormData,
-  onProgress: (percent: number) => void,
+  onUploadProgress: (percent: number) => void,
+  onServerProgress: (progress: P) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', apiUrl(path));
-    xhr.setRequestHeader('Accept', 'application/json');
+    xhr.setRequestHeader('Accept', 'application/x-ndjson, application/json');
     const csrf = cookieValue(CSRF_COOKIE);
     if (csrf) xhr.setRequestHeader('X-CSRF-Token', csrf);
 
+    // responseText grows as the stream arrives; `consumed` marks the end of
+    // the last complete line already handled.
+    let consumed = 0;
+    function readLines(): void {
+      if (xhr.status !== 200) return;
+      const end = xhr.responseText.lastIndexOf('\n') + 1;
+      const lines = xhr.responseText.slice(consumed, end).split('\n');
+      consumed = end;
+      for (const line of lines) {
+        if (!line) continue;
+        const { data, json } = parseBody(line);
+        if (!json || !data || typeof data !== 'object') reject(new ApiError(xhr.status, 'invalid_response'));
+        else if ('error' in data) reject(apiErrorFromBody(xhr.status, data));
+        else if ('done' in data) resolve();
+        else onServerProgress(data as P);
+      }
+    }
+
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(Math.floor(event.loaded * 100 / event.total));
+      if (event.lengthComputable) onUploadProgress(Math.floor(event.loaded * 100 / event.total));
     };
-    xhr.upload.onload = () => onProgress(100);
+    xhr.upload.onload = () => onUploadProgress(100);
+    xhr.onprogress = readLines;
     xhr.onerror = () => reject(new ApiError(0, 'network_error'));
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
+      if (xhr.status !== 200) {
+        reject(apiErrorFromBody(xhr.status, parseBody(xhr.responseText).data));
         return;
       }
-      reject(apiErrorFromBody(xhr.status, parseBody(xhr.responseText).data));
+      readLines();
+      // No-op once settled; a stream without its done/error line is malformed.
+      reject(new ApiError(xhr.status, 'invalid_response'));
     };
     xhr.send(body);
   });

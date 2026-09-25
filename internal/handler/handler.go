@@ -58,14 +58,15 @@ func (h *Handler) Router() *echo.Echo {
 		ReferrerPolicy:     "same-origin",
 	}))
 	e.Use(echoMiddleware.GzipWithConfig(echoMiddleware.GzipConfig{
-		// SSE must flush immediately; downloads, previews, icons and wallpapers
-		// carry already compressed media (JPEG/HEIC/PNG) with an exact
-		// Content-Length — re-compressing them only wastes CPU and voids the length.
+		// SSE and the install progress stream must flush immediately; downloads,
+		// previews and wallpapers carry already compressed media (JPEG/HEIC/PNG) with
+		// an exact Content-Length — re-compressing them only wastes CPU and voids the length.
 		Skipper: func(c *echo.Context) bool {
 			p := c.Request().URL.Path
 			return p == "/api/events" || strings.HasSuffix(p, "/console") ||
+				strings.HasSuffix(p, "/apps/install") ||
 				strings.HasSuffix(p, "/download") || strings.HasSuffix(p, "/preview") ||
-				strings.HasSuffix(p, "/icon") || strings.HasSuffix(p, "/wallpaper")
+				strings.HasSuffix(p, "/wallpaper")
 		},
 	}))
 
@@ -117,8 +118,8 @@ func (h *Handler) Router() *echo.Echo {
 	device.GET("/wallpaper", h.getWallpaper)
 	device.GET("/apps", h.listApps)
 	device.POST("/apps/install", h.installApp, echoMiddleware.BodyLimit(maxIPABytes))
+	device.POST("/apps/icons", h.appIcons)
 	device.DELETE("/apps/:bundle", h.uninstallApp)
-	device.GET("/apps/:bundle/icon", h.getAppIcon)
 	device.GET("/apps/:bundle/files", h.listAppFiles)
 	device.DELETE("/apps/:bundle/files", h.deleteAppFile)
 	device.GET("/apps/:bundle/files/stat", h.appFileStat)
