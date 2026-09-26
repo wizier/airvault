@@ -54,6 +54,7 @@ const (
 	ErrorInvalidBackupPassword ErrorKind = ErrorKind(C.AV_ERROR_INVALID_BACKUP_PASSWORD)
 	ErrorOutcomeUnknown        ErrorKind = ErrorKind(C.AV_ERROR_OUTCOME_UNKNOWN)
 	ErrorFindMyEnabled         ErrorKind = ErrorKind(C.AV_ERROR_FIND_MY_ENABLED)
+	ErrorBackupNotConfirmed    ErrorKind = ErrorKind(C.AV_ERROR_BACKUP_NOT_CONFIRMED)
 )
 
 // New returns an explicitly-owned cgo engine backed by the Rust idevice shim.

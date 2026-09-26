@@ -10,7 +10,8 @@
   import { restoreSourcesStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime } from '../format';
   import { now } from '../clock';
-  import { blockedReason, lastBackupFailure, stageUi } from '../device-ui';
+  import { autoBackupStatus, blockedReason, lastBackupFailure, stageUi } from '../device-ui';
+  import AutoBackupModal from './AutoBackupModal.svelte';
   import BackupPasswordModal, { type PasswordMode } from './BackupPasswordModal.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ErrorLine from './ErrorLine.svelte';
@@ -80,6 +81,8 @@
   }
 
   let passwordMode = $state<PasswordMode | null>(null);
+  let autoBackupOpen = $state(false);
+  const autoStatus = $derived(autoBackupStatus(device.autoBackup, $now));
 
   $effect(() => restoreSourcesStore.start());
   const sources = $derived(restoreSourcesStore.data ?? []);
@@ -145,7 +148,9 @@
         {:else if live?.stage === 'preparing' && !isRestore}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
-            Enter the iPhone passcode on the phone to continue
+            {live.auto
+              ? 'Automatic backup — enter the iPhone passcode on the phone within a minute'
+              : 'Enter the iPhone passcode on the phone to continue'}
           </p>
         {/if}
       </div>
@@ -219,6 +224,35 @@
     {/if}
 
     <ErrorLine error={actionError} size="xs" />
+
+    <div class="flex flex-wrap items-center justify-between gap-3 border-t border-base-300 pt-4">
+      <div class="min-w-0">
+        <p class="flex items-center gap-2 text-sm font-semibold">
+          Automatic backup
+          {#if autoStatus}<Pill tone="green" dot>On</Pill>{:else}<Pill tone="slate" dot>Off</Pill>{/if}
+        </p>
+        {#if autoStatus}
+          <p class="mt-0.5 text-xs text-base-content/60">
+            <span class="text-base-content/80">{autoStatus.schedule}</span> ·
+            <span title={autoStatus.at && formatDateTime(autoStatus.at)}>{autoStatus.next}</span>
+          </p>
+        {:else}
+          <p class="mt-0.5 text-xs text-base-content/60">
+            Backs up shortly after the iPhone is unlocked at home; iOS asks for the passcode each time
+          </p>
+        {/if}
+      </div>
+      <button
+        type="button"
+        class="btn btn-ghost btn-sm"
+        disabled={!device.paired}
+        title={device.paired ? undefined : 'Pair the phone over USB first'}
+        onclick={() => (autoBackupOpen = true)}
+      >
+        <Icon name="clock" size={14} />
+        {autoStatus ? 'Change…' : 'Set up…'}
+      </button>
+    </div>
 
     <div class="flex flex-col gap-3 border-t border-base-300 pt-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -336,4 +370,12 @@
 <!-- Mounted fresh per open: per-open form state resets by remount. -->
 {#if passwordMode !== null}
   <BackupPasswordModal udid={device.udid} name={device.name} mode={passwordMode} onclose={() => (passwordMode = null)} />
+{/if}
+{#if autoBackupOpen}
+  <AutoBackupModal
+    udid={device.udid}
+    name={device.name}
+    current={device.autoBackup}
+    onclose={() => (autoBackupOpen = false)}
+  />
 {/if}

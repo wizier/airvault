@@ -209,6 +209,7 @@ async fn run_mb2_transfer(
         sandbox,
     } = storage;
     let label = spec.label();
+    let is_backup = spec.is_backup();
     let session = match &spec {
         TransferSpec::Backup {
             snapshot_id,
@@ -325,7 +326,9 @@ async fn run_mb2_transfer(
             match delegate.violation() {
                 Some(violation) => Err(EngineFailure::integrity(violation)),
                 None => res.and_then(|outcome| {
-                    mobilebackup2::verdict(outcome, &fallback).map_err(EngineFailure::from)
+                    mobilebackup2::verdict(outcome, &fallback).map_err(|error| {
+                        mobilebackup2::transfer_verdict_failure(error, is_backup)
+                    })
                 }),
             },
         );

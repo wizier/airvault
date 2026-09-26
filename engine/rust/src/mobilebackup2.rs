@@ -104,6 +104,16 @@ impl From<VerdictError> for EngineFailure {
     }
 }
 
+/// Classifies a backup or restore verdict. In a backup, 208 is the passcode
+/// prompt iOS raises before every host backup — dismissed or left to time out —
+/// not a locked-phone refusal, so it gets its own kind.
+pub(crate) fn transfer_verdict_failure(error: VerdictError, backup: bool) -> EngineFailure {
+    if backup && error.code == Some(208) {
+        return EngineFailure::new(ErrorKind::BackupNotConfirmed, error.detail);
+    }
+    EngineFailure::from(error)
+}
+
 /// Extract a structured final DeviceLink verdict without parsing localized
 /// error text.
 pub(crate) fn verdict(
@@ -150,8 +160,8 @@ pub(crate) fn verdict(
 mod tests {
     use plist::{Dictionary, Value};
 
-    use super::verdict;
-    use crate::engine_error::{EngineFailure, ErrorKind};
+    use super::{transfer_verdict_failure, verdict};
+    use crate::engine_error::ErrorKind;
 
     fn device_verdict(code: i64) -> Option<Dictionary> {
         let mut value = Dictionary::new();
@@ -165,14 +175,16 @@ mod tests {
 
     #[test]
     fn known_verdict_codes_have_stable_kinds() {
+        // 208 is the unanswered passcode prompt only in a backup verdict.
         let cases = [
-            (207, ErrorKind::InvalidBackupPassword),
-            (208, ErrorKind::DeviceLocked),
-            (211, ErrorKind::FindMyEnabled),
+            (207, false, ErrorKind::InvalidBackupPassword),
+            (208, false, ErrorKind::DeviceLocked),
+            (208, true, ErrorKind::BackupNotConfirmed),
+            (211, false, ErrorKind::FindMyEnabled),
         ];
-        for (code, expected) in cases {
-            let error = verdict(device_verdict(code), "restore failed").unwrap_err();
-            assert_eq!(EngineFailure::from(error).kind, expected);
+        for (code, backup, expected) in cases {
+            let error = verdict(device_verdict(code), "transfer failed").unwrap_err();
+            assert_eq!(transfer_verdict_failure(error, backup).kind, expected);
         }
     }
 }

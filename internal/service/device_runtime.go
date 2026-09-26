@@ -24,8 +24,12 @@ type deviceRuntime struct {
 	presence   string
 	screen     screenLockState
 	lockedAt   time.Time
+	unlockedAt time.Time // when the current unlock began; meaningful while screenUnlocked
 	activation string
 }
+
+// lockScreen is the projection the UI shows: anything but a seen unlock.
+func (r *deviceRuntime) lockScreen() bool { return r.screen != screenUnlocked }
 
 type connectionTransition struct {
 	udid string
@@ -112,19 +116,21 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connect
 	return transitions
 }
 
+// applyScreenLock returns whether the lock-screen projection changed and its
+// new value; the first unlock after a (re)connect changes it too.
 func (s *deviceRuntimeStore) applyScreenLock(
 	udid string,
 	signal engine.ScreenLockSignal,
 	now time.Time,
 	pairWindow time.Duration,
-) (changed, locked, applied bool) {
+) (changed, lockScreen, applied bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r := s.devices[udid]
 	if r == nil || r.presence != "wifi" {
 		return false, false, false
 	}
-	wasLocked := r.screen == screenLocked
+	wasLockScreen := r.lockScreen()
 	switch signal {
 	case engine.ScreenLockComplete:
 		r.screen = screenLocked
@@ -138,8 +144,10 @@ func (s *deviceRuntimeStore) applyScreenLock(
 	default:
 		return false, false, false
 	}
-	locked = r.screen == screenLocked
-	return wasLocked != locked, locked, true
+	if wasLockScreen && !r.lockScreen() {
+		r.unlockedAt = now
+	}
+	return wasLockScreen != r.lockScreen(), r.lockScreen(), true
 }
 
 // applyActivation records the lockdown activation state; true when a listed

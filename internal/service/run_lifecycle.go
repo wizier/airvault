@@ -31,8 +31,8 @@ func (s *Service) progressSink(run *runReservation, idleStage, activeStage RunSt
 		if total > 0 {
 			percent = min(int(transferred*100/total), 100)
 		}
-		progress := RunProgress{RunID: run.id, UDID: run.udid,
-			Restore: run.kind == runKindRestore, Percent: percent, Transferred: transferred}
+		progress := RunProgress{RunID: run.id, UDID: run.udid, Restore: run.kind == runKindRestore,
+			Auto: run.auto, Percent: percent, Transferred: transferred}
 		emit := finalizing || time.Since(lastEmit) >= emitEvery
 		if emit && !lastEmit.IsZero() {
 			speed = int64(float64(transferred-emitted) / time.Since(lastEmit).Seconds())
@@ -144,7 +144,7 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 
 	// No progress may follow a terminal event.
 	s.hideRun(run, state, eventErrorCode)
-	extra := make([]slog.Attr, 0, 2)
+	extra := run.logAttrs()
 	if outcome.sizeBytes > 0 {
 		extra = append(extra, slog.Int64("size_bytes", outcome.sizeBytes))
 	}
@@ -160,6 +160,9 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 	}
 	if run.kind == runKindRestore {
 		data["restore"] = true
+	}
+	if run.auto {
+		data["auto"] = true
 	}
 	if eventErrorCode != "" {
 		data["errorCode"] = eventErrorCode
@@ -231,6 +234,8 @@ func engineErrorCode(err error) string {
 		return "device_locked"
 	case engine.ErrorFindMyEnabled:
 		return "find_my_enabled"
+	case engine.ErrorBackupNotConfirmed:
+		return errorBackupNotConfirmed
 	case engine.ErrorIntegrity:
 		return "backup_integrity_failed"
 	case engine.ErrorCancelled:

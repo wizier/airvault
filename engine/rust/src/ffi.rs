@@ -49,6 +49,10 @@ pub const AV_ERROR_OUTCOME_UNKNOWN: i32 = 15;
 /// The phone refuses backup restores while Find My iPhone is on
 /// (MBErrorDomain 211).
 pub const AV_ERROR_FIND_MY_ENABLED: i32 = 16;
+/// The phone ended a backup without its owner confirming it: the passcode
+/// prompt iOS raises before every host backup was dismissed or timed out
+/// (MBErrorDomain 208 in a backup verdict).
+pub const AV_ERROR_BACKUP_NOT_CONFIRMED: i32 = 17;
 
 // Pull-stream rc microprotocol for av_*_next: CONTINUE = quiet window (call
 // again), CLOSED = stream over; any other non-zero rc is a stream error with

@@ -24,6 +24,36 @@ export interface Device {
   restorePoints?: number;
   /** Restore points exist on disk but the phone is no longer registered. */
   orphaned?: boolean;
+  /** Absent for orphaned sources, which have no settings. */
+  autoBackup?: AutoBackupState;
+}
+
+export const AUTO_BACKUP_PRESETS = [1, 3, 7] as const;
+export type AutoBackupDays = (typeof AUTO_BACKUP_PRESETS)[number];
+
+/** A daily span of local time, which may cross midnight. */
+export interface AutoBackupWindow {
+  /** "HH:MM" in timeZone. */
+  start: string;
+  end: string;
+  /** IANA zone the times are read in. */
+  timeZone: string;
+}
+
+export interface AutoBackupSettings {
+  enabled: boolean;
+  everyDays: AutoBackupDays;
+  window?: AutoBackupWindow;
+}
+
+/** Why the next automatic backup can't start yet. */
+export type AutoBackupWait = 'first_backup' | 'schedule' | 'paused' | 'limit';
+
+export interface AutoBackupState extends AutoBackupSettings {
+  /** Only while enabled; absent when the next unlock (inside the window)
+   *  starts a backup. */
+  wait?: AutoBackupWait;
+  notBefore?: string;
 }
 
 export interface BatteryState {
@@ -102,6 +132,14 @@ export async function changeBackupPassword(
     body: { old: oldPassword, new: newPassword },
     signal,
   });
+}
+
+export async function setAutoBackup(
+  udid: string,
+  settings: AutoBackupSettings,
+  signal?: AbortSignal,
+): Promise<void> {
+  await request<void>(`${devicePath(udid)}/auto-backup`, { method: 'PUT', body: settings, signal });
 }
 
 export async function powerDevice(udid: string, action: PowerAction): Promise<void> {

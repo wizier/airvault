@@ -38,6 +38,8 @@ type DeviceOverview struct {
 	// manifests). Nil means the cache is currently unknown.
 	DiskBytes     *int64 `json:"diskBytes,omitempty"`
 	RestorePoints int    `json:"restorePoints,omitempty"`
+	// AutoBackup is absent for orphaned sources, which have no settings.
+	AutoBackup *AutoBackupView `json:"autoBackup,omitempty"`
 	// Orphaned marks a source with restore points on disk but no registry row —
 	// its phone was removed while the backups stayed.
 	Orphaned bool `json:"orphaned,omitempty"`
@@ -48,7 +50,7 @@ func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOv
 	return DeviceOverview{
 		UDID: d.UDID, Name: d.Name, ProductType: d.ProductType, IOSVersion: d.IOSVersion,
 		Connection: cmp.Or(r.presence, "offline"), Paired: d.Paired, Encrypted: d.Encrypted,
-		LastSeen: optionalTime(d.LastSeenAt), LockScreen: r.presence != "" && r.screen != screenUnlocked,
+		LastSeen: optionalTime(d.LastSeenAt), LockScreen: r.presence != "" && r.lockScreen(),
 		ActivationState: r.activation, LastRunErrors: s.lastRunErrors(d.UDID),
 	}
 }
@@ -95,6 +97,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 		return nil, err
 	}
 	rt := s.live.snapshot()
+	now := time.Now()
 	out := make([]DeviceOverview, 0, len(devices)+len(summary))
 	seen := make(map[string]struct{}, len(devices))
 	for _, d := range devices {
@@ -106,6 +109,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 			ov.DiskBytes = gs.DiskBytes
 			ov.RestorePoints = gs.RestorePoints
 		}
+		ov.AutoBackup = s.autoBackupView(d, ov.LastBackup, now)
 		out = append(out, ov)
 	}
 	// SQLite's device registry is disposable. A source rebuilt from manifests
@@ -156,7 +160,7 @@ func (s *Service) forgetDevice(ctx context.Context, udid string) error {
 	// removeLocal emits no offline transition, so stop the observer directly.
 	s.lockObs.setOffline(udid)
 	s.live.removeLocal(udid)
-	s.clearLastRunErrors(udid)
+	s.clearRunOutcomes(udid)
 	s.gallery.remove(udid)
 	if err := s.store.Device.Delete(ctx, udid); err != nil {
 		return err
@@ -241,6 +245,6 @@ func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
 		return err
 	}
 	// Wiping a source's history resets its status to "never", stale failure included.
-	s.clearLastRunErrors(udid)
+	s.clearRunOutcomes(udid)
 	return nil
 }

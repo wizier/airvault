@@ -50,9 +50,10 @@ func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresen
 func (s *Service) screenLockSignal(udid string, signal engine.ScreenLockSignal) {
 	s.deviceTransitionMu.Lock()
 	defer s.deviceTransitionMu.Unlock()
-	changed, locked, applied := s.live.applyScreenLock(udid, signal, time.Now(), screenLockPairWindow)
+	changed, lockScreen, applied := s.live.applyScreenLock(udid, signal, time.Now(), screenLockPairWindow)
 	if applied && changed {
-		s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid, "lockScreen": locked})
+		s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid, "lockScreen": lockScreen})
+		s.wakeAutoBackup()
 	}
 }
 

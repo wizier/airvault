@@ -42,13 +42,41 @@ func TestScreenLockDoesNotGateConnection(t *testing.T) {
 	live := newDeviceRuntimeStore()
 	presence := map[string]string{"phone": "wifi"}
 	live.applyPresence(presence)
-	changed, locked, applied := live.applyScreenLock("phone", engine.ScreenLockComplete, time.Now(), screenLockPairWindow)
-	if !applied || !locked || !changed {
-		t.Fatalf("lock signal not applied: applied=%v locked=%v changed=%v", applied, locked, changed)
+	if _, lockScreen, applied := live.applyScreenLock("phone", engine.ScreenLockComplete, time.Now(), screenLockPairWindow); !applied || !lockScreen {
+		t.Fatalf("lock signal not applied: applied=%v lockScreen=%v", applied, lockScreen)
 	}
 	// Screen lock is a UI fact, never a reachability gate.
 	if got := live.connection("phone"); got != "wifi" {
 		t.Fatalf("screen lock must not gate connection, got %q", got)
+	}
+}
+
+// The lock screen shows until an unlock is seen, so the first unlock after a
+// (re)connect flips the projection, and a lock's trailing lockstate pulse is
+// not an unlock.
+func TestScreenLockProjection(t *testing.T) {
+	live := newDeviceRuntimeStore()
+	live.applyPresence(map[string]string{"phone": "wifi"})
+	start := time.Now()
+	unlockedAt := func() time.Time { return live.snapshot()["phone"].unlockedAt }
+
+	if changed, lockScreen, _ := live.applyScreenLock("phone", engine.ScreenLockChanged, start, screenLockPairWindow); !changed || lockScreen {
+		t.Fatalf("unknown→unlock: changed=%v lockScreen=%v, want a changed unlock", changed, lockScreen)
+	}
+	if !unlockedAt().Equal(start) {
+		t.Fatalf("unlockedAt = %v, want %v", unlockedAt(), start)
+	}
+	// A repeated lockstate while unlocked keeps the unlock's start.
+	if changed, _, _ := live.applyScreenLock("phone", engine.ScreenLockChanged, start.Add(time.Minute), screenLockPairWindow); changed || !unlockedAt().Equal(start) {
+		t.Fatalf("repeated unlock: changed=%v since %v, want unchanged since %v", changed, unlockedAt(), start)
+	}
+
+	lockAt := start.Add(2 * time.Minute)
+	if changed, lockScreen, _ := live.applyScreenLock("phone", engine.ScreenLockComplete, lockAt, screenLockPairWindow); !changed || !lockScreen {
+		t.Fatalf("lock: changed=%v lockScreen=%v, want a changed lock screen", changed, lockScreen)
+	}
+	if changed, lockScreen, _ := live.applyScreenLock("phone", engine.ScreenLockChanged, lockAt.Add(100*time.Millisecond), screenLockPairWindow); changed || !lockScreen {
+		t.Fatalf("trailing lock pulse: changed=%v lockScreen=%v, want the unchanged lock screen", changed, lockScreen)
 	}
 }
 

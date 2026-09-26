@@ -30,6 +30,7 @@ pub(crate) enum ErrorKind {
     InvalidBackupPassword = ffi::AV_ERROR_INVALID_BACKUP_PASSWORD,
     OutcomeUnknown = ffi::AV_ERROR_OUTCOME_UNKNOWN,
     FindMyEnabled = ffi::AV_ERROR_FIND_MY_ENABLED,
+    BackupNotConfirmed = ffi::AV_ERROR_BACKUP_NOT_CONFIRMED,
 }
 
 impl ErrorKind {
@@ -176,7 +177,7 @@ mod tests {
     fn reserved_rc_values_are_not_error_kinds() {
         for reserved in [0, ffi::AV_STREAM_CONTINUE, ffi::AV_STREAM_CLOSED] {
             assert!(
-                !(ffi::AV_ERROR_INVALID_ARGUMENT..=ffi::AV_ERROR_FIND_MY_ENABLED)
+                !(ffi::AV_ERROR_INVALID_ARGUMENT..=ffi::AV_ERROR_BACKUP_NOT_CONFIRMED)
                     .contains(&reserved),
                 "{reserved}"
             );

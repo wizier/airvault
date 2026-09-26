@@ -37,6 +37,7 @@ type RunProgress struct {
 	Percent     int      `json:"progress"`
 	Stage       RunStage `json:"stage"`
 	Restore     bool     `json:"restore,omitempty"`
+	Auto        bool     `json:"auto,omitempty"` // started by the automatic-backup trigger
 	Cancelling  bool     `json:"cancelling,omitempty"`
 	Transferred int64    `json:"transferred"`
 	Speed       int64    `json:"speed"`
@@ -66,12 +67,19 @@ type Service struct {
 	// per kind; success or cancel clears that kind. Volatile like runs:
 	// attempts are not durable.
 	lastRunError map[runIdentity]string
-	live         *deviceRuntimeStore
+	// autoHistory holds each device's recent automatic-backup setbacks; like
+	// lastRunError it is written as a run ends (see recordAutoBackup).
+	autoHistory map[string]autoHistory
+	live        *deviceRuntimeStore
 
 	// deviceRefreshKick coalesces event-driven metadata refreshes (capacity 1); the
 	// single StartWatch worker owns them, so lockdown discovers never overlap.
 	deviceRefreshKick chan struct{}
 	deviceRefreshMu   sync.Mutex
+
+	// autoBackupKick wakes the automatic-backup trigger when a screen lock
+	// state changes (capacity 1).
+	autoBackupKick chan struct{}
 
 	// deviceTransitionMu serializes low-level state commits with their domain
 	// side effects, so startup, Watch and lock-observer callbacks cannot reorder.
@@ -97,8 +105,10 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine,
 		uploads:           uploads,
 		runs:              map[string]*activeRun{},
 		lastRunError:      map[runIdentity]string{},
+		autoHistory:       map[string]autoHistory{},
 		live:              newDeviceRuntimeStore(),
 		deviceRefreshKick: make(chan struct{}, 1),
+		autoBackupKick:    make(chan struct{}, 1),
 	}
 	s.lockObs = newLockObserverMgr(app, eng, s.screenLockSignal)
 	return s
@@ -140,10 +150,12 @@ func (s *Service) lastRunErrors(udid string) map[string]string {
 	return out
 }
 
-func (s *Service) clearLastRunErrors(udid string) {
+// clearRunOutcomes forgets a device's recorded run outcomes.
+func (s *Service) clearRunOutcomes(udid string) {
 	s.runMu.Lock()
 	delete(s.lastRunError, runIdentity{udid, runKindBackup})
 	delete(s.lastRunError, runIdentity{udid, runKindRestore})
+	delete(s.autoHistory, udid)
 	s.runMu.Unlock()
 }
 

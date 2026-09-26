@@ -18,7 +18,7 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
   const s = Math.abs(deltaSec);
 
   let out: string;
-  if (s < 45) return past ? 'just now' : 'moments';
+  if (s < 45) return past ? 'just now' : 'in a moment';
   else if (s < 5400) out = `${Math.round(s / 60)}m`;
   else if (s < 129600) out = `${Math.round(s / 3600)}h`;
   else if (s < 1728000) out = `${Math.round(s / 86400)}d`;

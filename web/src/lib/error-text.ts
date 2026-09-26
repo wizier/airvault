@@ -46,6 +46,8 @@ const english = {
   device_never_came_online:
     'The phone never came online — wake it or connect it by USB, then back up again',
   device_locked: 'Unlock the iPhone and try again',
+  backup_not_confirmed:
+    "The iPhone didn't confirm the backup — enter the passcode on the phone when it asks (the prompt closes after about a minute)",
   find_my_enabled: 'Turn off Find My iPhone on the phone, then restore again',
   activation_lock: 'Activation Lock is on — sign out of the linked Apple Account on this phone, then restore again',
   activation_failed: 'Could not activate the phone with Apple — check the server internet access and try again',
@@ -83,6 +85,10 @@ const english = {
   download_failed: 'The file could not be downloaded',
   console_stream_failed: 'The device log stream stopped',
   backup_password_change_failed: 'The backup password could not be changed',
+  auto_backup_save_failed: 'The automatic backup settings could not be saved',
+  invalid_auto_backup_interval: 'Choose how often to back up',
+  invalid_auto_backup_window: 'Choose two different times for the window',
+  invalid_time_zone: "This browser's time zone is not recognized by the server",
 
   backup_start_failed: 'Failed to start backup',
   backup_cancel_failed: 'Failed to cancel',

@@ -2,9 +2,10 @@
 // tile and the device page stay visually consistent.
 
 import type { RunningProgress, RunStage } from './api/backups';
-import type { BatteryState, Connection, Device } from './api/devices';
+import type { AutoBackupDays, AutoBackupState, BatteryState, Connection, Device } from './api/devices';
 import type { IconName } from './components/icons';
 import { errorText } from './error-text';
+import { relativeTime } from './format';
 
 export type Tone = 'green' | 'amber' | 'red' | 'slate';
 
@@ -18,6 +19,51 @@ export function lastBackupFailure(device: Device, live: RunningProgress | null):
 export function blockedReason(device: Device, live: RunningProgress | null): string | null {
   if (device.connection === 'offline') return 'Device is offline';
   return live ? 'A backup or restore is running' : null;
+}
+
+/** The IANA zone this browser runs in; automatic-backup windows are saved in it. */
+export function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+export const AUTO_BACKUP_EVERY: Record<AutoBackupDays, string> = {
+  1: 'Every day',
+  3: 'Every 3 days',
+  7: 'Every week',
+};
+
+/** The automatic-backup schedule and when the next one can start (`at` is
+ *  that moment, if any); null when automatic backups are off. */
+export function autoBackupStatus(
+  auto: AutoBackupState | undefined,
+  now: number,
+): { schedule: string; next: string; at?: string } | null {
+  if (!auto?.enabled) return null;
+  const window = auto.window;
+  let schedule = AUTO_BACKUP_EVERY[auto.everyDays];
+  if (window) {
+    schedule += `, ${window.start}–${window.end}`;
+    if (window.timeZone !== browserTimeZone()) schedule += ` (${window.timeZone})`;
+  }
+  if (auto.wait === 'first_backup') {
+    return { schedule, next: 'Starts after the first backup — run it with Back up now' };
+  }
+  // The projection is as old as the last device refetch; a wait that has run
+  // out since then is over.
+  const at = auto.notBefore;
+  if (at && new Date(at).getTime() > now) {
+    const when = relativeTime(at, now);
+    switch (auto.wait) {
+      case 'paused':
+        return { schedule, at, next: `Paused after an unfinished attempt — resumes ${when}` };
+      case 'limit':
+        return { schedule, at, next: `Paused after repeated unfinished attempts — resumes ${when}` };
+      case 'schedule':
+        return { schedule, at, next: `Next ${when}` };
+    }
+  }
+  const inWindow = window ? ` between ${window.start} and ${window.end}` : '';
+  return { schedule, next: `Due — starts on the next unlock at home${inWindow}` };
 }
 
 export function connectionUi(c: Connection): { tone: Tone; label: string; icon: IconName } {

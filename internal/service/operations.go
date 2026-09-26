@@ -37,10 +37,19 @@ type runReservation struct {
 	id      string
 	kind    string
 	udid    string
+	auto    bool // started by the automatic-backup trigger
 	ctx     context.Context
 	cancel  context.CancelFunc
 	release func()
 	started time.Time
+}
+
+// logAttrs are the run's attributes beyond kind and udid for its operation.* logs.
+func (r *runReservation) logAttrs() []slog.Attr {
+	if r.auto {
+		return []slog.Attr{slog.Bool("auto", true)}
+	}
+	return nil
 }
 
 // acquireFor takes a named operation's resources and logs a refusal at Info, so
@@ -89,10 +98,10 @@ func (s *Service) announceRun(run *runReservation, stage RunStage) error {
 			fmt.Errorf("%w: a run is already active for this device", domain.ErrBusy))
 	}
 	s.runs[run.udid] = &activeRun{run: run, progress: RunProgress{
-		RunID: run.id, UDID: run.udid, Stage: stage, Restore: run.kind == runKindRestore,
+		RunID: run.id, UDID: run.udid, Stage: stage, Restore: run.kind == runKindRestore, Auto: run.auto,
 	}}
 	s.runMu.Unlock()
-	logOperationStarted(run.ctx, run.kind, run.udid)
+	logOperationStarted(run.ctx, run.kind, run.udid, run.logAttrs()...)
 	return nil
 }
 
@@ -183,9 +192,14 @@ func (s *Service) launchCommand(ctx context.Context, kind, udid string,
 	return command.id, nil
 }
 
-func logOperationStarted(ctx context.Context, kind, udid string) {
-	slog.InfoContext(ctx, "operation started", "event", "operation.started",
-		"kind", kind, "udid", udid, "state", runStateRunning)
+func logOperationStarted(ctx context.Context, kind, udid string, extra ...slog.Attr) {
+	attrs := []slog.Attr{
+		slog.String("event", "operation.started"),
+		slog.String("kind", kind),
+		slog.String("udid", udid),
+		slog.String("state", runStateRunning),
+	}
+	slog.LogAttrs(ctx, slog.LevelInfo, "operation started", append(attrs, extra...)...)
 }
 
 func logOperationFinished(
@@ -235,10 +249,17 @@ func (s *Service) hideRun(run *runReservation, state, errorCode string) {
 	s.runMu.Lock()
 	delete(s.runs, run.udid)
 	key := runIdentity{run.udid, run.kind}
-	if state == runStateFailed {
+	switch {
+	case state == runStateFailed && run.auto && errorCode == errorBackupNotConfirmed:
+		// An unanswered automatic prompt is expected, not a failure to flag: the
+		// automatic-backup status shows the pause it caused.
+	case state == runStateFailed:
 		s.lastRunError[key] = errorCode
-	} else {
+	default:
 		delete(s.lastRunError, key)
+	}
+	if run.kind == runKindBackup {
+		s.recordAutoBackup(run, state, errorCode, time.Now())
 	}
 	s.runMu.Unlock()
 }

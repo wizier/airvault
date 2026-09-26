@@ -12,6 +12,17 @@ type Device struct {
 	Paired      bool   `db:"paired"`
 	Encrypted   bool   `db:"encrypted"`
 	LastSeenAt  *int64 `db:"last_seen_at"`
+	AutoBackup
+}
+
+// AutoBackup is a device's automatic-backup settings. The window is minutes
+// after local midnight in TimeZone and may cross midnight; nil means any time.
+type AutoBackup struct {
+	Enabled     bool   `db:"auto_backup"`
+	Days        int    `db:"auto_backup_days"`
+	WindowStart *int64 `db:"auto_backup_window_start"`
+	WindowEnd   *int64 `db:"auto_backup_window_end"`
+	TimeZone    string `db:"auto_backup_tz"`
 }
 
 // Backup is one independently restorable snapshot; SourceUDID survives device

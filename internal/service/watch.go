@@ -15,9 +15,11 @@ import (
 const availabilityReconcileInterval = 5 * time.Minute
 
 // StartWatch launches the presence workers in the background: a refresh worker
-// that coalesces metadata passes, and the muxer's event-driven watcher, reopened
-// with backoff so a stream failure never leaves only interval reconciliation.
+// that coalesces metadata passes, the muxer's event-driven watcher, reopened
+// with backoff so a stream failure never leaves only interval reconciliation,
+// and the automatic-backup trigger fed by the lock state they observe.
 func (s *Service) StartWatch(ctx context.Context) {
+	s.wg.Go(func() { s.runAutoBackupTrigger(ctx, s.fireAutoBackup) })
 	// The refresh worker owns every active metadata pass. The periodic branch only
 	// re-reads the muxer's local device list; it promotes a real presence change
 	// into the same coalesced metadata path.

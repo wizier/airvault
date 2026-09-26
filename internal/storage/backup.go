@@ -57,6 +57,17 @@ func (r *BackupRepo) SourceHasSnapshots(ctx context.Context, source string) (boo
 	return exists, nil
 }
 
+// LatestCreated returns when the source's newest restore point was created;
+// nil when it has none.
+func (r *BackupRepo) LatestCreated(ctx context.Context, source string) (*int64, error) {
+	var latest *int64
+	if err := sqlx.GetContext(ctx, r.s.ext(), &latest,
+		`SELECT MAX(created_at) FROM backups WHERE source_udid = ?`, source); err != nil {
+		return nil, wrap(err, "latest source snapshot")
+	}
+	return latest, nil
+}
+
 // SnapshotSources maps every catalogued snapshot id to its owning source.
 func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, error) {
 	rows, err := listOf[struct {

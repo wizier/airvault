@@ -45,6 +45,11 @@ func (s *Service) awaitReachable(ctx context.Context, udid string) bool {
 // StartBackup is the single launch API. HTTP returns the run id immediately;
 // admission runs on the request's ctx, the run itself as long as the app.
 func (s *Service) StartBackup(ctx context.Context, udid string) (string, error) {
+	return s.startBackup(ctx, udid, false)
+}
+
+// startBackup launches a backup; auto marks one the automatic trigger started.
+func (s *Service) startBackup(ctx context.Context, udid string, auto bool) (string, error) {
 	// Both leases key on the request's udid, so admission needs no lookup: the
 	// device row is read once, under the lease that protects it.
 	run, err := s.reserveRun(runKindBackup, udid,
@@ -52,6 +57,7 @@ func (s *Service) StartBackup(ctx context.Context, udid string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	run.auto = auto
 	device, err := s.pairedDevice(ctx, udid)
 	if err != nil {
 		s.discardRun(run)

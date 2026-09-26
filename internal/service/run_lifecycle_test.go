@@ -12,10 +12,10 @@ import (
 )
 
 // newTestService builds a Service with only the fields the run-lifecycle phase
-// machine touches (the event bus and the live-run map).
+// machine touches (the event bus, the live-run map and the outcome records).
 func newTestService() *Service {
 	return &Service{app: context.Background(), bus: events.New(), runs: map[string]*activeRun{},
-		lastRunError: map[runIdentity]string{}}
+		lastRunError: map[runIdentity]string{}, autoHistory: map[string]autoHistory{}}
 }
 
 // registerRun installs backup run "run-1" on "udid-1" in phase Active, as
@@ -52,8 +52,9 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 
 // TestLastRunErrorLifecycle pins the runtime last-outcome record: a failed
 // run stores its code per kind for the device overview, the next success of
-// that kind clears it without touching the other kind's record, and a cancel
-// from the phone (the engine's cancelled kind) is not a failure.
+// that kind clears it without touching the other kind's record, and neither a
+// cancel from the phone (the engine's cancelled kind) nor an unanswered
+// automatic prompt is a failure.
 func TestLastRunErrorLifecycle(t *testing.T) {
 	s := newTestService()
 	s.lastRunError[runIdentity{"udid-1", runKindRestore}] = "restore_failed"
@@ -77,6 +78,13 @@ func TestLastRunErrorLifecycle(t *testing.T) {
 	s.completeRun(run, runOutcome{errorCode: engineErrorCode(cancelled)}, cancelled)
 	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after a phone cancel lastRunErrors = %v, want %v", got, want)
+	}
+
+	run = registerRun(s)
+	run.auto = true
+	s.completeRun(run, runOutcome{errorCode: errorBackupNotConfirmed}, errors.New("prompt unanswered"))
+	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+		t.Fatalf("after an unanswered automatic prompt lastRunErrors = %v, want %v", got, want)
 	}
 }
 
@@ -208,6 +216,7 @@ func TestEngineErrorCodes(t *testing.T) {
 		{engine.ErrorIntegrity, "backup_integrity_failed"},
 		{engine.ErrorInvalidBackupPassword, "invalid_backup_password"},
 		{engine.ErrorOutcomeUnknown, "operation_outcome_unknown"},
+		{engine.ErrorBackupNotConfirmed, "backup_not_confirmed"},
 	}
 	for _, test := range tests {
 		err := &engine.Error{Kind: test.kind, Detail: "native diagnostic"}

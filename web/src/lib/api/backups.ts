@@ -21,6 +21,8 @@ export interface RunningProgress {
   stage: RunStage;
   /** The run applies a snapshot onto the device instead of backing it up. */
   restore?: boolean;
+  /** Started by the automatic-backup trigger, not from the UI. */
+  auto?: boolean;
   /** A cancel was accepted; the run is winding down. */
   cancelling?: boolean;
   transferred: number;

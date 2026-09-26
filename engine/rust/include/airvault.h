@@ -73,6 +73,13 @@
  */
 #define AV_ERROR_FIND_MY_ENABLED 16
 
+/**
+ * The phone ended a backup without its owner confirming it: the passcode
+ * prompt iOS raises before every host backup was dismissed or timed out
+ * (MBErrorDomain 208 in a backup verdict).
+ */
+#define AV_ERROR_BACKUP_NOT_CONFIRMED 17
+
 #define AV_STREAM_CONTINUE 100
 
 #define AV_STREAM_CLOSED 101
