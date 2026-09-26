@@ -48,7 +48,7 @@ func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOv
 	return DeviceOverview{
 		UDID: d.UDID, Name: d.Name, ProductType: d.ProductType, IOSVersion: d.IOSVersion,
 		Connection: cmp.Or(r.presence, "offline"), Paired: d.Paired, Encrypted: d.Encrypted,
-		LastSeen: optionalTime(d.LastSeenAt), LockScreen: r.screen == screenLocked,
+		LastSeen: optionalTime(d.LastSeenAt), LockScreen: r.presence != "" && r.screen != screenUnlocked,
 		ActivationState: r.activation, LastRunErrors: s.lastRunErrors(d.UDID),
 	}
 }
