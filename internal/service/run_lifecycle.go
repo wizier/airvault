@@ -120,8 +120,10 @@ func (s *Service) beginCommit(run *runReservation) bool {
 }
 
 // completeRun alone classifies a run: a failure after a user cancel (not
-// shutdown) is cancelled. It removes the runtime run before publishing the
-// terminal SSE, so no later progress frame can overtake the terminal event.
+// shutdown) is cancelled, whether the cancel came from the UI or from the
+// phone, which the engine reports as a cancelled transfer. It removes the
+// runtime run before publishing the terminal SSE, so no later progress frame
+// can overtake the terminal event.
 func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr error) {
 	state := runStateCompleted
 	eventErrorCode := outcome.errorCode
@@ -130,7 +132,7 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 		// The engine and publication path returned a verified success. A cancel
 		// arriving just after that point cannot retroactively turn an immutable
 		// published snapshot (or completed restore) into a cancelled run.
-	case run.ctx.Err() != nil && s.app.Err() == nil:
+	case s.app.Err() == nil && (run.ctx.Err() != nil || engineErrorCode(runErr) == "operation_cancelled"):
 		state = runStateCancelled
 		eventErrorCode = "operation_cancelled"
 	default:

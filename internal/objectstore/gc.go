@@ -38,8 +38,8 @@ func (s *Store) ensureCollectable(source string) error {
 }
 
 // CollectLive deletes every object the live set does not reach and warns about
-// damaged live ones — a missing or wrong-size object never wedges the pass and is
-// never deleted itself. What survives is the live set, so its Footprint is final.
+// missing live ones — pool damage never wedges the pass, and a live object is
+// never deleted. What survives is the live set, so its Footprint is final.
 func (s *Store) CollectLive(source string, live *LiveSet) error {
 	if err := s.ensureCollectable(source); err != nil {
 		return err
@@ -48,7 +48,7 @@ func (s *Store) CollectLive(source string, live *LiveSet) error {
 	if err != nil {
 		return err
 	}
-	paths, seen, err := collectableObjects(source, objectsRoot, live)
+	paths, seen, err := collectableObjects(objectsRoot, live)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (s *Store) SnapshotManifestBytes(source, snapshotID string) (int64, error) 
 	return info.Size(), nil
 }
 
-func collectableObjects(source, objectsRoot string, live *LiveSet) ([]string, map[string]struct{}, error) {
+func collectableObjects(objectsRoot string, live *LiveSet) ([]string, map[string]struct{}, error) {
 	prefixes, err := readDirIfExists(objectsRoot)
 	if err != nil {
 		return nil, nil, err
@@ -166,17 +166,12 @@ func collectableObjects(source, objectsRoot string, live *LiveSet) ([]string, ma
 			if validateObjectRef(objectRef) != nil || objectRef[:objectPrefixLength] != prefix.Name() {
 				continue // not the store's
 			}
-			info, err := entry.Info()
-			if err != nil {
-				return nil, nil, err
-			}
-			if !info.Mode().IsRegular() {
+			// The type comes with the listing; a stat per object would dominate the
+			// pass on a NAS. Damage is caught where objects are read or rewritten.
+			if !entry.Type().IsRegular() {
 				return nil, nil, fmt.Errorf("object %q is not a regular file", filepath.Join(prefix.Name(), objectRef))
 			}
-			if expectedSize, exists := live.objects[objectRef]; exists {
-				if info.Size() != expectedSize {
-					slog.Warn("collect: live object damaged", "source", source, "object", objectRef)
-				}
+			if _, exists := live.objects[objectRef]; exists {
 				seen[objectRef] = struct{}{}
 				continue
 			}

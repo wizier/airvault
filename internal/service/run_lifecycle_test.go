@@ -52,7 +52,8 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 
 // TestLastRunErrorLifecycle pins the runtime last-outcome record: a failed
 // run stores its code per kind for the device overview, the next success of
-// that kind clears it without touching the other kind's record.
+// that kind clears it without touching the other kind's record, and a cancel
+// from the phone (the engine's cancelled kind) is not a failure.
 func TestLastRunErrorLifecycle(t *testing.T) {
 	s := newTestService()
 	s.lastRunError[runIdentity{"udid-1", runKindRestore}] = "restore_failed"
@@ -69,6 +70,13 @@ func TestLastRunErrorLifecycle(t *testing.T) {
 	want = map[string]string{runKindRestore: "restore_failed"}
 	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after success lastRunErrors = %v, want %v", got, want)
+	}
+
+	run = registerRun(s)
+	cancelled := &engine.Error{Kind: engine.ErrorCancelled}
+	s.completeRun(run, runOutcome{errorCode: engineErrorCode(cancelled)}, cancelled)
+	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+		t.Fatalf("after a phone cancel lastRunErrors = %v, want %v", got, want)
 	}
 }
 
