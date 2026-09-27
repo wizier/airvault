@@ -121,13 +121,17 @@ export interface DeviceScreen {
 }
 
 const PHONE: DeviceScreen = { form: 'phone', ratio: 462 / 978 };
+// Foldable, drawn closed: the 5.4" cover screen; the inner 1878×2670 is within
+// a few percent of it.
+const PHONE_FOLD: DeviceScreen = { form: 'phone', ratio: 1398 / 2034 };
 // 4:3 — every iPad through the 10.2", plus the whole 12.9"/13" line.
 const TABLET_43: DeviceScreen = { form: 'tablet', ratio: 3 / 4 };
 // 10.9"/11" edge-to-edge; the Pro's 1668×2388 is within a percent of this.
 const TABLET_11: DeviceScreen = { form: 'tablet', ratio: 1640 / 2360 };
 const TABLET_MINI: DeviceScreen = { form: 'tablet', ratio: 1488 / 2266 };
 
-// Lockdown ProductType → marketing name, iPhone1,1 … iPhone18,5 (iPhone 17e).
+// Lockdown ProductType → marketing name, iPhone1,1 … iPhone19,7 (iPhone 18 Pro
+// Max outside the US).
 const IPHONE_MODELS: Record<string, string> = {
   'iPhone1,1': 'iPhone',
   'iPhone1,2': 'iPhone 3G',
@@ -192,12 +196,20 @@ const IPHONE_MODELS: Record<string, string> = {
   'iPhone18,3': 'iPhone 17',
   'iPhone18,4': 'iPhone Air',
   'iPhone18,5': 'iPhone 17e',
+  'iPhone19,2': 'iPhone 18 Pro',
+  'iPhone19,3': 'iPhone 18 Pro Max',
+  'iPhone19,7': 'iPhone 18 Pro Max',
+};
+
+const IPHONE_FOLD_MODELS: Record<string, string> = {
+  'iPhone19,4': 'iPhone Duo',
 };
 
 // iPads, split by the body the preview draws. Wi-Fi, cellular and China
 // variants of one model share a name because they share that body.
 const IPAD_43_MODELS: Record<string, string> = {
   'iPad1,1': 'iPad',
+  'iPad1,2': 'iPad',
   'iPad2,1': 'iPad 2',
   'iPad2,2': 'iPad 2',
   'iPad2,3': 'iPad 2',
@@ -264,6 +276,10 @@ const IPAD_43_MODELS: Record<string, string> = {
   'iPad15,6': 'iPad Air 13″ (M3)',
   'iPad16,5': 'iPad Pro 13″ (M4)',
   'iPad16,6': 'iPad Pro 13″ (M4)',
+  'iPad16,10': 'iPad Air 13″ (M4)',
+  'iPad16,11': 'iPad Air 13″ (M4)',
+  'iPad17,3': 'iPad Pro 13″ (M5)',
+  'iPad17,4': 'iPad Pro 13″ (M5)',
 };
 
 const IPAD_11_MODELS: Record<string, string> = {
@@ -293,6 +309,10 @@ const IPAD_11_MODELS: Record<string, string> = {
   'iPad15,8': 'iPad (A16)',
   'iPad16,3': 'iPad Pro 11″ (M4)',
   'iPad16,4': 'iPad Pro 11″ (M4)',
+  'iPad16,8': 'iPad Air 11″ (M4)',
+  'iPad16,9': 'iPad Air 11″ (M4)',
+  'iPad17,1': 'iPad Pro 11″ (M5)',
+  'iPad17,2': 'iPad Pro 11″ (M5)',
 };
 
 const IPAD_MINI_MODELS: Record<string, string> = {
@@ -307,6 +327,7 @@ const MODELS = new Map<string, { name: string; screen: DeviceScreen }>(
   (
     [
       [PHONE, IPHONE_MODELS],
+      [PHONE_FOLD, IPHONE_FOLD_MODELS],
       [TABLET_43, IPAD_43_MODELS],
       [TABLET_11, IPAD_11_MODELS],
       [TABLET_MINI, IPAD_MINI_MODELS],
