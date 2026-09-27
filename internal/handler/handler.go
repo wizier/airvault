@@ -96,6 +96,7 @@ func (h *Handler) Router() *echo.Echo {
 
 	// Backup catalog and restore selection.
 	api.GET("/restore-sources", h.listRestoreSources)
+	api.GET("/backups/:snapshotId/download", h.downloadBackup)
 
 	// Guided pairing wizard — pairing ONLY; backups and encryption are
 	// configured later on the device page (a paired-but-never-backed-up phone

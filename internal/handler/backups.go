@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"mime"
 	"net/http"
+	"strconv"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/service"
@@ -50,6 +52,24 @@ func (h *Handler) deleteBackups(c *echo.Context) error {
 		return err
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// [GET] /api/backups/:snapshotId/download
+// Streams a restore point as a Finder-format backup (tar) straight from the
+// object store. Content-Length is exact, so a stream cut short reads as a
+// failed download, never as a complete archive.
+func (h *Handler) downloadBackup(c *echo.Context) error {
+	export, err := h.svc.OpenBackupExport(c.Request().Context(), c.Param("snapshotId"))
+	if err != nil {
+		return err
+	}
+	header := c.Response().Header()
+	header.Set(echo.HeaderContentType, "application/x-tar")
+	header.Set(echo.HeaderContentDisposition, mime.FormatMediaType("attachment", map[string]string{"filename": export.Name}))
+	header.Set(echo.HeaderContentLength, strconv.FormatInt(export.Size(), 10))
+	c.Response().WriteHeader(http.StatusOK)
+	_, err = export.WriteTo(c.Response())
+	return err
 }
 
 // [GET] /api/devices/:udid/backups/reclaimable?id=… (repeatable)

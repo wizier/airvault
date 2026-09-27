@@ -4,7 +4,7 @@
   // deletion; the freed-space estimate covers the whole selection.
   import { untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { snapshotsReclaimable, type RestorePoint } from '../api/backups';
+  import { backupDownloadUrl, snapshotsReclaimable, type RestorePoint } from '../api/backups';
   import type { Device } from '../api/devices';
   import { blockedReason } from '../device-ui';
   import { liveRun } from '../events.svelte';
@@ -176,6 +176,15 @@
                   >
                     <Icon name="backup" size={13} />
                   </button>
+                  <a
+                    class="btn btn-ghost btn-xs"
+                    href={backupDownloadUrl(point.snapshotId)}
+                    download
+                    title={`Download as a Finder backup (${formatBytes(point.sizeBytes)})`}
+                    aria-label="Download this snapshot as a Finder backup"
+                  >
+                    <Icon name="download" size={13} />
+                  </a>
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs text-error"

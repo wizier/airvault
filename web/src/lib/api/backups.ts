@@ -1,4 +1,4 @@
-import { devicePath, request } from './client';
+import { apiUrl, devicePath, request } from './client';
 import type { AcceptedRun } from './runs';
 
 /** Phase of a run, as the server names it (see Go service.Stage*). Labels for
@@ -96,6 +96,11 @@ export async function snapshotsReclaimable(
     { signal },
   );
   return response.reclaimableBytes;
+}
+
+/** The snapshot as a Finder-format backup (tar), downloaded natively by the browser. */
+export function backupDownloadUrl(snapshotId: string): string {
+  return apiUrl(`/backups/${encodeURIComponent(snapshotId)}/download`);
 }
 
 export async function listRestoreSources(signal?: AbortSignal): Promise<RestoreSource[]> {
