@@ -1,3 +1,5 @@
+// Package events is the bus behind the SSE stream: it numbers events and keeps
+// the lasting ones for a reconnecting client to replay.
 package events
 
 import (
@@ -6,29 +8,17 @@ import (
 	"sync"
 )
 
-const (
-	DeviceAdded     = "device.added"
-	DeviceUpdated   = "device.updated"
-	DeviceRemoved   = "device.removed"
-	DeviceOnline    = "device.online"
-	DeviceOffline   = "device.offline"
-	BackupStarted   = "backup.started"
-	BackupProgress  = "backup.progress"
-	BackupDone      = "backup.completed"
-	BackupFailed    = "backup.failed"
-	BackupCancelled = "backup.cancelled"
-	BackupCatalog   = "backup.catalog"
-	AppCatalog      = "app.catalog"
-	PairChanged     = "pair.changed"
-	PairTrust       = "pair.trust"
-	MuxerChanged    = "muxer.changed"
-	StreamReset     = "stream.reset"
-)
+// StreamReset tells a client its replay is incomplete: it reloads instead.
+const StreamReset = "stream.reset"
 
+// Event is one server-sent event. A transient one, like a progress frame, is
+// superseded by the next: it is not kept for replay, and a subscriber too slow
+// for it just misses it.
 type Event struct {
-	ID   uint64
-	Type string
-	Data any
+	ID        uint64
+	Type      string
+	Data      any
+	Transient bool
 }
 
 type Bus struct {
@@ -42,10 +32,6 @@ type Bus struct {
 }
 
 const historyLimit = 256
-
-func droppableProgress(t string) bool {
-	return t == BackupProgress
-}
 
 // The random epoch scopes event IDs to this process: a Last-Event-ID from
 // another epoch cannot be replayed and forces a client resync.
@@ -87,16 +73,15 @@ func (b *Bus) Unsubscribe(id int) {
 	}
 }
 
-// Emit never blocks producers. Stale progress may drop, since the next frame
-// supersedes it; a subscriber that cannot accept lifecycle is closed so it
-// reconnects and replays or resyncs rather than silently losing it.
-func (b *Bus) Emit(typ string, data any) {
-	e := Event{Type: typ, Data: data}
+// Emit never blocks producers. A subscriber that cannot take a lasting event
+// is closed, so it reconnects and replays or resyncs rather than silently
+// losing it.
+func (b *Bus) Emit(e Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextID++
 	e.ID = b.nextID
-	if !droppableProgress(e.Type) {
+	if !e.Transient {
 		b.history = append(b.history, e)
 		if len(b.history) > historyLimit {
 			b.floor = b.history[0].ID
@@ -109,7 +94,7 @@ func (b *Bus) Emit(typ string, data any) {
 			continue
 		default:
 		}
-		if droppableProgress(e.Type) {
+		if e.Transient {
 			continue
 		}
 		delete(b.subs, id)

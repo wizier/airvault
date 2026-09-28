@@ -2,8 +2,26 @@ package storage
 
 import (
 	"context"
+	"embed"
+	"fmt"
+	"io/fs"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
+)
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+// Pragmas apply per connection, which foreign_keys requires. _txlock=immediate:
+// a deferred transaction upgrading read to write under WAL fails with
+// BUSY_SNAPSHOT, which busy_timeout does not retry.
+const (
+	pragmas = "_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)" +
+		"&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	maxConns = 4
 )
 
 type Store struct {
@@ -14,11 +32,43 @@ type Store struct {
 	Backup *BackupRepo
 }
 
-func NewStore(db *sqlx.DB) *Store {
+// Open opens the catalog at dsn and migrates it to the current schema.
+func Open(ctx context.Context, dsn string) (*Store, error) {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	db, err := sqlx.Open("sqlite", dsn+separator+pragmas)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	db.SetMaxOpenConns(maxConns)
+	db.SetMaxIdleConns(maxConns)
+	if err := migrate(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	s := &Store{db: db}
 	s.wireRepos()
-	return s
+	return s, nil
 }
+
+func migrate(ctx context.Context, db *sqlx.DB) error {
+	dir, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		return err
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db.DB, dir)
+	if err != nil {
+		return fmt.Errorf("load migrations: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) wireRepos() {
 	s.Device = &DeviceRepo{s: s}

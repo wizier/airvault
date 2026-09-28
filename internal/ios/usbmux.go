@@ -95,14 +95,6 @@ func (m Mux) Devices(ctx context.Context) ([]Device, error) {
 	return devices, nil
 }
 
-func (m Mux) Probe(ctx context.Context) error {
-	conn, err := m.dial(ctx)
-	if err == nil {
-		_ = conn.Close()
-	}
-	return err
-}
-
 // PreferUSB keeps one entry per device, the USB one when there are two.
 func PreferUSB(devices []Device) []Device {
 	index := make(map[string]int, len(devices))
@@ -226,7 +218,7 @@ func (m Mux) dial(ctx context.Context) (net.Conn, error) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, m.network, m.address)
 	if err != nil {
-		return nil, fmt.Errorf("connect to muxer %s: %w", m, err)
+		return nil, fmt.Errorf("connect to muxer: %w", err) // the error names the address
 	}
 	return conn, nil
 }

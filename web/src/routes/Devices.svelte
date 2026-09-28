@@ -19,7 +19,8 @@
   const showEmpty = $derived(devicesStore.ready && phones.length === 0);
   // Exception-only: daemon is fine but the device muxer under it is not
   // (global backend unreachability is App.svelte's job).
-  const muxerDown = $derived(!!statusStore.data && statusStore.data.muxerUp === false);
+  const muxer = $derived(statusStore.data?.muxer);
+  const muxerDown = $derived(!!muxer && !muxer.up);
 
   let pairOpen = $state(false);
 </script>
@@ -40,11 +41,13 @@
     <div role="alert" class="alert alert-warning alert-soft">
       <Icon name="alert" size={18} />
       <div>
-        <p class="font-medium">Device bridge is unavailable</p>
+        <p class="font-medium">USB/Wi-Fi is unavailable</p>
         <p class="text-sm opacity-80">
-          The USB/Wi-Fi device bridge isn't available, so devices can't be reached. AirVault will
-          recover automatically once it's back.
+          netmuxd isn't answering, so devices can't be reached. AirVault reconnects on its own.
         </p>
+        {#if muxer?.error}
+          <p class="mt-1 font-mono text-xs opacity-60">{muxer.error}</p>
+        {/if}
       </div>
     </div>
   {/if}

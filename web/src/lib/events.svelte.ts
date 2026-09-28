@@ -1,6 +1,7 @@
 import type { RunningProgress } from './api/backups';
 import type { Connection } from './api/devices';
 import type { TrustStatus } from './api/pairing';
+import type { MuxerStatus } from './api/system';
 import {
   deviceAppsResources,
   devicesStore,
@@ -30,6 +31,7 @@ export function onPairTrust(handler: (event: PairTrustEvent) => void): () => voi
   return () => pairTrustHandlers.delete(handler);
 }
 
+// Event payloads; internal/service/events.go defines them.
 interface DeviceOnlineEvent {
   udid: string;
   connection: Connection;
@@ -242,10 +244,10 @@ class EventsClient {
       for (const handler of pairTrustHandlers) handler(d);
     });
 
-    // The backend already marked everything offline (device.* events follow);
-    // the bridge pill and the wizard's state both depend on the muxer.
-    on<{ up: boolean }>(es, 'muxer.changed', () => {
-      refreshStatus();
+    // The event carries the whole muxer status (device.* events follow a loss);
+    // the wizard's state depends on it too.
+    on<MuxerStatus>(es, 'muxer.changed', (muxer) => {
+      statusStore.mutate((s) => ({ ...s, muxer }));
       refreshPairState();
     });
   }

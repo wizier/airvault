@@ -7,18 +7,14 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/wizier/airvault/internal/ios/backup2"
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
 const (
-	maxBackupPath      = 4096
-	maxBackupComponent = 255
-	maxBackupDepth     = 128
-	deviceStagingDir   = ".b"
-	assumedFreeSpace   = 1 << 50
+	deviceStagingDir = ".b"
+	assumedFreeSpace = 1 << 50
 )
 
 var errUnsafePath = errors.New("rejected unsafe mobilebackup2 host path")
@@ -27,9 +23,7 @@ var errUnsafePath = errors.New("rejected unsafe mobilebackup2 host path")
 // address only its source and its ".b" staging area; any other path is
 // refused and latched, failing the transfer as an integrity violation.
 type backupStorage struct {
-	store   *objectstore.Store
 	session *objectstore.Session
-	source  string
 
 	mu        sync.Mutex
 	violation error
@@ -41,10 +35,8 @@ func (s *backupStorage) Violation() error {
 	return s.violation
 }
 
-// key maps a device path to a snapshot key. Like the reference hosts it
-// reads the path as relative, dropping empty, "." and ".." components.
 func (s *backupStorage) key(devicePath string) (string, error) {
-	key, err := backupKey(s.source, devicePath)
+	key, err := backupKey(s.session.Source(), devicePath)
 	if err != nil {
 		s.mu.Lock()
 		if s.violation == nil {
@@ -55,44 +47,44 @@ func (s *backupStorage) key(devicePath string) (string, error) {
 	return key, err
 }
 
+// backupKey maps a device path to a snapshot key. Like the reference hosts it
+// reads the path as relative, dropping empty, "." and ".." components; ""
+// is the source itself.
 func backupKey(source, devicePath string) (string, error) {
 	reject := func(reason string) (string, error) {
-		return "", fmt.Errorf("%w %q: %s", errUnsafePath, devicePath, reason)
+		return "", fmt.Errorf("%w %.200q: %s", errUnsafePath, devicePath, reason)
 	}
-	if len(devicePath) > maxBackupPath {
-		return reject("longer than 4096 bytes")
+	if len(devicePath) > maxDevicePath {
+		return reject("too long")
 	}
 	var parts []string
 	for part := range strings.SplitSeq(devicePath, "/") {
-		if part == "" || part == "." || part == ".." {
-			continue
+		if part != "" && part != "." && part != ".." {
+			parts = append(parts, part)
 		}
-		if len(part) > maxBackupComponent || !utf8.ValidString(part) || strings.ContainsAny(part, "\\\x00\u2028\u2029") {
-			return reject("invalid component")
-		}
-		parts = append(parts, part)
 	}
+	var key string
 	switch {
 	case len(parts) == 0:
 		return reject("the backup root")
-	case len(parts) > maxBackupDepth:
-		return reject("deeper than 128 components")
-	case parts[0] == source && len(parts) > 1 && parts[1] == objectstore.ProtocolDir:
-		return reject("the reserved protocol directory")
 	case parts[0] == source:
-		return strings.Join(parts[1:], "/"), nil
-	case parts[0] == deviceStagingDir:
-		key := objectstore.ProtocolDir + "/" + strings.Join(parts, "/")
-		if len(key) > maxBackupPath {
-			return reject("longer than 4096 bytes")
+		key = strings.Join(parts[1:], "/")
+		if key == objectstore.ProtocolDir || strings.HasPrefix(key, objectstore.ProtocolDir+"/") {
+			return reject("the reserved protocol directory")
 		}
-		return key, nil
+	case parts[0] == deviceStagingDir:
+		key = objectstore.ProtocolDir + "/" + strings.Join(parts, "/")
+	default:
+		return reject("outside the backup source")
 	}
-	return reject("outside the backup source")
+	if key != "" && !objectstore.ValidKey(key) {
+		return reject("not a valid snapshot key")
+	}
+	return key, nil
 }
 
 func (s *backupStorage) FreeSpace() uint64 {
-	free, err := s.store.FreeSpace()
+	free, err := s.session.FreeSpace()
 	if err != nil {
 		return assumedFreeSpace
 	}

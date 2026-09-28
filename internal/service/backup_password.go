@@ -6,7 +6,6 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
 
 // Serialized with discovery so a stale metadata pass cannot overwrite the
@@ -35,7 +34,7 @@ func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new strin
 				}
 				slog.WarnContext(commitCtx, "persist backup encryption reconciliation", "udid", udid, "error", err)
 			} else {
-				s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid})
+				s.bus.Emit(deviceUpdated(udid))
 			}
 		}
 		if engineErr != nil {

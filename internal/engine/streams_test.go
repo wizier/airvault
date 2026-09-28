@@ -12,7 +12,6 @@ import (
 	"howett.net/plist"
 
 	"github.com/wizier/airvault/internal/ios"
-	"github.com/wizier/airvault/internal/ios/iostest"
 )
 
 // A stream fails once, then reports itself closed; a cancelled one reports
@@ -63,46 +62,6 @@ func TestPullLifecycle(t *testing.T) {
 	}
 }
 
-// The watcher publishes the muxer's state, a change, one down state while the
-// muxer is gone, and the state again once it is back.
-func TestPresenceWatcher(t *testing.T) {
-	p := newTestPhone(t)
-	watcher, err := p.engine.OpenPresenceWatcher(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer watcher.Close()
-	next := func() PresenceState {
-		t.Helper()
-		state, err := watcher.Next()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return state
-	}
-
-	if state := next(); !state.MuxUp || len(state.Devices) != 1 {
-		t.Fatalf("first state = %+v", state)
-	}
-	_, identity := iostest.NewPairing(t)
-	p.muxer.Attach(iostest.NewDevice("SECOND", identity), ios.ConnectionNetwork)
-	if state := next(); len(state.Devices) != 2 {
-		t.Fatalf("after attach = %+v", state)
-	}
-	p.muxer.SetDown(true)
-	if state := next(); state.MuxUp || len(state.Devices) != 0 {
-		t.Fatalf("muxer down = %+v", state)
-	}
-	p.muxer.SetDown(false)
-	if state := next(); !state.MuxUp || len(state.Devices) != 2 {
-		t.Fatalf("muxer back = %+v", state)
-	}
-	_ = watcher.Close()
-	if _, err := watcher.Next(); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("Next after Close = %v", err)
-	}
-}
-
 func TestLockObserver(t *testing.T) {
 	p := newTestPhone(t)
 	observed := make(chan []string, 1)
@@ -135,11 +94,8 @@ func TestLockObserver(t *testing.T) {
 			t.Fatalf("Next = %v, %v; want %v", signal, err, want)
 		}
 	}
-	if _, err := stream.Next(); err == nil || errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("ProxyDeath = %v, want an error", err)
-	}
-	if _, err := stream.Next(); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("after ProxyDeath = %v, want io.ErrClosedPipe", err)
+	if _, err := stream.Next(); err == nil {
+		t.Fatal("Next after ProxyDeath succeeded")
 	}
 }
 
@@ -173,9 +129,6 @@ func TestConsole(t *testing.T) {
 	}
 	if _, err := console.Next(); err == nil {
 		t.Fatal("Next after the phone hung up succeeded")
-	}
-	if _, err := console.Next(); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("second Next after the failure = %v", err)
 	}
 }
 

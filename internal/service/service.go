@@ -9,6 +9,7 @@ import (
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/events"
+	"github.com/wizier/airvault/internal/library"
 	"github.com/wizier/airvault/internal/objectstore"
 	"github.com/wizier/airvault/internal/storage"
 )
@@ -46,7 +47,7 @@ type Service struct {
 	engine  *engine.Engine
 	bus     *events.Bus
 	ops     *operationManager
-	objects *objectstore.Store
+	library *library.Library
 	files   *devicefs.Manager
 	gallery *galleryIndex
 	uploads string // staging directory for uploaded .ipa files
@@ -91,7 +92,6 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine,
 		engine:            eng,
 		bus:               bus,
 		ops:               newOperationManager(),
-		objects:           objects,
 		files:             devicefs.New(eng),
 		gallery:           newGalleryIndex(),
 		uploads:           uploads,
@@ -102,13 +102,9 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine,
 		deviceRefreshKick: make(chan struct{}, 1),
 		autoBackupKick:    make(chan struct{}, 1),
 	}
+	s.library = library.New(objects, store, s.catalogChanged)
 	s.lockObs = newLockObserverMgr(app, eng, s.screenLockSignal)
 	return s
-}
-
-func (s *Service) MuxerReady(ctx context.Context) bool {
-	up, err := s.engine.ProbeMux(ctx)
-	return err == nil && up
 }
 
 func (s *Service) Ping(ctx context.Context) error { return s.store.Ping(ctx) }
@@ -152,6 +148,7 @@ func (s *Service) Wait(timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
+		s.library.Wait()
 		s.lockObs.wg.Wait()
 		close(done)
 	}()
@@ -190,7 +187,7 @@ func (s *Service) CancelRun(runID string) error {
 		active.run.cancel()
 		// Publish while holding the run lock so a terminal event cannot overtake
 		// this final progress state and resurrect a completed run in the UI.
-		s.bus.Emit(events.BackupProgress, active.progress)
+		s.bus.Emit(runProgressed(active.progress))
 		return nil
 	}
 	return domain.ErrNotFound

@@ -12,7 +12,7 @@ import (
 func TestDiscoveryKeepsAutoBackupSettings(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	device := model.Device{UDID: footprintTestSource, Name: "iPhone", Paired: true}
+	device := model.Device{UDID: testSource, Name: "iPhone", Paired: true}
 	if err := store.Device.Upsert(ctx, &device); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestDiscoveryKeepsAutoBackupSettings(t *testing.T) {
 // A source without restore points has no latest one: the automatic trigger
 // reads nil as "the first backup is still manual".
 func TestLatestCreatedWithoutBackups(t *testing.T) {
-	latest, err := newTestStore(t).Backup.LatestCreated(context.Background(), footprintTestSource)
+	latest, err := newTestStore(t).Backup.LatestCreated(context.Background(), testSource)
 	if err != nil || latest != nil {
 		t.Fatalf("LatestCreated = %v, %v; want nil", latest, err)
 	}

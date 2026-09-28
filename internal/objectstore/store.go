@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/durable"
 
 	"github.com/google/uuid"
 )
@@ -37,7 +38,7 @@ func New(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{root: absolute, lockFile: lockFile, syncDir: syncDirectory}
+	store := &Store{root: absolute, lockFile: lockFile, syncDir: durable.SyncDir}
 	store.syncContents = store.Sync
 	return store, nil
 }
@@ -353,17 +354,8 @@ func rejectSymlinkTraversal(root, target string) error {
 	return nil
 }
 
-func syncDirectory(directory string) error {
-	file, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
-}
-
 func syncExistingDirectory(directory string) error {
-	err := syncDirectory(directory)
+	err := durable.SyncDir(directory)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

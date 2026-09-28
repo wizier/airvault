@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/wizier/airvault/internal/engine"
@@ -99,47 +98,29 @@ func TestApplyActivationKeepsLastKnownOnFailedRead(t *testing.T) {
 	}
 }
 
-// fakeLockEngine opens lock streams that stay silent until their observer is
-// cancelled, recording each open and close.
-type fakeLockEngine struct {
-	opened, closed chan struct{}
-}
-
-func (f fakeLockEngine) OpenLockObserver(ctx context.Context, _ engine.DeviceID) (engine.LockStream, error) {
-	f.opened <- struct{}{}
-	return fakeLockStream{ctx: ctx, closed: f.closed}, nil
-}
-
-type fakeLockStream struct {
-	ctx    context.Context
-	closed chan struct{}
-}
-
-func (s fakeLockStream) Next() (engine.ScreenLockSignal, error) {
-	<-s.ctx.Done()
-	return 0, s.ctx.Err()
-}
-
-func (s fakeLockStream) Close() error {
-	s.closed <- struct{}{}
-	return nil
-}
-
-// The lock observer runs while a device is online and stops when it goes offline.
-func TestLockObserverLifecycle(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		fake := fakeLockEngine{opened: make(chan struct{}, 2), closed: make(chan struct{}, 2)}
-		m := newLockObserverMgr(context.Background(), fake, func(string, engine.ScreenLockSignal) {})
-		m.setOnline("phone")
-		m.setOnline("phone") // idempotent: an already-running observer is not doubled
-		synctest.Wait()
-		if got := len(fake.opened); got != 1 {
-			t.Fatalf("online device opened %d lock observers, want 1", got)
-		}
-		m.setOffline("phone")
-		synctest.Wait()
-		if got := len(fake.closed); got != 1 {
-			t.Fatalf("offline device closed %d lock observers, want 1", got)
-		}
-	})
+// The muxer status changes only when what the muxer proved changes; the
+// first check and every up/down change are flips.
+func TestMuxerStatus(t *testing.T) {
+	live := newDeviceRuntimeStore()
+	up := engine.PresenceState{MuxUp: true, Devices: []engine.DevicePresence{
+		{DeviceID: "a", Connection: "usb"}, {DeviceID: "b", Connection: "wifi"}, {DeviceID: "c", Connection: "wifi"},
+	}}
+	status, changed, flipped := live.applyMuxer(up)
+	if want := (MuxerStatus{Up: true, USB: 1, WiFi: 2}); status != want || !changed || !flipped {
+		t.Fatalf("first check = %+v, changed %v, flipped %v", status, changed, flipped)
+	}
+	if _, changed, _ := live.applyMuxer(up); changed {
+		t.Fatal("the same proof changed the status")
+	}
+	up.Devices = up.Devices[:1]
+	if status, changed, flipped := live.applyMuxer(up); !changed || flipped || status.WiFi != 0 {
+		t.Fatalf("device change = %+v, changed %v, flipped %v", status, changed, flipped)
+	}
+	status, changed, flipped = live.applyMuxer(engine.PresenceState{Err: context.DeadlineExceeded})
+	if status.Up || !changed || !flipped || status.USB != 0 || status.Error == "" {
+		t.Fatalf("down = %+v, changed %v, flipped %v", status, changed, flipped)
+	}
+	if live.muxerStatus() != status {
+		t.Fatal("the stored status differs from the one applied")
+	}
 }

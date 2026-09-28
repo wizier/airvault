@@ -3,10 +3,7 @@ package objectstore
 import (
 	"archive/tar"
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"hash"
 	"io"
 	"maps"
 	"os"
@@ -34,13 +31,12 @@ type Tar struct {
 	file *tarFile
 }
 
-// Content read in order from its start is hashed, so a damaged object fails the
-// read instead of passing as a complete copy.
+// Content read in order from its start is checked, so a damaged object fails
+// the read instead of passing as a complete copy.
 type tarFile struct {
-	index  int
-	file   *os.File
-	digest hash.Hash
-	hashed int64
+	index int
+	file  *os.File
+	check *contentCheck
 }
 
 func (v *View) Tar(root string) (*Tar, error) {
@@ -110,27 +106,23 @@ func (t *Tar) readEntry(index int, offset int64, buffer []byte) (int, error) {
 }
 
 func (t *Tar) readContent(index int, offset int64, buffer []byte) (int, error) {
+	entry := t.view.manifest.Entries[t.paths[index]]
 	if t.file == nil || t.file.index != index {
 		t.closeFile()
-		file, err := t.view.Open(t.paths[index])
+		file, err := t.view.store.openObject(t.view.Source(), entry.ObjectRef, entry.Size)
 		if err != nil {
 			return 0, fmt.Errorf("pack %q: %w", t.paths[index], err)
 		}
-		t.file = &tarFile{index: index, file: file, digest: sha256.New()}
+		t.file = &tarFile{index: index, file: file, check: newContentCheck(entry.ObjectRef, entry.Size)}
 	}
 	f := t.file
 	read, err := f.file.ReadAt(buffer, offset)
+	// A resumed download starts mid-file; only in-order reads can be verified.
+	if err == nil && f.check.fed == offset {
+		err = f.check.feed(buffer[:read])
+	}
 	if err != nil {
 		return read, fmt.Errorf("pack %q: %w", t.paths[index], err)
-	}
-	// A resumed download starts mid-file; only in-order reads can be verified.
-	if f.hashed == offset {
-		_, _ = f.digest.Write(buffer[:read])
-		f.hashed += int64(read)
-		entry := t.view.manifest.Entries[t.paths[index]]
-		if f.hashed == entry.Size && hex.EncodeToString(f.digest.Sum(nil)) != entry.ObjectRef {
-			return read, fmt.Errorf("pack %q: object %q content does not match its hash", t.paths[index], entry.ObjectRef)
-		}
 	}
 	return read, nil
 }

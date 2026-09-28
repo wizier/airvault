@@ -63,13 +63,15 @@ func TestPresenceAndUSBList(t *testing.T) {
 	p.muxer.Attach(iostest.NewDevice("WIFI-ONLY", identity), ios.ConnectionNetwork)
 	ctx := context.Background()
 
-	presence, err := p.engine.ListPresence(ctx)
+	watcher := p.engine.WatchPresence(ctx)
+	defer watcher.Close()
+	presence, err := watcher.Next()
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []DevicePresence{{DeviceID: p.udid, Connection: "usb"}, {DeviceID: "WIFI-ONLY", Connection: "wifi"}}
-	if !reflect.DeepEqual(presence, want) {
-		t.Fatalf("presence = %+v, want %+v", presence, want)
+	if !reflect.DeepEqual(presence.Devices, want) {
+		t.Fatalf("presence = %+v, want %+v", presence.Devices, want)
 	}
 	usb, err := p.engine.ListUSBDevices(ctx)
 	if err != nil {
@@ -77,20 +79,6 @@ func TestPresenceAndUSBList(t *testing.T) {
 	}
 	if want := []USBDevice{{DeviceID: p.udid, Name: "Test iPhone"}}; !reflect.DeepEqual(usb, want) {
 		t.Fatalf("USB devices = %+v, want %+v", usb, want)
-	}
-}
-
-func TestProbeMux(t *testing.T) {
-	p := newTestPhone(t)
-	if up, err := p.engine.ProbeMux(context.Background()); !up || err != nil {
-		t.Fatalf("ProbeMux = %v, %v", up, err)
-	}
-	engine, err := New(Config{MuxAddress: "127.0.0.1:1", PairingRoot: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if up, err := engine.ProbeMux(context.Background()); up || err != nil {
-		t.Fatalf("ProbeMux without a muxer = %v, %v", up, err)
 	}
 }
 
@@ -115,7 +103,7 @@ func TestDeviceErrors(t *testing.T) {
 	if _, err := p.engine.Battery(ctx, "ABSENT"); kindOf(err) != ErrorDeviceUnavailable {
 		t.Errorf("absent device: %v, want ErrorDeviceUnavailable", err)
 	}
-	if _, err := p.engine.pairs.Delete(string(p.udid)); err != nil {
+	if err := p.engine.pairs.Delete(string(p.udid)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.engine.Battery(ctx, p.udid); kindOf(err) != ErrorTrustRequired {

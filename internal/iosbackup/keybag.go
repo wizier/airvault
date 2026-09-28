@@ -9,8 +9,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-
-	"github.com/wizier/airvault/internal/objectstore"
 )
 
 // The BackupKeyBag in Manifest.plist wraps its class keys with a key derived
@@ -123,17 +121,12 @@ func verifyBackupPassword(keybagData []byte, password string) (bool, error) {
 	return false, nil
 }
 
-func VerifyPassword(view *objectstore.View, password string) (bool, error) {
-	var manifest struct {
-		BackupKeyBag []byte `plist:"BackupKeyBag"`
-	}
-	if err := readPlist(view, "Manifest.plist", &manifest); err != nil {
-		return false, err
-	}
-	if len(manifest.BackupKeyBag) == 0 {
+// VerifyPassword checks password against the backup's keybag locally.
+func (b *Backup) VerifyPassword(password string) (bool, error) {
+	if len(b.keybag) == 0 {
 		return false, errors.New("backup keybag is missing from Manifest.plist")
 	}
-	return verifyBackupPassword(manifest.BackupKeyBag, password)
+	return verifyBackupPassword(b.keybag, password)
 }
 
 // aesUnwrap is RFC 3394. A failed integrity check means the wrapping key, and

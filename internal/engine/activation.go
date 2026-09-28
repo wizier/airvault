@@ -2,9 +2,9 @@ package engine
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/wizier/airvault/internal/ios"
-	airlog "github.com/wizier/airvault/internal/logging"
 )
 
 // ActivationState falls back to lockdown when the daemon has no answer.
@@ -61,7 +61,7 @@ func (e *Engine) ActivationFinish(ctx context.Context, device DeviceID, record [
 		}
 		// The phone is activated once the daemon accepts; the acknowledgement is best effort.
 		if err := e.acknowledgeActivation(ctx, device); err != nil {
-			airlog.Component("engine").WarnContext(ctx, "activation acknowledgement failed", "udid", device, "error", err)
+			slog.WarnContext(ctx, "activation acknowledgement failed", "udid", device, "error", err)
 		}
 		return nil
 	})

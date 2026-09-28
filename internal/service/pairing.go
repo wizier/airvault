@@ -10,8 +10,10 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
+
+// USBDevice is served as the engine reports it.
+type USBDevice = engine.USBDevice
 
 func actionErrorCode(err error, fallback string) string {
 	var action *domain.ActionError
@@ -67,7 +69,7 @@ func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.Pairin
 		if err != nil || !device.Paired {
 			return res, fmt.Errorf("pairing succeeded but could not be verified through a new lockdown session")
 		}
-		s.bus.Emit(events.PairChanged, map[string]any{"udid": udid, "paired": true})
+		s.bus.Emit(pairingChanged(udid, true))
 	}
 	return res, nil
 }
@@ -95,12 +97,11 @@ func (s *Service) executeTrustFlow(app context.Context, runID, udid string) erro
 	defer cancel()
 	for {
 		status, err := s.pairTrustOnce(ctx, udid)
-		data := map[string]any{"runId": runID, "udid": udid, "status": status}
 		if err != nil {
-			data["status"] = engine.TrustError
-			data["errorCode"] = actionErrorCode(err, "pairing_failed")
+			s.bus.Emit(trustStep(runID, udid, engine.TrustError, actionErrorCode(err, "pairing_failed")))
+		} else {
+			s.bus.Emit(trustStep(runID, udid, status, ""))
 		}
-		s.bus.Emit(events.PairTrust, data)
 		switch {
 		case err != nil:
 			return err
@@ -116,8 +117,7 @@ func (s *Service) executeTrustFlow(app context.Context, runID, udid string) erro
 				reason = "pairing cancelled"
 				errorCode = "operation_cancelled"
 			}
-			s.bus.Emit(events.PairTrust, map[string]any{"runId": runID, "udid": udid, "status": engine.TrustError,
-				"errorCode": errorCode})
+			s.bus.Emit(trustStep(runID, udid, engine.TrustError, errorCode))
 			return fmt.Errorf("%s", reason)
 		}
 	}

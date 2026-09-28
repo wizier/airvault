@@ -9,33 +9,43 @@ import (
 	"github.com/wizier/airvault/internal/ios"
 )
 
-func (e *Engine) ProbeMux(ctx context.Context) (bool, error) {
-	probe, cancel := context.WithTimeout(ctx, muxTimeout)
-	defer cancel()
-	up := e.mux.Probe(probe) == nil
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	return up, nil
+// PairingState separates a confirmed lockdown result from a probe that failed
+// for an unrelated reason (transport, timeout, unreadable local record, etc.).
+type PairingState string
+
+const (
+	PairingStatePaired   PairingState = "paired"
+	PairingStateUnpaired PairingState = "unpaired"
+	PairingStateUnknown  PairingState = "unknown"
+)
+
+// DeviceInfo is a device the engine currently sees. MetadataKnown and
+// FlagsKnown are false when the lockdown identity / encryption reads failed.
+// Presence and transport come from PresenceState instead.
+type DeviceInfo struct {
+	DeviceID      DeviceID
+	Name          string
+	ProductType   string
+	IOSVersion    string
+	PairingState  PairingState
+	MetadataKnown bool
+	FlagsKnown    bool
+	Encrypted     bool
+	// ActivationState is the lockdown value ("Activated", "Unactivated",
+	// "FactoryActivated", ...); empty when the read failed.
+	ActivationState string
 }
 
-func (e *Engine) ListPresence(ctx context.Context) ([]DevicePresence, error) {
-	devices, err := e.devices(ctx)
-	if err != nil {
-		return nil, failure(ctx, "list devices", err)
-	}
-	return presenceOf(devices), nil
+// USBDevice is a device reachable over USB (for the pairing wizard).
+type USBDevice struct {
+	DeviceID DeviceID `json:"udid"`
+	Name     string   `json:"name"`
 }
 
-func presenceOf(devices []ios.Device) []DevicePresence {
-	presence := make([]DevicePresence, len(devices))
-	for i, device := range devices {
-		presence[i] = DevicePresence{DeviceID: DeviceID(device.UDID), Connection: "usb"}
-		if device.Connection == ios.ConnectionNetwork {
-			presence[i].Connection = "wifi"
-		}
-	}
-	return presence
+// Battery is the device's charge level and whether it is charging.
+type Battery struct {
+	Charging bool `json:"charging"`
+	Level    int  `json:"level"` // 0-100
 }
 
 // InspectDevices reads devices in parallel, each bounded: one unreachable

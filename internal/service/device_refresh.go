@@ -9,7 +9,6 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/model"
 )
 
@@ -18,15 +17,6 @@ func (s *Service) requestDeviceRefresh() {
 	case s.deviceRefreshKick <- struct{}{}:
 	default:
 	}
-}
-
-// refreshPresence is cheap and muxer-local: it never opens a phone service.
-func (s *Service) refreshPresence(ctx context.Context) (bool, error) {
-	items, err := s.engine.ListPresence(ctx)
-	if err != nil {
-		return false, err
-	}
-	return s.applySnapshot(ctx, items), nil
 }
 
 // The expensive pass: it reads lockdown metadata from every device.
@@ -58,17 +48,17 @@ func (s *Service) refreshRegisteredDevices(ctx context.Context) error {
 		}
 		if known && existing.Paired && !device.Paired {
 			// A reset/revoke while attached has no presence transition for the wizard.
-			s.bus.Emit(events.PairChanged, map[string]any{"udid": udid, "paired": false})
+			s.bus.Emit(pairingChanged(udid, false))
 		}
 		activationChanged := s.live.applyActivation(udid, discovered.ActivationState)
 		if !known {
-			s.bus.Emit(events.DeviceAdded, map[string]any{"udid": udid})
+			s.bus.Emit(deviceAdded(udid))
 			continue
 		}
 		if existing.Name != device.Name || existing.ProductType != device.ProductType ||
 			existing.IOSVersion != device.IOSVersion || existing.Paired != device.Paired ||
 			existing.Encrypted != device.Encrypted || activationChanged {
-			s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid})
+			s.bus.Emit(deviceUpdated(udid))
 		}
 	}
 	return nil

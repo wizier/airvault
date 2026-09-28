@@ -11,11 +11,11 @@ import (
 
 func TestContextHandlerAddsJobIDOnlyFromContext(t *testing.T) {
 	var out bytes.Buffer
-	logger := newRoot(&out, slog.LevelInfo, true).With("component", "go")
+	logger := newRoot(&out, slog.LevelInfo, true)
 	logger.InfoContext(WithJobID(context.Background(), "job-123"), "started")
 
 	got := out.String()
-	for _, field := range []string{"INF", "started", "service=airvault", "component=go", "job_id=job-123"} {
+	for _, field := range []string{"INF", "started", "service=airvault", "job_id=job-123"} {
 		if !strings.Contains(got, field) {
 			t.Fatalf("record does not contain %q: %s", field, got)
 		}

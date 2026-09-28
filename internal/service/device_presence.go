@@ -8,7 +8,6 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
 
 // A lockstate within this window of a lockcomplete is that same lock's trailing
@@ -47,7 +46,7 @@ func (s *Service) screenLockSignal(udid string, signal engine.ScreenLockSignal) 
 	defer s.deviceTransitionMu.Unlock()
 	changed, lockScreen, applied := s.live.applyScreenLock(udid, signal, time.Now(), screenLockPairWindow)
 	if applied && changed {
-		s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid, "lockScreen": lockScreen})
+		s.bus.Emit(lockScreenChanged(udid, lockScreen))
 		s.wakeAutoBackup()
 	}
 }
@@ -60,15 +59,15 @@ func (s *Service) publishConnections(ctx context.Context, transitions []connecti
 		case previous == "" && current != "":
 			wantRefresh = true
 			slog.Info("device online", "udid", udid, "connection", current)
-			s.bus.Emit(events.DeviceOnline, map[string]any{"udid": udid, "connection": current})
+			s.bus.Emit(deviceOnline(udid, current))
 			if pairable[udid] {
-				s.bus.Emit(events.PairChanged, map[string]any{"udid": udid})
+				s.bus.Emit(pairableChanged(udid))
 			}
 		case current == "":
 			slog.Info("device offline", "udid", udid)
 			dev, err := s.store.Device.GetByUDID(ctx, udid)
 			if err != nil || !dev.Paired {
-				s.bus.Emit(events.PairChanged, map[string]any{"udid": udid})
+				s.bus.Emit(pairableChanged(udid))
 			}
 			if err == nil {
 				// Write before emit so an event-triggered refetch sees fresh LastSeen.
@@ -76,9 +75,9 @@ func (s *Service) publishConnections(ctx context.Context, transitions []connecti
 					slog.Warn("watch: touch last seen", "udid", udid, "error", touchErr)
 				}
 			}
-			s.bus.Emit(events.DeviceOffline, map[string]any{"udid": udid})
+			s.bus.Emit(deviceOffline(udid))
 		default:
-			s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid, "connection": current})
+			s.bus.Emit(connectionChanged(udid, current))
 		}
 		// The lock observer lives while a PAIRED device is online over Wi-Fi:
 		// an unknown or broken-pairing phone would only feed a lockdown-refusal

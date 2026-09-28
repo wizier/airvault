@@ -6,100 +6,63 @@ import (
 	"time"
 
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
 
-// A coarse, muxer-local drift correction. It never opens a phone service;
-// metadata is refreshed only after an actual presence/pairing event.
-const availabilityReconcileInterval = 5 * time.Minute
-
-// The presence watcher is reopened with backoff so a stream failure never
-// leaves only interval reconciliation.
+// StartWatch follows the muxer: its presence drives device state and kicks
+// the metadata refresh.
 func (s *Service) StartWatch(ctx context.Context) {
 	s.wg.Go(func() { s.runAutoBackupTrigger(ctx, s.fireAutoBackup) })
-	// The refresh worker owns every active metadata pass. The periodic branch only
-	// re-reads the muxer's local device list; it promotes a real presence change
-	// into the same coalesced metadata path.
+	// The refresh worker owns every metadata pass, so lockdown discovers never
+	// overlap.
 	s.wg.Go(func() {
-		ticker := time.NewTicker(availabilityReconcileInterval)
-		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-s.deviceRefreshKick:
-			case <-ticker.C:
-				wantRefresh, err := s.refreshPresence(ctx)
-				if err != nil {
-					slog.Warn("watch: reconcile availability", "error", err)
-				} else if wantRefresh {
-					s.requestDeviceRefresh()
-				}
-				continue
 			}
 			if err := s.refreshRegisteredDevices(ctx); err != nil {
 				slog.Warn("watch: refresh", "error", err)
 			}
 		}
 	})
-	s.wg.Go(func() {
-		// Seed presence before opening the stream so the initial snapshot orders
-		// ahead of the watcher's and can never be overwritten by a stale one applied
-		// concurrently.
-		if wantRefresh, err := s.refreshPresence(ctx); err != nil {
-			slog.Warn("watch: initial availability", "error", err)
-		} else if wantRefresh {
-			s.requestDeviceRefresh()
-		}
-		backoff := time.Second
-		const maxBackoff = 30 * time.Second
-		for ctx.Err() == nil {
-			watcher, err := s.engine.OpenPresenceWatcher(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					slog.Warn("watch: presence stream unavailable", "error", err, "retry", backoff)
-				}
-			} else {
-				if s.consumePresence(ctx, watcher) {
-					backoff = time.Second
-				}
-				_ = watcher.Close()
-			}
-			if !sleepContext(ctx, backoff) {
-				return
-			}
-			backoff = min(backoff*2, maxBackoff)
-		}
-	})
+	s.wg.Go(func() { s.followPresence(ctx) })
 }
 
-// True means at least one snapshot arrived, so the reopen backoff resets.
-func (s *Service) consumePresence(ctx context.Context, watcher *engine.PresenceWatcher) bool {
-	muxUp := false
-	received := false
+// followPresence applies every muxer state; the watcher reconnects on its
+// own, so only shutdown ends it.
+func (s *Service) followPresence(ctx context.Context) {
+	watcher := s.engine.WatchPresence(ctx)
+	defer watcher.Close()
 	for {
 		state, err := watcher.Next()
 		if err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("watch: presence stream stopped", "error", err)
-			}
-			return received
+			return
 		}
 		wantRefresh := s.applySnapshot(ctx, state.Devices)
-		// The first state is always announced. Emitted only after the complete
-		// presence state has been applied, so event-triggered readers never
-		// observe the old snapshot.
-		if !received || state.MuxUp != muxUp {
-			muxUp = state.MuxUp
-			slog.Info("muxer: transition", "up", muxUp)
-			s.bus.Emit(events.MuxerChanged, map[string]any{"up": muxUp})
-		}
-		received = true
+		// After the snapshot, so event-triggered readers never see the old one.
+		s.observeMuxer(state)
 		if wantRefresh {
 			s.requestDeviceRefresh()
 		}
 	}
 }
+
+// observeMuxer is the only writer of the muxer status.
+func (s *Service) observeMuxer(state engine.PresenceState) {
+	status, changed, flipped := s.live.applyMuxer(state)
+	switch {
+	case flipped && status.Up:
+		slog.Info("muxer: up", "usb", status.USB, "wifi", status.WiFi)
+	case flipped:
+		slog.Warn("muxer: down", "error", status.Error)
+	}
+	if changed {
+		s.bus.Emit(muxerChanged(status))
+	}
+}
+
+func (s *Service) Muxer() MuxerStatus { return s.live.muxerStatus() }
 
 func sleepContext(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)

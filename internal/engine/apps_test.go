@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -12,6 +13,57 @@ import (
 	"github.com/wizier/airvault/internal/ios/afc"
 	"github.com/wizier/airvault/internal/ios/iostest"
 )
+
+func TestListApps(t *testing.T) {
+	p := newTestPhone(t)
+	p.phone.Handle(ios.InstallationProxyService, xmlService(func(request map[string]any) map[string]any {
+		if options, _ := request["ClientOptions"].(map[string]any); request["Command"] != "Lookup" || options["ApplicationType"] != "User" {
+			return map[string]any{"Error": "BadRequest"}
+		}
+		return map[string]any{"LookupResult": map[string]any{
+			"com.b.notes":  map[string]any{"CFBundleName": "notes", "CFBundleVersion": "7"},
+			"com.a.files":  map[string]any{"CFBundleDisplayName": "Files", "CFBundleShortVersionString": "2.1", "UIFileSharingEnabled": true},
+			"com.c.bare":   map[string]any{},
+			"com.d.broken": "not a dictionary",
+		}}
+	}))
+	apps, err := p.engine.ListApps(context.Background(), p.udid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []App{
+		{BundleID: "com.c.bare", Name: "com.c.bare"},
+		{BundleID: "com.a.files", Name: "Files", Version: "2.1", FileSharing: true},
+		{BundleID: "com.b.notes", Name: "notes", Version: "7"},
+	}
+	if !reflect.DeepEqual(apps, want) {
+		t.Fatalf("apps = %+v\nwant %+v", apps, want)
+	}
+}
+
+// An icon the phone cannot give is skipped; a dropped connection ends the
+// batch with the icons already read.
+func TestAppIcons(t *testing.T) {
+	p := newTestPhone(t)
+	p.phone.Handle(ios.SpringBoardService, xmlService(func(request map[string]any) map[string]any {
+		switch request["bundleId"] {
+		case "com.a":
+			return map[string]any{"pngData": []byte("PNG-A")}
+		case "com.missing":
+			return map[string]any{"Error": "NotFound"}
+		case "com.empty":
+			return map[string]any{"pngData": []byte{}}
+		}
+		return nil // drop the connection
+	}))
+	icons, err := p.engine.AppIcons(context.Background(), p.udid, []string{"com.a", "com.missing", "com.empty", "com.drop", "com.after"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string][]byte{"com.a": []byte("PNG-A")}; !reflect.DeepEqual(icons, want) {
+		t.Fatalf("icons = %v, want %v", icons, want)
+	}
+}
 
 type installFixture struct {
 	*testPhone

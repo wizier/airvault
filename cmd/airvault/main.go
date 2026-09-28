@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -27,9 +26,7 @@ import (
 	"github.com/wizier/airvault/internal/storage"
 	"github.com/wizier/airvault/internal/version"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
-	"github.com/pressly/goose/v3"
 
 	_ "modernc.org/sqlite"
 )
@@ -70,40 +67,17 @@ func run() error {
 		slog.Warn("HTTP authentication token (set AIRVAULT_AUTH_TOKEN to override)",
 			"username", auth.Username, "token", showToken, "path", cfg.ConfigDir+"/auth-token")
 	}
-	// Pragmas in DSN apply per-connection (foreign_keys requires this).
-	// _txlock=immediate: deferred tx upgrading read→write under WAL fail with
-	// BUSY_SNAPSHOT, which busy_timeout does not retry.
-	separator := "?"
-	if strings.Contains(cfg.DatabaseURL, "?") {
-		separator = "&"
-	}
-	const sqlitePragmas = "_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)" +
-		"&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
-	dsn := cfg.DatabaseURL + separator + sqlitePragmas
-	db, err := sqlx.Open("sqlite", dsn)
+	store, err := storage.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return fmt.Errorf("opening catalog: %w", err)
 	}
 	// Cleared by a shutdown that leaves work running, which the closes would race.
 	closeStorage := true
 	defer func() {
 		if closeStorage {
-			_ = db.Close()
+			_ = store.Close()
 		}
 	}()
-	const dbMaxConns = 4
-	db.SetMaxOpenConns(dbMaxConns)
-	db.SetMaxIdleConns(dbMaxConns)
-
-	goose.SetBaseFS(airvault.MigrationsFS)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("setting goose dialect: %w", err)
-	}
-	if err := goose.Up(db.DB, "migrations"); err != nil {
-		return fmt.Errorf("running migrations: %w", err)
-	}
-
-	store := storage.NewStore(db)
 
 	staticFS, err := fs.Sub(airvault.WebFS, "web/dist")
 	if err != nil {
@@ -132,7 +106,6 @@ func run() error {
 	}
 
 	eng, err := engine.New(engine.Config{
-		Objects:     objects,
 		PairingRoot: cfg.LockdownDir,
 		MuxAddress:  cfg.MuxAddress,
 	})
@@ -141,7 +114,7 @@ func run() error {
 	}
 	defer func() {
 		if closeStorage {
-			_ = eng.Close()
+			eng.Close()
 		}
 	}()
 	bus := events.New()

@@ -45,11 +45,13 @@ func TestPairStoreKeepsPrivateRecords(t *testing.T) {
 	if leftovers, _ := filepath.Glob(filepath.Join(root, ".PHONE.plist.tmp-*")); len(leftovers) != 0 {
 		t.Fatalf("temporary files left: %v", leftovers)
 	}
-	if existed, err := store.Delete("PHONE"); !existed || err != nil {
-		t.Fatalf("Delete = %v, %v", existed, err)
-	}
-	if existed, err := store.Delete("PHONE"); existed || err != nil {
-		t.Fatalf("second Delete = %v, %v", existed, err)
+	for range 2 { // a missing record deletes too
+		if err := store.Delete("PHONE"); err != nil {
+			t.Fatal(err)
+		}
+		if record, err := store.Load("PHONE"); record != nil || err != nil {
+			t.Fatalf("after Delete = %v, %v", record, err)
+		}
 	}
 }
 
@@ -83,7 +85,7 @@ func TestPairStoreUnusableRecords(t *testing.T) {
 		t.Fatal("an oversized record was read")
 	}
 
-	for _, udid := range []string{"", "../escape", "a/b", strings.Repeat("a", maxUDIDLength+1)} {
+	for _, udid := range []string{"", "../escape", "a/b", strings.Repeat("a", 65)} {
 		var engineErr *Error
 		if _, err := store.Load(udid); !errors.As(err, &engineErr) || engineErr.Kind != ErrorInvalidArgument {
 			t.Errorf("Load(%q) = %v, want ErrorInvalidArgument", udid, err)
@@ -103,8 +105,8 @@ func TestPairStoreReservesOneIdentity(t *testing.T) {
 		t.Fatalf("second reservation = %+v, %v; want the first %+v", second, err, first)
 	}
 	assertMode(t, filepath.Join(store.root, pendingDir, "PHONE.plist"), 0o600)
-	if existed, err := store.DeleteIdentity("PHONE"); !existed || err != nil {
-		t.Fatalf("DeleteIdentity = %v, %v", existed, err)
+	if err := store.DeleteIdentity("PHONE"); err != nil {
+		t.Fatal(err)
 	}
 	if identity, err := store.Identity("PHONE"); identity != nil || err != nil {
 		t.Fatalf("Identity after delete = %v, %v", identity, err)

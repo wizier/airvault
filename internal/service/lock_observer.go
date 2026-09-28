@@ -22,7 +22,7 @@ type lockObserverMgr struct {
 }
 
 type lockObservation interface {
-	OpenLockObserver(context.Context, engine.DeviceID) (engine.LockStream, error)
+	OpenLockObserver(context.Context, engine.DeviceID) (engine.Stream[engine.ScreenLockSignal], error)
 }
 
 func newLockObserverMgr(base context.Context, eng lockObservation,

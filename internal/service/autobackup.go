@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/wizier/airvault/internal/domain"
-	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/model"
 )
 
@@ -209,7 +208,7 @@ func (s *Service) autoBackupDue(ctx context.Context, udid string) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	created, err := s.store.Backup.LatestCreated(ctx, udid)
+	created, err := s.library.LatestCreated(ctx, udid)
 	if err != nil {
 		return false, err
 	}
@@ -233,7 +232,7 @@ func (s *Service) SetAutoBackup(ctx context.Context, udid string, settings AutoB
 	if err := s.store.Device.SetAutoBackup(ctx, udid, stored); err != nil {
 		return err
 	}
-	s.bus.Emit(events.DeviceUpdated, map[string]any{"udid": udid})
+	s.bus.Emit(deviceUpdated(udid))
 	return nil
 }
 

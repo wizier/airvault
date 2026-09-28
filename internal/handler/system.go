@@ -9,12 +9,10 @@ import (
 )
 
 type statusResponse struct {
-	MuxerUp bool                  `json:"muxerUp"`
+	Muxer   service.MuxerStatus   `json:"muxer"`
 	Running []service.RunProgress `json:"running"`
 }
 
 func (h *Handler) status(c *echo.Context) error {
-	return c.JSON(http.StatusOK, statusResponse{
-		MuxerUp: h.svc.MuxerReady(c.Request().Context()), Running: h.svc.Running(),
-	})
+	return c.JSON(http.StatusOK, statusResponse{Muxer: h.svc.Muxer(), Running: h.svc.Running()})
 }

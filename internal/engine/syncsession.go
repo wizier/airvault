@@ -3,12 +3,12 @@ package engine
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"time"
 
 	"github.com/wizier/airvault/internal/ios"
 	"github.com/wizier/airvault/internal/ios/afc"
-	airlog "github.com/wizier/airvault/internal/logging"
 )
 
 const (
@@ -42,7 +42,7 @@ func (e *Engine) startSync(ctx context.Context, udid string) (*syncSession, erro
 	s := &syncSession{proxy: ios.NewNotificationProxy(conn)}
 	if err := s.acquire(ctx, e, udid); err != nil {
 		if cleanupErr := s.finish(context.WithoutCancel(ctx)); cleanupErr != nil {
-			airlog.Component("engine").WarnContext(ctx, "sync session left behind", "udid", udid, "error", cleanupErr)
+			slog.WarnContext(ctx, "sync session left behind", "udid", udid, "error", cleanupErr)
 		}
 		return nil, failure(ctx, "sync session", err)
 	}

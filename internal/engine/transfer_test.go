@@ -18,6 +18,7 @@ import (
 	"github.com/wizier/airvault/internal/ios/afc"
 	"github.com/wizier/airvault/internal/ios/backup2"
 	"github.com/wizier/airvault/internal/ios/iostest"
+	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
@@ -30,6 +31,7 @@ var (
 // scripts mobilebackup2 itself.
 type transferFixture struct {
 	*testPhone
+	objects       *objectstore.Store
 	media         *iostest.FS
 	done          <-chan struct{}
 	cancelOnPhone chan struct{} // closed: the phone asks the observer to cancel
@@ -44,6 +46,12 @@ func newTransferFixture(t *testing.T) *transferFixture {
 	t.Helper()
 	f := &transferFixture{testPhone: newTestPhone(t), media: iostest.NewFS(), done: t.Context().Done(),
 		cancelOnPhone: make(chan struct{}), finished: make(chan struct{}), asserted: make(chan struct{})}
+	objects, err := objectstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = objects.Close() })
+	f.objects = objects
 	var assertOnce sync.Once
 	f.phone.Handle(afc.Service, f.media.Serve)
 	f.phone.Handle(ios.NotificationProxyService, f.notifications)
@@ -119,19 +127,35 @@ func browseApps(apps ...map[string]any) iostest.Handler {
 	}
 }
 
-func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (string, int64, error) {
-	id := uuid.NewString()
-	added, err := f.engine.BuildSnapshot(ctx, BuildSnapshotRequest{DeviceID: f.udid, SnapshotID: SnapshotID(id)}, onProgress)
-	return id, added, err
+func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (*objectstore.StagingView, int64, error) {
+	session, err := f.objects.BeginSnapshot(string(f.udid), uuid.NewString(), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f.engine.BuildSnapshot(ctx, f.udid, session, onProgress)
 }
 
-func (f *transferFixture) publish(t *testing.T, source string, files map[string][]byte) SnapshotRef {
+// publish stores a complete backup of source holding files besides the
+// plists a restore needs.
+func (f *transferFixture) publish(t *testing.T, source string, files map[string][]byte) *iosbackup.Backup {
 	t.Helper()
-	id := uuid.NewString()
-	session, err := f.objects.BeginSnapshot(source, id, "")
+	session, err := f.objects.BeginSnapshot(source, uuid.NewString(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	plists := map[string]any{
+		"Manifest.plist": map[string]any{"IsEncrypted": false},
+		"Status.plist":   map[string]any{"SnapshotState": "finished"},
+	}
+	for name, value := range plists {
+		files[name], _ = plist.Marshal(value, plist.XMLFormat)
+	}
+	info := &iosbackup.Info{TargetIdentifier: source, TargetType: "Device", ITunesSettings: map[string]any{},
+		Applications: map[string]iosbackup.Application{"com.example.store": {SINF: []byte("sinf"), Metadata: []byte("meta")}}}
+	if err := iosbackup.WriteInfo(session, info); err != nil {
+		t.Fatal(err)
+	}
+	files["Manifest.db"] = append(files["Manifest.db"], "db"...)
 	for name, data := range files {
 		writer, err := session.Create(name)
 		if err == nil {
@@ -144,20 +168,22 @@ func (f *transferFixture) publish(t *testing.T, source string, files map[string]
 			t.Fatal(err)
 		}
 	}
-	if _, err := session.Seal(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	view, err := f.objects.OpenStaging(source, id)
-	if err == nil {
-		_, err = f.objects.Publish(view)
-	}
+	staged, _, err := session.Seal(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return SnapshotRef{SourceID: DeviceID(source), SnapshotID: SnapshotID(id)}
+	view, err := f.objects.Publish(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := iosbackup.Open(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backup
 }
 
-func readSnapshotFile(t *testing.T, view *objectstore.StagingView, name string) []byte {
+func readSnapshotFile(t *testing.T, view *objectstore.View, name string) []byte {
 	t.Helper()
 	file, err := view.Open(name)
 	if err != nil {
@@ -204,7 +230,7 @@ func TestBuildSnapshot(t *testing.T) {
 
 	var mu sync.Mutex
 	var last Progress
-	id, added, err := f.backup(context.Background(), func(p Progress) {
+	staged, added, err := f.backup(context.Background(), func(p Progress) {
 		mu.Lock()
 		defer mu.Unlock()
 		last = p
@@ -227,10 +253,7 @@ func TestBuildSnapshot(t *testing.T) {
 	}
 	mu.Unlock()
 
-	view, err := f.objects.OpenStaging("PHONE-UDID", id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	view := &staged.View
 	if !bytes.Equal(readSnapshotFile(t, view, "Manifest.db"), manifest) || string(readSnapshotFile(t, view, "Status.plist")) != "status" {
 		t.Error("the snapshot does not hold what the phone sent")
 	}
@@ -352,19 +375,9 @@ func TestBuildSnapshotWaitsForTheSyncLock(t *testing.T) {
 	}
 }
 
-func restoreInfo(t *testing.T) []byte {
-	info, err := plist.Marshal(map[string]any{"Applications": map[string]any{
-		"com.example.store": map[string]any{"ApplicationSINF": []byte("sinf"), "iTunesMetadata": []byte("meta")},
-	}}, plist.XMLFormat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return info
-}
-
 func TestRestoreSnapshot(t *testing.T) {
 	f := newTransferFixture(t)
-	ref := f.publish(t, "OLD-PHONE", map[string][]byte{"Manifest.db": []byte("db"), "Info.plist": restoreInfo(t)})
+	backup := f.publish(t, "OLD-PHONE", map[string][]byte{})
 	f.phone.SetValue("com.apple.fmip", "IsAssociated", false)
 	f.mobileBackup(t, func(dl *iostest.DeviceLink) {
 		request := dl.Request()
@@ -381,7 +394,7 @@ func TestRestoreSnapshot(t *testing.T) {
 		}
 		dl.Finish(0, "")
 	})
-	err := f.engine.RestoreSnapshot(context.Background(), RestoreSnapshotRequest{TargetID: f.udid, Snapshot: ref, Password: "secret",
+	err := f.engine.RestoreSnapshot(context.Background(), f.udid, backup, RestoreOptions{Password: "secret",
 		Reboot: true, SettingsFromBackup: true, RemoveItemsNotRestored: true}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -407,12 +420,12 @@ func TestRestoreSnapshotFailures(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newTransferFixture(t)
-			ref := f.publish(t, "PHONE-UDID", map[string][]byte{"Info.plist": restoreInfo(t)})
+			backup := f.publish(t, "PHONE-UDID", map[string][]byte{})
 			f.mobileBackup(t, func(dl *iostest.DeviceLink) {
 				dl.Request()
 				dl.Finish(c.code, c.name)
 			})
-			err := f.engine.RestoreSnapshot(context.Background(), RestoreSnapshotRequest{TargetID: f.udid, Snapshot: ref}, nil)
+			err := f.engine.RestoreSnapshot(context.Background(), f.udid, backup, RestoreOptions{}, nil)
 			if kindOf(err) != c.want {
 				t.Fatalf("err = %v, want kind %d", err, c.want)
 			}
@@ -425,85 +438,14 @@ func TestRestoreSnapshotFailures(t *testing.T) {
 
 func TestRestoreSnapshotRefusedWhileFindMyIsOn(t *testing.T) {
 	f := newTransferFixture(t)
-	ref := f.publish(t, "PHONE-UDID", map[string][]byte{"Info.plist": restoreInfo(t)})
+	backup := f.publish(t, "PHONE-UDID", map[string][]byte{})
 	f.phone.SetValue("com.apple.fmip", "IsAssociated", true)
 	f.mobileBackup(t, func(dl *iostest.DeviceLink) { t.Error("restore started with Find My on") })
-	err := f.engine.RestoreSnapshot(context.Background(), RestoreSnapshotRequest{TargetID: f.udid, Snapshot: ref}, nil)
+	err := f.engine.RestoreSnapshot(context.Background(), f.udid, backup, RestoreOptions{}, nil)
 	if kindOf(err) != ErrorFindMyEnabled {
 		t.Fatalf("err = %v", err)
 	}
 	if f.phone.Dialed(backup2.Service) != 0 || f.phone.Dialed(ios.NotificationProxyService) != 0 {
 		t.Fatal("the phone was touched")
-	}
-}
-
-func TestChangeBackupPassword(t *testing.T) {
-	encrypted := func(on bool) BackupPasswordResult { return BackupPasswordResult{EncryptionKnown: true, Encrypted: on} }
-	cases := []struct {
-		name     string
-		old, new string
-		before   bool
-		device   func(phone *iostest.Device, dl *iostest.DeviceLink)
-		want     BackupPasswordResult
-		kind     ErrorKind
-	}{
-		{"enable", "", "pw", false, func(phone *iostest.Device, dl *iostest.DeviceLink) {
-			phone.SetValue("com.apple.mobile.backup", "WillEncrypt", true)
-			dl.Finish(0, "")
-		}, encrypted(true), 0},
-		{"wrong password", "bad", "pw", true, func(phone *iostest.Device, dl *iostest.DeviceLink) {
-			dl.Finish(backup2.CodeWrongPassword, "wrong password")
-		}, encrypted(true), ErrorInvalidBackupPassword},
-		{"disabled without a verdict", "pw", "", true, func(phone *iostest.Device, dl *iostest.DeviceLink) {
-			phone.SetValue("com.apple.mobile.backup", "WillEncrypt", false)
-			dl.Send("DLMessageDisconnect", "bye")
-		}, encrypted(false), 0},
-		{"no verdict, no change", "pw", "", true, func(phone *iostest.Device, dl *iostest.DeviceLink) {
-			dl.Send("DLMessageDisconnect", "bye")
-		}, encrypted(true), ErrorOutcomeUnknown},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			p := newTestPhone(t)
-			p.phone.SetValue("com.apple.mobile.backup", "WillEncrypt", c.before)
-			p.phone.Handle(backup2.Service, iostest.Backup2(t, func(dl *iostest.DeviceLink) {
-				request := dl.Request()
-				if request["MessageName"] != "ChangePassword" || request["TargetIdentifier"] != "PHONE-UDID" {
-					t.Errorf("request = %v", request)
-				}
-				c.device(p.phone, dl)
-				dl.Wait()
-			}))
-			result, err := p.engine.ChangeBackupPassword(context.Background(), p.udid, c.old, c.new)
-			if kindOf(err) != c.kind || result != c.want {
-				t.Fatalf("result = %+v, %v; want %+v, kind %d", result, err, c.want, c.kind)
-			}
-		})
-	}
-}
-
-func TestBackupKey(t *testing.T) {
-	cases := map[string]string{
-		"PHONE/Manifest.db":           "Manifest.db",
-		"/PHONE//ab/./abc":            "ab/abc",
-		"PHONE/../PHONE/Status.plist": "PHONE/Status.plist",
-		"/.b/6/x":                     objectstore.ProtocolDir + "/.b/6/x",
-		"PHONE":                       "",
-	}
-	for devicePath, want := range cases {
-		if key, err := backupKey("PHONE", devicePath); err != nil || key != want {
-			t.Errorf("backupKey(%q) = %q, %v; want %q", devicePath, key, err, want)
-		}
-	}
-	for _, devicePath := range []string{
-		"", "/", "OTHER/Manifest.db", "../OTHER/x", "PHONE/" + objectstore.ProtocolDir + "/x",
-		"PHONE/a\\b", "PHONE/a\x00b", "PHONE/\u2028", "PHONE/\xff",
-		"PHONE/" + string(bytes.Repeat([]byte("a"), 256)),
-		"PHONE" + string(bytes.Repeat([]byte("/a"), 128)),
-		"PHONE/" + string(bytes.Repeat([]byte("a/"), 2100)),
-	} {
-		if key, err := backupKey("PHONE", devicePath); err == nil {
-			t.Errorf("backupKey(%.40q) = %q, want a refusal", devicePath, key)
-		}
 	}
 }

@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/iosbackup"
+	"github.com/wizier/airvault/internal/library"
 	"github.com/wizier/airvault/internal/model"
 )
 
@@ -18,7 +17,7 @@ func (s *Service) reserveRestore(ctx context.Context, udid string, opts RestoreO
 	// The snapshot's source is the only thing admission needs; everything else —
 	// the device row, the large object manifest, the keybag — is read once, under
 	// the leases, so no part of the plan can go stale between the two.
-	snapshot, err := s.lookupSnapshot(ctx, opts.SnapshotID)
+	snapshot, err := s.library.Lookup(ctx, opts.SnapshotID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -36,8 +35,7 @@ func (s *Service) reserveRestore(ctx context.Context, udid string, opts RestoreO
 		s.discardRun(run)
 		return nil, nil, err
 	}
-	s.bus.Emit(events.BackupStarted, map[string]any{
-		"runId": run.id, "udid": udid, "restore": true, "snapshotId": plan.snapshot.ID})
+	s.bus.Emit(runStarted(run, plan.backup.ID()))
 	return run, plan, nil
 }
 
@@ -56,7 +54,7 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	ctx, udid := run.ctx, run.udid
 	dev, opts := plan.device, plan.opts
 	slog.DebugContext(ctx, "restore: starting", "device", dev.Name, "udid", udid,
-		"source", plan.snapshot.SourceUDID, "snapshot_id", opts.SnapshotID,
+		"source", plan.backup.Source(), "snapshot_id", opts.SnapshotID,
 		"systemFiles", opts.SystemFiles, "reboot", opts.Reboot,
 		"settingsFromBackup", opts.SettingsFromBackup, "removeItemsNotRestored", opts.RemoveItemsNotRestored)
 
@@ -67,15 +65,10 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 		return runOutcome{errorCode: code}, err
 	}
 
-	restoreErr := s.engine.RestoreSnapshot(ctx, engine.RestoreSnapshotRequest{
-		TargetID: engine.DeviceID(udid),
-		Snapshot: engine.SnapshotRef{
-			SourceID:   engine.DeviceID(plan.snapshot.SourceUDID),
-			SnapshotID: engine.SnapshotID(plan.snapshot.ID),
-		},
+	restoreErr := s.engine.RestoreSnapshot(ctx, engine.DeviceID(udid), plan.backup, engine.RestoreOptions{
 		Password: opts.Password, SystemFiles: opts.SystemFiles, Reboot: opts.Reboot,
 		SettingsFromBackup: opts.SettingsFromBackup, RemoveItemsNotRestored: opts.RemoveItemsNotRestored,
-	}, s.progressSink(run, "", StageRestoring, plan.snapshot.SizeBytes))
+	}, s.progressSink(run, "", StageRestoring, plan.backup.SizeBytes()))
 	fctx := context.WithoutCancel(ctx)
 	if restoreErr != nil {
 		slog.DebugContext(fctx, "restore: engine failed", "device", dev.Name, "error", restoreErr)
@@ -109,23 +102,9 @@ func DefaultRestoreOptions() RestoreOptions {
 }
 
 type restorePlan struct {
-	device   *model.Device
-	snapshot *model.Backup
-	opts     RestoreOptions
-}
-
-func (s *Service) lookupSnapshot(ctx context.Context, snapshotID string) (*model.Backup, error) {
-	if snapshotID == "" {
-		return nil, &domain.ValidationError{Code: "snapshot_required", Message: "a backup snapshot must be selected"}
-	}
-	snapshot, err := s.store.Backup.Get(ctx, snapshotID)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			return nil, &domain.ValidationError{Code: "snapshot_not_found", Message: "the selected backup snapshot no longer exists"}
-		}
-		return nil, err
-	}
-	return snapshot, nil
+	device *model.Device
+	backup *iosbackup.Backup
+	opts   RestoreOptions
 }
 
 // Called under the run's leases, so nothing it reads can change underneath.
@@ -134,33 +113,23 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := s.lookupSnapshot(ctx, opts.SnapshotID)
+	backup, err := s.library.Open(ctx, opts.SnapshotID)
+	if errors.Is(err, library.ErrIncomplete) {
+		return nil, &domain.ValidationError{Code: "backup_not_restorable", Message: "the selected backup is not confirmed complete and can't be restored"}
+	}
 	if err != nil {
 		return nil, err
 	}
-	view, err := s.objects.OpenSnapshot(snapshot.SourceUDID, snapshot.ID)
-	if err != nil {
-		// A delete that won the gap before the read lease was held leaves the
-		// catalog row without its manifest: a rejected request, not a fault.
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, &domain.ValidationError{Code: "snapshot_not_found", Message: "the selected backup snapshot no longer exists"}
-		}
-		return nil, fmt.Errorf("open selected object snapshot: %w", err)
-	}
-	info, err := iosbackup.Inspect(view)
-	if err != nil {
-		return nil, &domain.ValidationError{Code: "backup_not_restorable", Message: "the selected backup is not confirmed complete and can't be restored"}
-	}
-	encrypted, snapshotIOS := info.Encrypted, info.IOSVersion
+	encrypted, snapshotIOS := backup.Encrypted, backup.IOSVersion
 	if encrypted && opts.Password == "" {
 		return nil, &domain.ValidationError{Code: "backup_password_required", Message: "this backup is encrypted — its password is required"}
 	}
 	if encrypted {
-		valid, verifyErr := iosbackup.VerifyPassword(view, opts.Password)
+		valid, verifyErr := backup.VerifyPassword(opts.Password)
 		switch {
 		case verifyErr != nil:
 			slog.WarnContext(ctx, "backup password preflight unavailable; the device enforces",
-				"snapshot_id", snapshot.ID, "error", verifyErr)
+				"snapshot_id", backup.ID(), "error", verifyErr)
 		case !valid:
 			return nil, &domain.ValidationError{Code: "invalid_backup_password",
 				Message: "this password does not unlock the selected backup"}
@@ -172,5 +141,5 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 		return nil, &domain.ValidationError{Code: "backup_ios_too_new",
 			Message: fmt.Sprintf("this backup was made on iOS %s, newer than the phone's iOS %s — update the phone first", snapshotIOS, device.IOSVersion)}
 	}
-	return &restorePlan{device: device, snapshot: snapshot, opts: opts}, nil
+	return &restorePlan{device: device, backup: backup, opts: opts}, nil
 }

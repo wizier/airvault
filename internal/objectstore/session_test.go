@@ -53,20 +53,17 @@ func refOf(content string) string {
 }
 
 // publish seals a session and publishes it the way the service does.
-func publish(t *testing.T, store *Store, session *Session) int64 {
+func publish(t *testing.T, store *Store, session *Session) (*View, int64) {
 	t.Helper()
-	added, err := session.Seal(context.Background())
+	staged, added, err := session.Seal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	staging, err := store.OpenStaging(session.source, session.snapshotID)
+	published, err := store.Publish(staged)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Publish(staging); err != nil {
-		t.Fatal(err)
-	}
-	return added
+	return published, added
 }
 
 func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
@@ -74,7 +71,7 @@ func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := store.BeginSnapshot(sessionSource, snapFull, "")
+	session, err := store.BeginSnapshot(sessionSource, snapFull, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +92,7 @@ func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
 		t.Fatalf("List = %+v, %v", entries, err)
 	}
 
-	if added := publish(t, store, session); added != int64(len("same bytes")+len("database")) {
+	if _, added := publish(t, store, session); added != int64(len("same bytes")+len("database")) {
 		t.Fatalf("added = %d: duplicates count once, protocol files not at all", added)
 	}
 	view, err := store.OpenSnapshot(sessionSource, snapFull)
@@ -111,7 +108,7 @@ func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
 	if view.SizeBytes() != int64(2*len("same bytes")+len("database")) {
 		t.Fatalf("size = %d: every entry counts", view.SizeBytes())
 	}
-	if _, err := store.BeginSnapshot(sessionSource, snapFull, ""); err == nil {
+	if _, err := store.BeginSnapshot(sessionSource, snapFull, nil); err == nil {
 		t.Fatal("a snapshot id was reused")
 	}
 }
@@ -123,15 +120,15 @@ func TestIncrementalSessionInheritsAndPrunes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := store.BeginSnapshot(sessionSource, snapFull, "")
+	base, err := store.BeginSnapshot(sessionSource, snapFull, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeKey(t, base, "Manifest.db", "v1")
 	writeKey(t, base, "photo", "picture")
-	publish(t, store, base)
+	published, _ := publish(t, store, base)
 
-	next, err := store.BeginSnapshot(sessionSource, snapNext, snapFull)
+	next, err := store.BeginSnapshot(sessionSource, snapNext, published)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +137,7 @@ func TestIncrementalSessionInheritsAndPrunes(t *testing.T) {
 	}
 	writeKey(t, next, "Manifest.db", "v2-draft")
 	writeKey(t, next, "Manifest.db", "v2")
-	if added := publish(t, store, next); added != int64(len("v2")) {
+	if _, added := publish(t, store, next); added != int64(len("v2")) {
 		t.Fatalf("added = %d, want only the surviving new object", added)
 	}
 	draft, _ := store.resolveObjectRef(sessionSource, refOf("v2-draft"))
@@ -160,33 +157,30 @@ func TestSessionVerifiesAndHealsObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := store.BeginSnapshot(sessionSource, snapFull, "")
+	base, err := store.BeginSnapshot(sessionSource, snapFull, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeKey(t, base, "file", "original")
-	publish(t, store, base)
+	published, _ := publish(t, store, base)
 	path, _ := store.resolveObjectRef(sessionSource, refOf("original"))
 
 	if err := os.WriteFile(path, []byte("damaged!"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	restore, err := store.OpenRestore(sessionSource, snapFull)
-	if err != nil {
-		t.Fatal(err)
-	}
+	restore := published.Session()
 	reader, _ := restore.Open("file")
 	if _, err := io.ReadAll(reader); !errors.Is(err, ErrIntegrity) || !errors.Is(restore.Err(), ErrIntegrity) {
 		t.Fatalf("damaged object: %v, latched %v", err, restore.Err())
 	}
-	if _, err := restore.Create("x"); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("restore write: %v, want ErrReadOnly", err)
+	if _, err := restore.Create("x"); !errors.Is(err, errReadOnly) {
+		t.Fatalf("restore write: %v, want errReadOnly", err)
 	}
 
 	if err := os.WriteFile(path, []byte("orig"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	next, err := store.BeginSnapshot(sessionSource, snapNext, snapFull)
+	next, err := store.BeginSnapshot(sessionSource, snapNext, published)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +195,7 @@ func TestSessionAbortAndOpenWriters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := store.BeginSnapshot(sessionSource, snapFull, "")
+	session, err := store.BeginSnapshot(sessionSource, snapFull, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +210,7 @@ func TestSessionAbortAndOpenWriters(t *testing.T) {
 		t.Fatalf("an aborted file left %v", temps)
 	}
 	open, _ := session.Create("open")
-	if _, err := session.Seal(context.Background()); !errors.Is(err, ErrIntegrity) {
+	if _, _, err := session.Seal(context.Background()); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("Seal with an open writer: %v", err)
 	}
 	open.Abort()
@@ -227,7 +221,7 @@ func TestSessionNamespaceOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := store.BeginSnapshot(sessionSource, snapFull, "")
+	session, err := store.BeginSnapshot(sessionSource, snapFull, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +235,7 @@ func TestSessionNamespaceOperations(t *testing.T) {
 	if err := session.Copy("a", "b"); err != nil || readKey(t, session, "b/file") != "content" {
 		t.Fatalf("Copy = %v", err)
 	}
-	if err := session.Rename("b", "c"); err != nil || session.Exists("b") || !session.IsDir("c") {
+	if err := session.Rename("b", "c"); err != nil || session.Exists("b") || readKey(t, session, "c/file") != "content" {
 		t.Fatalf("Rename = %v", err)
 	}
 	if err := session.Remove("c"); err != nil || session.Exists("c/file") {
@@ -285,15 +279,32 @@ func TestSessionVerifiesEmptyFiles(t *testing.T) {
 		"empty": {Kind: entryFile, ObjectRef: obj1, Size: 0},
 	})
 	writeTestObject(t, root, sessionSource, obj1, 0)
-	restore, err := store.OpenRestore(sessionSource, snapFull)
+	view, err := store.OpenSnapshot(sessionSource, snapFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := restore.Open("empty")
+	reader, err := view.Open("empty")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := io.ReadAll(reader); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("empty file under a wrong reference: %v, want ErrIntegrity", err)
+	}
+}
+
+// A base snapshot seeds the tree of its own source only: objects are pooled
+// per source, so another source's would be unreachable.
+func TestBeginSnapshotRefusesAnotherSourcesBase(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := store.BeginSnapshot(sessionSource, snapFull, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, _ := publish(t, store, base)
+	if _, err := store.BeginSnapshot("otherphoneudid0001", snapNext, published); err == nil {
+		t.Fatal("a snapshot began from another source's base")
 	}
 }

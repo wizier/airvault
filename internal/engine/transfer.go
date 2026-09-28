@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/wizier/airvault/internal/ios"
 	"github.com/wizier/airvault/internal/ios/backup2"
-	airlog "github.com/wizier/airvault/internal/logging"
+	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
@@ -21,47 +22,47 @@ const (
 	syncCancelRequest = "com.apple.itunes-client.syncCancelRequest"
 )
 
-// BuildSnapshot backs the device up into a new staged snapshot and returns
-// the bytes it added to the object pool; publishing it is the caller's.
-func (e *Engine) BuildSnapshot(ctx context.Context, req BuildSnapshotRequest, onProgress func(Progress)) (int64, error) {
-	udid := string(req.DeviceID)
+// BuildSnapshot backs the device up into session and seals it; the snapshot
+// comes back ready to publish, with the bytes it added to the object pool.
+func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, session *objectstore.Session, onProgress func(Progress)) (*objectstore.StagingView, int64, error) {
+	udid := string(device)
 	if err := validateUDID(udid); err != nil {
-		return 0, err
-	}
-	session, err := e.objects.BeginSnapshot(udid, string(req.SnapshotID), string(req.BaseSnapshotID))
-	if err != nil {
-		return 0, storeFailure("backup", err)
+		return nil, 0, err
 	}
 	progress := newTransferProgress(onProgress)
 	defer progress.close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	t := &transfer{engine: e, udid: udid, source: udid, session: session, progress: progress}
+	t := &transfer{engine: e, udid: udid, session: session, progress: progress}
 	if err := t.run(ctx, cancel); err != nil {
-		return 0, transferResult(ctx, "backup", err)
+		return nil, 0, transferResult(ctx, "backup", err)
 	}
 	progress.submit(ProgressPhaseSealing, -1, 0)
-	added, err := session.Seal(ctx)
+	staged, added, err := session.Seal(ctx)
 	if err == nil {
 		err = ctx.Err() // a cancel racing the seal discards the backup
 	}
 	if err != nil {
-		return 0, transferResult(ctx, "backup", storeFailure("seal backup", err))
+		return nil, 0, transferResult(ctx, "backup", storeFailure("seal backup", err))
 	}
-	return added, nil
+	return staged, added, nil
 }
 
-// RestoreSnapshot restores the target from a published snapshot, possibly
-// another device's. Once the device has accepted it, a late cancel is moot.
-func (e *Engine) RestoreSnapshot(ctx context.Context, req RestoreSnapshotRequest, onProgress func(Progress)) error {
-	udid := string(req.TargetID)
+type RestoreOptions struct {
+	Password    string
+	SystemFiles bool
+	Reboot      bool
+	// Wire inverse of RestorePreserveSettings; true mirrors a Finder restore.
+	SettingsFromBackup     bool
+	RemoveItemsNotRestored bool
+}
+
+// RestoreSnapshot restores the device from a backup, possibly another
+// device's. Once the device has accepted it, a late cancel is moot.
+func (e *Engine) RestoreSnapshot(ctx context.Context, device DeviceID, from *iosbackup.Backup, options RestoreOptions, onProgress func(Progress)) error {
+	udid := string(device)
 	if err := validateUDID(udid); err != nil {
 		return err
-	}
-	source := string(req.Snapshot.SourceID)
-	session, err := e.objects.OpenRestore(source, string(req.Snapshot.SnapshotID))
-	if err != nil {
-		return storeFailure("restore", err)
 	}
 	if err := e.checkFindMy(ctx, udid); err != nil {
 		return err
@@ -70,13 +71,13 @@ func (e *Engine) RestoreSnapshot(ctx context.Context, req RestoreSnapshotRequest
 	defer progress.close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	t := &transfer{engine: e, udid: udid, source: source, session: session, progress: progress,
-		restore: &backup2.RestoreOptions{
-			Reboot:                 req.Reboot,
-			PreserveSettings:       !req.SettingsFromBackup,
-			SystemFiles:            req.SystemFiles,
-			RemoveItemsNotRestored: req.RemoveItemsNotRestored,
-			Password:               req.Password,
+	t := &transfer{engine: e, udid: udid, session: from.Session(), progress: progress, from: from,
+		options: backup2.RestoreOptions{
+			Reboot:                 options.Reboot,
+			PreserveSettings:       !options.SettingsFromBackup,
+			SystemFiles:            options.SystemFiles,
+			RemoveItemsNotRestored: options.RemoveItemsNotRestored,
+			Password:               options.Password,
 		}}
 	return transferResult(ctx, "restore", t.run(ctx, cancel))
 }
@@ -95,19 +96,19 @@ func transferResult(ctx context.Context, operation string, err error) error {
 	return err
 }
 
-// transfer is one mobilebackup2 backup or restore of udid, served from
-// source's snapshots.
+// transfer is one mobilebackup2 backup or restore of udid; the session's
+// source names the snapshots to the device.
 type transfer struct {
 	engine   *Engine
 	udid     string
-	source   string
 	session  *objectstore.Session
 	progress *transferProgress
-	restore  *backup2.RestoreOptions // nil for a backup
+	from     *iosbackup.Backup // what a restore applies; nil for a backup
+	options  backup2.RestoreOptions
 }
 
 func (t *transfer) label() string {
-	if t.restore == nil {
+	if t.from == nil {
 		return "backup"
 	}
 	return "restore"
@@ -136,10 +137,10 @@ func (t *transfer) run(ctx context.Context, cancel context.CancelFunc) error {
 // prepare refreshes Info.plist for a backup; a restore stages the apps to
 // reinstall, and fails without them rather than restore none.
 func (t *transfer) prepare(ctx context.Context) (staged bool, err error) {
-	if t.restore == nil {
+	if t.from == nil {
 		return false, t.engine.writeBackupInfo(ctx, t.udid, t.session)
 	}
-	return t.engine.stageRestoreApplications(ctx, t.udid, t.session)
+	return t.engine.stageRestoreApplications(ctx, t.udid, t.from)
 }
 
 // converse runs the mobilebackup2 conversation. A store failure outranks
@@ -154,7 +155,7 @@ func (t *transfer) converse(ctx context.Context, cancel context.CancelFunc) erro
 	}
 	defer conn.Close()
 	stop := t.engine.guardTransfer(ctx, t.udid, t.label(), cancel)
-	storage := &backupStorage{store: t.engine.objects, session: t.session, source: t.source}
+	storage := &backupStorage{session: t.session}
 	outcome, err := t.serve(ctx, conn, storage)
 	stop()
 	switch {
@@ -165,15 +166,15 @@ func (t *transfer) converse(ctx context.Context, cancel context.CancelFunc) erro
 	case err != nil:
 		return failure(ctx, t.label()+" transfer", err)
 	}
-	return verdictFailure(backup2.Verdict(outcome), t.restore == nil)
+	return verdictFailure(backup2.Verdict(outcome), t.from == nil)
 }
 
 func (t *transfer) serve(ctx context.Context, conn *backup2.Conn, storage *backupStorage) (*backup2.Dict, error) {
 	var err error
-	if t.restore == nil {
-		err = conn.Backup(ctx, t.udid, t.source)
+	if t.from == nil {
+		err = conn.Backup(ctx, t.udid, t.session.Source())
 	} else {
-		err = conn.Restore(ctx, t.udid, t.source, *t.restore)
+		err = conn.Restore(ctx, t.udid, t.session.Source(), t.options)
 	}
 	if err != nil {
 		return nil, err
@@ -186,7 +187,7 @@ func (t *transfer) serve(ctx context.Context, conn *backup2.Conn, storage *backu
 // cleanup logs a teardown failure: it never replaces the transfer's result.
 func (t *transfer) cleanup(ctx context.Context, stage string, err error) {
 	if err != nil {
-		airlog.Component("engine").WarnContext(ctx, t.label()+": "+stage+" failed", "udid", t.udid, "error", err)
+		slog.WarnContext(ctx, t.label()+": "+stage+" failed", "udid", t.udid, "error", err)
 	}
 }
 
@@ -244,7 +245,7 @@ func (e *Engine) guardTransfer(ctx context.Context, udid, label string, cancel c
 	var wg sync.WaitGroup
 	proxy, err := e.observeSyncCancel(ctx, udid)
 	if err != nil && ctx.Err() == nil {
-		airlog.Component("engine").WarnContext(ctx, label+": proceeding without the phone's cancel request", "udid", udid, "error", err)
+		slog.WarnContext(ctx, label+": proceeding without the phone's cancel request", "udid", udid, "error", err)
 	}
 	if proxy != nil {
 		wg.Go(func() {
@@ -255,7 +256,7 @@ func (e *Engine) guardTransfer(ctx context.Context, udid, label string, cancel c
 					return
 				}
 				if strings.Contains(name, "syncCancelRequest") {
-					airlog.Component("engine").InfoContext(ctx, label+": cancelled on the phone", "udid", udid)
+					slog.InfoContext(ctx, label+": cancelled on the phone", "udid", udid)
 					cancel()
 					return
 				}
@@ -317,7 +318,7 @@ func (e *Engine) keepAwake(ctx context.Context, udid, name string) {
 			return
 		case !warned:
 			warned = true
-			airlog.Component("engine").WarnContext(ctx, "no power assertion; an off-charger phone may sleep mid-transfer", "udid", udid, "error", err)
+			slog.WarnContext(ctx, "no power assertion; an off-charger phone may sleep mid-transfer", "udid", udid, "error", err)
 		}
 		if !sleep(ctx, wait) {
 			return

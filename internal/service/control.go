@@ -6,13 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"slices"
 
-	"github.com/wizier/airvault/internal/devicefs"
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
 
 // No event is emitted: the watcher reports the resulting detach/reattach as
@@ -45,11 +41,8 @@ func (s *Service) Power(ctx context.Context, udid, action string) error {
 
 // Engine records whose JSON shape is already the API's are served as they are.
 type (
-	App             = engine.App
-	Battery         = engine.Battery
-	ConsoleLine     = engine.ConsoleLine
-	InstallProgress = engine.InstallProgress
-	USBDevice       = engine.USBDevice
+	Battery     = engine.Battery
+	ConsoleLine = engine.ConsoleLine
 )
 
 // Passive telemetry: the read never wakes the phone and never drives presence.
@@ -64,42 +57,6 @@ func (s *Service) LiveBattery(ctx context.Context, udid string) (Battery, error)
 	return battery, nil
 }
 
-func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
-	if err := s.reachableDevice(ctx, udid); err != nil {
-		return nil, err
-	}
-	apps, err := s.engine.ListApps(ctx, engine.DeviceID(udid))
-	if err != nil {
-		slog.WarnContext(ctx, "apps: engine", "udid", udid, "error", err)
-		return nil, newEngineActionError("app_list_failed", err)
-	}
-	if apps == nil {
-		apps = []App{} // serializes as [], not null
-	}
-	return apps, nil
-}
-
-const maxAppIconBatch = 100
-
-func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string) (map[string][]byte, error) {
-	if len(bundleIDs) == 0 || slices.Contains(bundleIDs, "") {
-		return nil, &domain.ValidationError{Code: "bundle_id_required", Message: "non-empty bundle ids are required"}
-	}
-	if len(bundleIDs) > maxAppIconBatch {
-		return nil, &domain.ValidationError{Code: "too_many_bundle_ids", Message: "too many bundle ids in one batch"}
-	}
-	if err := s.reachableDevice(ctx, udid); err != nil {
-		return nil, err
-	}
-	icons, err := s.engine.AppIcons(ctx, engine.DeviceID(udid), bundleIDs)
-	if err != nil {
-		// The web keeps its placeholders, so the failure is only logged.
-		slog.DebugContext(ctx, "app icons: engine", "udid", udid, "count", len(bundleIDs), "error", err)
-		return nil, newEngineActionError("app_icons_failed", err)
-	}
-	return icons, nil
-}
-
 func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) ([]byte, error) {
 	// Loaded automatically by device cards; never wakes the phone.
 	if err := s.reachableDevice(ctx, udid); err != nil {
@@ -111,172 +68,6 @@ func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) (
 		return nil, domain.ErrNotFound
 	}
 	return png, nil
-}
-
-func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, onProgress func(InstallProgress)) error {
-	if err := s.reachableDevice(ctx, udid); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(s.uploads, "airvault-*.ipa")
-	if err != nil {
-		return fmt.Errorf("create temporary ipa: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-	if _, err := io.Copy(tmp, ipa); err != nil {
-		return fmt.Errorf("store uploaded ipa: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close uploaded ipa: %w", err)
-	}
-	ipaPath := tmp.Name()
-	err = s.runCommand(ctx, runKindInstall, udid, func(ctx context.Context) error {
-		last := InstallProgress{Percent: -1}
-		reportChange := func(progress InstallProgress) {
-			if progress == last {
-				return
-			}
-			last = progress
-			onProgress(progress)
-		}
-		if err := s.engine.InstallApp(ctx, engine.DeviceID(udid), ipaPath, reportChange); err != nil {
-			slog.DebugContext(ctx, "app install: engine", "udid", udid, "error", err)
-			return newEngineActionError("app_install_failed", err)
-		}
-		return nil
-	}, deviceWriteResource(udid))
-	if err == nil {
-		s.bus.Emit(events.AppCatalog, map[string]any{"udid": udid})
-	}
-	return err
-}
-
-func (s *Service) UninstallApp(ctx context.Context, udid, bundleID string) error {
-	if bundleID == "" {
-		return &domain.ValidationError{Code: "bundle_id_required", Message: "bundle id is required"}
-	}
-	if err := s.reachableDevice(ctx, udid); err != nil {
-		return err
-	}
-	err := s.runCommand(ctx, runKindUninstall, udid, func(ctx context.Context) error {
-		if err := s.engine.UninstallApp(ctx, engine.DeviceID(udid), bundleID); err != nil {
-			slog.DebugContext(ctx, "app uninstall: engine", "udid", udid, "bundle", bundleID, "error", err)
-			return newEngineActionError("app_uninstall_failed", err)
-		}
-		slog.DebugContext(ctx, "app uninstall: done", "udid", udid, "bundle", bundleID)
-		return nil
-	}, deviceWriteResource(udid))
-	if err == nil {
-		s.bus.Emit(events.AppCatalog, map[string]any{"udid": udid})
-	}
-	return err
-}
-
-func parseRequiredPath(raw string) (devicefs.Path, error) {
-	devicePath, err := devicefs.ParsePath(raw)
-	if err != nil || devicePath.String() == "" {
-		return devicefs.Path{}, &domain.ValidationError{Code: "invalid_path", Message: "path is required and must be valid"}
-	}
-	return devicePath, nil
-}
-
-func appDocumentsRoot(bundleID string) (devicefs.Root, error) {
-	if bundleID == "" {
-		return devicefs.Root{}, &domain.ValidationError{Code: "bundle_id_required", Message: "bundle id is required"}
-	}
-	root, err := devicefs.AppDocuments(bundleID)
-	if err != nil {
-		return devicefs.Root{}, &domain.ValidationError{Code: "invalid_bundle_id", Message: err.Error()}
-	}
-	return root, nil
-}
-
-func (s *Service) openLeasedSession(ctx context.Context, udid string, root devicefs.Root,
-	resource resourceRequest, errorCode string) (*devicefs.Session, func(), error) {
-	if err := s.reachableDevice(ctx, udid); err != nil {
-		return nil, nil, err
-	}
-	// Direct acquire: browsing answers the user at once and retries on a click,
-	// so a refusal needs no operation event of its own.
-	release, err := s.ops.acquire("file access", resource)
-	if err != nil {
-		return nil, nil, err
-	}
-	session, err := s.files.Open(ctx, udid, root)
-	if err != nil {
-		release()
-		return nil, nil, newEngineActionError(errorCode, err)
-	}
-	return session, func() { _ = session.Close(); release() }, nil
-}
-
-type FileEntry struct {
-	Name     string             `json:"name"`
-	Kind     devicefs.EntryKind `json:"kind"`
-	Size     *int64             `json:"size,omitempty"`
-	Modified *int64             `json:"modified,omitempty"`
-}
-
-// Only apps with file sharing enabled expose their Documents (house_arrest).
-func (s *Service) AppFiles(ctx context.Context, udid, bundleID, rawPath string) ([]FileEntry, error) {
-	root, err := appDocumentsRoot(bundleID)
-	if err != nil {
-		return nil, err
-	}
-	return s.deviceFileList(ctx, udid, root, rawPath, "app_files_failed")
-}
-
-func (s *Service) deviceFileList(
-	ctx context.Context,
-	udid string,
-	root devicefs.Root,
-	rawPath, errorCode string,
-) ([]FileEntry, error) {
-	devicePath, err := devicefs.ParsePath(rawPath)
-	if err != nil {
-		return nil, &domain.ValidationError{Code: "invalid_path", Message: err.Error()}
-	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), errorCode)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	entries, err := session.List(devicePath)
-	if err != nil {
-		slog.WarnContext(ctx, "device files: engine", "udid", udid, "path", rawPath, "error", err)
-		return nil, newEngineActionError(errorCode, err)
-	}
-	// Never nil, so an empty directory serializes as [].
-	out := make([]FileEntry, len(entries))
-	for i, entry := range entries {
-		out[i] = FileEntry(entry)
-	}
-	return out, nil
-}
-
-func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath string) error {
-	root, err := appDocumentsRoot(bundleID)
-	if err != nil {
-		return err
-	}
-	parsedPath, err := parseRequiredPath(devicePath)
-	if err != nil {
-		return err
-	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, deviceWriteResource(udid), "app_file_delete_failed")
-	if err != nil {
-		return err
-	}
-	defer release()
-	if err := session.Remove(parsedPath); err != nil {
-		slog.WarnContext(ctx, "app file delete: engine", "udid", udid, "bundle", bundleID, "path", devicePath, "error", err)
-		return newEngineActionError("app_file_delete_failed", err)
-	}
-	return nil
-}
-
-func (s *Service) MediaList(ctx context.Context, udid, rawPath string) ([]FileEntry, error) {
-	return s.deviceFileList(ctx, udid, devicefs.Media(), rawPath, "media_list_failed")
 }
 
 func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleLine)) error {

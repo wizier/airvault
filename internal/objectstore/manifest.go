@@ -23,7 +23,9 @@ const (
 	formatVersion   = 1
 	maxManifestSize = 512 << 20
 	maxEntries      = 2_000_000
-	maxLogicalDepth = 128
+	maxKeyLength    = 4096
+	maxKeyComponent = 255
+	maxKeyDepth     = 128
 )
 
 const (
@@ -47,8 +49,7 @@ type manifestEntry struct {
 	ModifiedUnix int64  `json:"modifiedUnix,omitempty"`
 }
 
-// The portable wire contract of a snapshot, identical to what the Rust engine
-// wrote, so its stores stay readable.
+// The portable wire contract of a snapshot: changing it breaks existing stores.
 type manifestProjection struct {
 	Version     int    `json:"version"`
 	SourceUDID  string `json:"sourceUdid"`
@@ -71,55 +72,36 @@ type View struct {
 // out publishing a manifest twice.
 type StagingView struct{ View }
 
+func (v *View) Source() string { return v.manifest.SourceUDID }
+
+func (v *View) ID() string { return v.manifest.SnapshotID }
+
 func (v *View) SizeBytes() int64 { return v.manifest.SizeBytes }
 
-// The moment the contents were finalized; it rebuilds created_at after SQLite
-// is lost.
+// CreatedUnix is when the immutable snapshot was created: the moment its
+// contents were finalized. It rebuilds created_at after SQLite is lost.
 func (v *View) CreatedUnix() int64 { return v.manifest.CreatedUnix }
 
-func (v *View) FileSize(logicalPath string) (int64, bool) {
-	entry, ok := v.manifest.Entries[logicalPath]
+// FileSize returns the size of a regular file in the snapshot.
+func (v *View) FileSize(key string) (int64, bool) {
+	entry, ok := v.manifest.Entries[key]
 	if !ok || entry.Kind != entryFile {
 		return 0, false
 	}
 	return entry.Size, true
 }
 
-func (v *View) Open(logicalPath string) (*os.File, error) {
-	entry, ok := v.manifest.Entries[logicalPath]
+// Open verifies content against its address as it is read.
+func (v *View) Open(key string) (io.ReadCloser, error) {
+	entry, ok := v.manifest.Entries[key]
 	if !ok || entry.Kind != entryFile {
 		return nil, fs.ErrNotExist
 	}
-	filePath, err := v.store.resolveObjectRef(v.manifest.SourceUDID, entry.ObjectRef)
-	if err != nil {
-		return nil, err
-	}
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() != entry.Size {
-		_ = file.Close()
-		return nil, fmt.Errorf("object %q does not match manifest metadata", entry.ObjectRef)
-	}
-	return file, nil
+	return v.store.openReader(v.Source(), key, entry.ObjectRef, entry.Size, nil)
 }
 
 func (s *Store) OpenSnapshot(source, snapshotID string) (*View, error) {
 	return s.openManifest(source, snapshotID, snapshotManifestRelative(source, snapshotID))
-}
-
-func (s *Store) OpenStaging(source, snapshotID string) (*StagingView, error) {
-	view, err := s.openManifest(source, snapshotID, stagingManifestRelative(source, snapshotID))
-	if err != nil {
-		return nil, err
-	}
-	return &StagingView{View: *view}, nil
 }
 
 func (s *Store) openManifest(source, snapshotID, relative string) (*View, error) {
@@ -229,11 +211,8 @@ func inspectManifestEntries(relative string, manifest *manifestProjection) (mani
 	var snapshotSize int64
 	for _, logicalPath := range slices.Sorted(maps.Keys(manifest.Entries)) {
 		entry := manifest.Entries[logicalPath]
-		if !validLogicalPath(logicalPath) {
-			return manifestEntryFacts{}, fmt.Errorf("manifest %q has invalid logical path %q", relative, logicalPath)
-		}
-		if strings.Count(logicalPath, "/")+1 > maxLogicalDepth {
-			return manifestEntryFacts{}, fmt.Errorf("manifest %q path %q exceeds %d components", relative, logicalPath, maxLogicalDepth)
+		if !ValidKey(logicalPath) {
+			return manifestEntryFacts{}, fmt.Errorf("manifest %q has invalid key %q", relative, logicalPath)
 		}
 		if parent := path.Dir(logicalPath); parent != "." {
 			parentEntry, ok := manifest.Entries[parent]
@@ -322,9 +301,18 @@ func (seal *manifestEntriesSeal) checksum() string {
 	return fmt.Sprintf("%x", seal.digest.Sum(nil))
 }
 
-// validLogicalPath accepts only a non-empty, already-clean relative path:
-// fs.ValidPath rejects "", a rooted path and empty, "." or ".." elements.
-func validLogicalPath(value string) bool {
-	return fs.ValidPath(value) && value != "." && len(value) <= 4096 &&
-		!strings.ContainsAny(value, "\\\x00\u2028\u2029")
+// ValidKey reports a key the store accepts: a clean relative path of at most
+// 4096 bytes and 128 components of at most 255 bytes, free of characters that
+// tools mishandle.
+func ValidKey(key string) bool {
+	if !fs.ValidPath(key) || key == "." || len(key) > maxKeyLength || strings.ContainsAny(key, "\\\x00\u2028\u2029") {
+		return false
+	}
+	depth := 0
+	for part := range strings.SplitSeq(key, "/") {
+		if depth++; depth > maxKeyDepth || len(part) > maxKeyComponent {
+			return false
+		}
+	}
+	return true
 }

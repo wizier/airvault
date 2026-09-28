@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"syscall"
@@ -12,6 +13,16 @@ import (
 
 	"github.com/wizier/airvault/internal/ios"
 )
+
+// A missing device item reads as fs.ErrNotExist; no other kind does.
+func TestNotFoundIsErrNotExist(t *testing.T) {
+	if !errors.Is(&Error{Kind: ErrorNotFound}, fs.ErrNotExist) {
+		t.Fatal("ErrorNotFound must match fs.ErrNotExist")
+	}
+	if errors.Is(&Error{Kind: ErrorIntegrity}, fs.ErrNotExist) {
+		t.Fatal("only ErrorNotFound matches fs.ErrNotExist")
+	}
+}
 
 func TestClassify(t *testing.T) {
 	wrap := func(err error) error { return fmt.Errorf("operation: %w", err) }

@@ -14,6 +14,14 @@ import (
 // phone; iOS never expires the prompt.
 const passwordPromptTimeout = 3 * time.Minute
 
+// BackupPasswordResult carries the encryption flag observed around
+// ChangeBackupPassword. EncryptionKnown stays meaningful on failure: iOS may
+// apply the mutation before DeviceLink reports a final verdict.
+type BackupPasswordResult struct {
+	EncryptionKnown bool
+	Encrypted       bool
+}
+
 // ChangeBackupPassword sets the password when oldPassword is empty and
 // removes it when newPassword is empty. The encryption flag is reported
 // whenever it is known, even on failure: iOS may apply the change without

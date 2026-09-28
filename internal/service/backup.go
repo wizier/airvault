@@ -1,15 +1,19 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
+	"github.com/wizier/airvault/internal/iosbackup"
+	"github.com/wizier/airvault/internal/library"
 	"github.com/wizier/airvault/internal/model"
+	"github.com/wizier/airvault/internal/objectstore"
 )
 
 const deviceAppearWindow = 2 * time.Minute
@@ -63,7 +67,7 @@ func (s *Service) startBackup(ctx context.Context, udid string, auto bool) (stri
 		s.discardRun(run)
 		return "", err
 	}
-	s.bus.Emit(events.BackupStarted, map[string]any{"runId": run.id, "udid": udid})
+	s.bus.Emit(runStarted(run, ""))
 	return s.launchRun(run, func() (runOutcome, error) {
 		return s.executeBackup(run, device)
 	}), nil
@@ -80,103 +84,57 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	}
 	s.setRunStage(run, StagePreparing)
 
-	snapshot, baseSnapshotID, err := s.prepareSnapshot(ctx, run)
+	base, err := s.library.LatestBase(ctx, udid)
 	if err != nil {
 		return runOutcome{}, fmt.Errorf("couldn't prepare an immutable backup snapshot: %w", err)
 	}
+	snapshotID, err := uuid.NewV7()
+	if err != nil {
+		return runOutcome{}, fmt.Errorf("allocate snapshot id: %w", err)
+	}
+	id, startedAt := snapshotID.String(), time.Now().Unix()
 	if err := ctx.Err(); err != nil {
 		// The engine has not started, so no staging data or pooled objects exist.
 		return runOutcome{}, err
 	}
 	slog.DebugContext(ctx, "backup: starting", "device", device.Name, "udid", udid)
-	request := engine.BuildSnapshotRequest{
-		DeviceID:       engine.DeviceID(udid),
-		SnapshotID:     engine.SnapshotID(snapshot.ID),
-		BaseSnapshotID: engine.SnapshotID(baseSnapshotID),
-	}
-	addedBytes, engineErr := s.engine.BuildSnapshot(ctx, request, s.progressSink(run, incrementalStage(baseSnapshotID), StageBackingUp, 0))
-	var sizeBytes int64
-	var projection model.Backup
-	var transferredBytes int64
+	staged, added, err := s.buildSnapshot(ctx, run, id, base)
 	finalCtx := context.WithoutCancel(ctx)
-
+	var row model.Backup
+	if err == nil && ctx.Err() == nil {
+		if row, err = library.Project(&staged.View); err != nil {
+			err = fmt.Errorf("backup snapshot validation failed: %w", err)
+		}
+	}
+	// beginCommit is the cancellation boundary: past it the backup is published.
+	if err == nil && s.beginCommit(run) {
+		row.StartedAt, row.TransferredBytes = &startedAt, new(s.transferredBytes(run))
+		if err := s.library.Publish(finalCtx, staged, row, added); err != nil {
+			return runOutcome{}, fmt.Errorf("publish backup: %w", err)
+		}
+		slog.DebugContext(finalCtx, "backup: done", "device", device.Name, "size_bytes", row.SizeBytes)
+		return runOutcome{sizeBytes: row.SizeBytes}, nil
+	}
+	// Nothing was published: the snapshot goes, and what only it pooled.
+	discardErr := s.library.Discard(finalCtx, udid, id)
 	if ctx.Err() != nil {
-		return s.discardCancelledSnapshot(ctx, snapshot, engineErr)
+		return runOutcome{}, errors.Join(cmp.Or(err, ctx.Err()), discardErr)
 	}
-
-	if engineErr == nil {
-		view, openErr := s.objects.OpenStaging(udid, snapshot.ID)
-		if openErr != nil {
-			engineErr = fmt.Errorf("open completed object snapshot: %w", openErr)
-		} else if candidate, validationErr := snapshotProjection(&view.View, udid, snapshot.ID); validationErr != nil {
-			engineErr = fmt.Errorf("backup snapshot validation failed: %w", validationErr)
-		} else {
-			if !s.beginCommit(run) {
-				return s.discardCancelledSnapshot(ctx, snapshot, nil)
-			}
-			candidate.StartedAt = snapshot.StartedAt
-			projection = candidate
-			sizeBytes = projection.SizeBytes
-			transferredBytes = s.transferredBytes(run)
-			projection.TransferredBytes = &transferredBytes
-			_, engineErr = s.objects.Publish(view)
-		}
-	}
-	if engineErr != nil {
-		// Publish may have crossed its final-manifest commit point before a
-		// subsequent fsync or staging cleanup failed. Resolve that boundary instead
-		// of blindly aborting and deleting a snapshot that is already immutable.
-		var transferred *int64
-		if projection.ID != "" {
-			transferred = &transferredBytes
-		}
-		recovered, snapshotErr := s.reconcileStagingSnapshot(finalCtx, snapshot, transferred)
-		if recovered && snapshotErr == nil {
-			slog.WarnContext(finalCtx, "backup: publication recovered after error",
-				"device", device.Name, "snapshot_id", snapshot.ID, "error", engineErr)
-			return runOutcome{sizeBytes: sizeBytes}, nil
-		}
-		errorCode := engineErrorCode(engineErr)
-		slog.DebugContext(finalCtx, "backup: engine failed", "device", device.Name, "error", engineErr)
-		return runOutcome{errorCode: errorCode}, errors.Join(
-			fmt.Errorf("backup failed: %w", engineErr), snapshotErr)
-	}
-
-	// The footprint delta is the engine-reported pool payload plus the
-	// published manifest itself; the catalog commit applies it atomically.
-	var added *int64
-	if manifestBytes, statErr := s.objects.SnapshotManifestBytes(udid, snapshot.ID); statErr == nil {
-		delta := addedBytes + manifestBytes
-		added = &delta
-	}
-	if catalogErr := s.publishSnapshot(finalCtx, projection, added); catalogErr != nil {
-		current, getErr := s.store.Backup.Get(finalCtx, snapshot.ID)
-		if getErr == nil {
-			slog.WarnContext(finalCtx, "backup: catalog commit returned an error but is durable",
-				"snapshotId", current.ID, "error", catalogErr)
-		} else {
-			// Publish is the durable commit point. Never discard its immutable objects
-			// because SQLite failed: startup reconciliation can rebuild the catalog.
-			const reason = "backup was saved, but its catalog entry couldn't be updated"
-			return runOutcome{}, fmt.Errorf("%s: %w", reason, errors.Join(catalogErr, getErr))
-		}
-	}
-	slog.DebugContext(finalCtx, "backup: done", "device", device.Name, "size_bytes", sizeBytes)
-	return runOutcome{sizeBytes: sizeBytes}, nil
+	slog.DebugContext(finalCtx, "backup: engine failed", "device", device.Name, "error", err)
+	return runOutcome{errorCode: engineErrorCode(err)}, errors.Join(fmt.Errorf("backup failed: %w", err), discardErr)
 }
 
-// Only an incremental backup pauses on the phone long enough to name: it pulls
-// the previous manifest and diffs against it before the first file crosses.
-func incrementalStage(baseSnapshotID string) RunStage {
-	if baseSnapshotID == "" {
-		return ""
+// buildSnapshot backs the device up into a new snapshot on top of base, nil
+// for a full backup. Only an incremental backup pauses on the phone long
+// enough to name: it diffs against the previous manifest first.
+func (s *Service) buildSnapshot(ctx context.Context, run *runReservation, id string, base *iosbackup.Backup) (*objectstore.StagingView, int64, error) {
+	var idleStage RunStage
+	if base != nil {
+		idleStage = StageCalculating
 	}
-	return StageCalculating
-}
-
-func (s *Service) discardCancelledSnapshot(ctx context.Context, snapshot *model.Backup, cause error) (runOutcome, error) {
-	if cause == nil {
-		cause = ctx.Err()
+	session, err := s.library.Begin(run.udid, id, base)
+	if err != nil {
+		return nil, 0, err
 	}
-	return runOutcome{}, errors.Join(cause, s.discardSnapshot(ctx, snapshot))
+	return s.engine.BuildSnapshot(ctx, engine.DeviceID(run.udid), session, s.progressSink(run, idleStage, StageBackingUp, 0))
 }

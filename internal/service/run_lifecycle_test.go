@@ -1,7 +1,7 @@
 package service
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"maps"
@@ -9,28 +9,7 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
-
-// newTestService builds a Service with only the fields the run-lifecycle phase
-// machine touches (the event bus, the live-run map and the outcome records).
-func newTestService() *Service {
-	return &Service{app: context.Background(), bus: events.New(), runs: map[string]*activeRun{},
-		lastRunError: map[runIdentity]string{}, autoHistory: map[string]autoHistory{}}
-}
-
-// registerRun installs backup run "run-1" on "udid-1" in phase Active, as
-// reserveRun would.
-func registerRun(s *Service) *runReservation {
-	ctx, cancel := context.WithCancel(context.Background())
-	run := &runReservation{id: "run-1", udid: "udid-1", kind: runKindBackup,
-		ctx: ctx, cancel: cancel}
-	s.runs[run.udid] = &activeRun{
-		run:      run,
-		progress: RunProgress{RunID: run.id, UDID: run.udid, Stage: StageBackingUp},
-	}
-	return run
-}
 
 func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 	s := newTestService()
@@ -39,15 +18,12 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 
 	s.completeRun(run, runOutcome{}, errors.New("unclassified failure"))
 	event := <-eventsCh
-	if event.Type != events.BackupFailed {
-		t.Fatalf("event type = %q, want %q", event.Type, events.BackupFailed)
+	data, err := json.Marshal(event.Data)
+	if err != nil {
+		t.Fatal(err)
 	}
-	data := event.Data.(map[string]any)
-	if got := data["errorCode"]; got != "backup_failed" {
-		t.Fatalf("errorCode = %#v, want backup_failed", got)
-	}
-	if _, exists := data["error"]; exists {
-		t.Fatal("terminal event unexpectedly contains a presentation error string")
+	if want := `{"runId":"run-1","udid":"udid-1","state":"failed","errorCode":"backup_failed"}`; event.Type != "backup.failed" || string(data) != want {
+		t.Fatalf("event = %s %s, want backup.failed %s", event.Type, data, want)
 	}
 }
 

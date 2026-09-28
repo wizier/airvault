@@ -34,6 +34,15 @@ type connectionTransition struct {
 	to   string
 }
 
+// MuxerStatus is what netmuxd last proved: whether it answers, the devices
+// it sees and, when it does not, why.
+type MuxerStatus struct {
+	Up    bool   `json:"up"`
+	USB   int    `json:"usb"`
+	WiFi  int    `json:"wifi"`
+	Error string `json:"error,omitempty"`
+}
+
 // The mutex is separate from Service.runMu so presence callbacks never share a
 // lock with backup state. changed is closed and renewed on every connection
 // change.
@@ -41,6 +50,8 @@ type deviceRuntimeStore struct {
 	mu      sync.RWMutex
 	devices map[string]*deviceRuntime
 	changed chan struct{}
+	muxer   MuxerStatus
+	checked bool // the muxer has been checked at least once
 }
 
 func newDeviceRuntimeStore() *deviceRuntimeStore {
@@ -108,6 +119,35 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connect
 		return cmp.Or(cmp.Compare(a.udid, b.udid), cmp.Compare(a.to, b.to))
 	})
 	return transitions
+}
+
+func (s *deviceRuntimeStore) muxerStatus() MuxerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.muxer
+}
+
+// applyMuxer records a muxer check; flipped means Up changed, as it does at
+// the first check.
+func (s *deviceRuntimeStore) applyMuxer(state engine.PresenceState) (status MuxerStatus, changed, flipped bool) {
+	next := MuxerStatus{Up: state.MuxUp}
+	for _, device := range state.Devices {
+		switch device.Connection {
+		case "usb":
+			next.USB++
+		case "wifi":
+			next.WiFi++
+		}
+	}
+	if state.Err != nil {
+		next.Error = state.Err.Error()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	flipped = !s.checked || s.muxer.Up != next.Up
+	changed = flipped || s.muxer != next
+	s.muxer, s.checked = next, true
+	return next, changed, flipped
 }
 
 // The first unlock after a (re)connect counts as a change too.

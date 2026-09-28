@@ -3,18 +3,30 @@ package engine
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/wizier/airvault/internal/ios"
-	airlog "github.com/wizier/airvault/internal/logging"
 )
 
 const (
 	pairingTimeout = 45 * time.Second
 	hostName       = "AirVault"
+)
+
+type PairingOutcome string
+
+// Pairing outcomes reported by AdvancePairing.
+const (
+	TrustPaired                  PairingOutcome = "paired"
+	TrustPending                 PairingOutcome = "trust_pending"             // Trust dialog is up; poll again
+	TrustLocked                  PairingOutcome = "locked"                    // phone must be unlocked first
+	TrustDenied                  PairingOutcome = "denied"                    // user tapped "Don't Trust"
+	TrustWiFiAuthorizationFailed PairingOutcome = "wifi_authorization_failed" // USB trust saved, mandatory Wi-Fi setup failed
+	TrustError                   PairingOutcome = "error"
 )
 
 // AdvancePairing takes one polled step and runs to the phone's answer:
@@ -49,7 +61,7 @@ func (e *Engine) advancePairing(ctx context.Context, udid string) (PairingOutcom
 		err := lockdown.StartSession(ctx, record)
 		switch {
 		case err == nil:
-			if _, err := e.pairs.DeleteIdentity(udid); err != nil {
+			if err := e.pairs.DeleteIdentity(udid); err != nil {
 				return "", err
 			}
 			return e.finishPairing(ctx, lockdown, udid, record), nil
@@ -85,11 +97,11 @@ func (e *Engine) advancePairing(ctx context.Context, udid string) (PairingOutcom
 	if err := e.savePairing(udid, record); err != nil {
 		return "", err
 	}
-	if _, err := e.pairs.DeleteIdentity(udid); err != nil {
+	if err := e.pairs.DeleteIdentity(udid); err != nil {
 		return "", err
 	}
 	if err := lockdown.StartSession(ctx, record); err != nil {
-		airlog.Component("engine").WarnContext(ctx, "paired, but the session for Wi-Fi setup failed", "udid", udid, "error", err)
+		slog.WarnContext(ctx, "paired, but the session for Wi-Fi setup failed", "udid", udid, "error", err)
 		return TrustWiFiAuthorizationFailed, nil
 	}
 	return e.finishPairing(ctx, lockdown, udid, record), nil
@@ -122,7 +134,7 @@ func (e *Engine) finishPairing(ctx context.Context, lockdown *ios.Lockdown, udid
 		return lockdown.SetValue(ctx, "com.apple.mobile.wireless_lockdown", "EnableWifiConnections", true)
 	}()
 	if err != nil {
-		airlog.Component("engine").WarnContext(ctx, "paired, but Wi-Fi setup failed", "udid", udid, "error", err)
+		slog.WarnContext(ctx, "paired, but Wi-Fi setup failed", "udid", udid, "error", err)
 		return TrustWiFiAuthorizationFailed
 	}
 	return TrustPaired
@@ -141,23 +153,20 @@ func (e *Engine) Unpair(ctx context.Context, device DeviceID) error {
 		return err
 	}
 	ctx = context.WithoutCancel(ctx)
-	log := airlog.Component("engine")
 	switch record, err := e.pairs.Load(udid); {
 	case err != nil:
-		log.WarnContext(ctx, "unpair: pairing record unreadable, cannot revoke on the device", "udid", udid, "error", err)
+		slog.WarnContext(ctx, "unpair: pairing record unreadable, cannot revoke on the device", "udid", udid, "error", err)
 	case record == nil:
-		log.WarnContext(ctx, "unpair: no AirVault pairing record", "udid", udid)
+		slog.WarnContext(ctx, "unpair: no AirVault pairing record", "udid", udid)
 	default:
 		if err := e.revoke(ctx, udid, record); err != nil {
-			log.WarnContext(ctx, "unpair: the device did not acknowledge; removing host state anyway", "udid", udid, "error", err)
+			slog.WarnContext(ctx, "unpair: the device did not acknowledge; removing host state anyway", "udid", udid, "error", err)
 		} else {
-			log.InfoContext(ctx, "unpair: the device forgot this host", "udid", udid)
+			slog.InfoContext(ctx, "unpair: the device forgot this host", "udid", udid)
 		}
 	}
 	e.afc.forget(udid)
-	_, recordErr := e.pairs.Delete(udid)
-	_, identityErr := e.pairs.DeleteIdentity(udid)
-	if err := errors.Join(recordErr, identityErr); err != nil {
+	if err := errors.Join(e.pairs.Delete(udid), e.pairs.DeleteIdentity(udid)); err != nil {
 		return &Error{Kind: ErrorInternal, Detail: "remove pairing state: " + err.Error()}
 	}
 	return nil

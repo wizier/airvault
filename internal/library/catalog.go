@@ -1,4 +1,4 @@
-package service
+package library
 
 import (
 	"context"
@@ -11,14 +11,14 @@ import (
 // with what it does to the source's footprint cache, so the two never disagree.
 
 // added is the publication's footprint delta, or nil when it cannot be priced.
-func (s *Service) publishSnapshot(ctx context.Context, projection model.Backup, added *int64) error {
-	source := projection.SourceUDID
-	return s.store.WithTx(ctx, func(tx *storage.Store) error {
+func (l *Library) recordSnapshot(ctx context.Context, row model.Backup, added *int64) error {
+	source := row.SourceUDID
+	return l.catalog.WithTx(ctx, func(tx *storage.Store) error {
 		hadSnapshots, err := tx.Backup.SourceHasSnapshots(ctx, source)
 		if err != nil {
 			return err
 		}
-		if err := tx.Backup.InsertSnapshot(ctx, projection); err != nil {
+		if err := tx.Backup.InsertSnapshot(ctx, row); err != nil {
 			return err
 		}
 		switch {
@@ -35,8 +35,8 @@ func (s *Service) publishSnapshot(ctx context.Context, projection model.Backup, 
 
 // What this frees depends on which objects the survivors still share, so the
 // size is unknown until a collection runs.
-func (s *Service) forgetSnapshot(ctx context.Context, source, id string) error {
-	return s.store.WithTx(ctx, func(tx *storage.Store) error {
+func (l *Library) forgetSnapshot(ctx context.Context, source, id string) error {
+	return l.catalog.WithTx(ctx, func(tx *storage.Store) error {
 		if err := tx.Backup.DeleteSnapshot(ctx, source, id); err != nil {
 			return err
 		}
@@ -45,8 +45,8 @@ func (s *Service) forgetSnapshot(ctx context.Context, source, id string) error {
 }
 
 // Called once the object store has detached the source's subtree.
-func (s *Service) forgetSource(ctx context.Context, source string) error {
-	return s.store.WithTx(ctx, func(tx *storage.Store) error {
+func (l *Library) forgetSource(ctx context.Context, source string) error {
+	return l.catalog.WithTx(ctx, func(tx *storage.Store) error {
 		if err := tx.Backup.DeleteSourceSnapshots(ctx, source); err != nil {
 			return err
 		}
@@ -58,20 +58,20 @@ type staleSnapshot struct{ source, id string }
 
 // Stale rows go first so a snapshot that moved sources is re-admitted in the
 // same transaction; every changed source loses its cached size.
-func (s *Service) replaceCatalog(ctx context.Context, stale []staleSnapshot, admit []model.Backup) error {
+func (l *Library) replaceCatalog(ctx context.Context, stale []staleSnapshot, admit []model.Backup) error {
 	changed := make(map[string]struct{}, len(stale)+len(admit))
-	return s.store.WithTx(ctx, func(tx *storage.Store) error {
+	return l.catalog.WithTx(ctx, func(tx *storage.Store) error {
 		for _, row := range stale {
 			if err := tx.Backup.DeleteSnapshot(ctx, row.source, row.id); err != nil {
 				return err
 			}
 			changed[row.source] = struct{}{}
 		}
-		for _, projection := range admit {
-			if err := tx.Backup.InsertSnapshot(ctx, projection); err != nil {
+		for _, row := range admit {
+			if err := tx.Backup.InsertSnapshot(ctx, row); err != nil {
 				return err
 			}
-			changed[projection.SourceUDID] = struct{}{}
+			changed[row.SourceUDID] = struct{}{}
 		}
 		for source := range changed {
 			if err := tx.Backup.ForgetSourceFootprint(ctx, source); err != nil {

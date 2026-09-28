@@ -8,18 +8,16 @@ import (
 
 	"github.com/wizier/airvault/internal/ios"
 	"github.com/wizier/airvault/internal/ios/iostest"
-	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// testPhone is a Go engine wired to a fake muxer with one phone paired with
+// testPhone is an engine wired to a fake muxer with one phone paired with
 // AirVault and attached by USB.
 type testPhone struct {
-	engine  *Engine
-	muxer   *iostest.Muxer
-	phone   *iostest.Device
-	record  *ios.PairRecord
-	udid    DeviceID
-	objects *objectstore.Store
+	engine *Engine
+	muxer  *iostest.Muxer
+	phone  *iostest.Device
+	record *ios.PairRecord
+	udid   DeviceID
 }
 
 func newTestPhone(t *testing.T) *testPhone {
@@ -29,19 +27,14 @@ func newTestPhone(t *testing.T) *testPhone {
 	phone.Trust(record.HostID)
 	muxer := iostest.NewMuxer(t)
 	muxer.Attach(phone, ios.ConnectionUSB)
-	objects, err := objectstore.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = objects.Close() })
-	engine, err := New(Config{MuxAddress: muxer.Address(), PairingRoot: t.TempDir(), Objects: objects})
+	engine, err := New(Config{MuxAddress: muxer.Address(), PairingRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.pairs.Save(phone.UDID, record); err != nil {
 		t.Fatal(err)
 	}
-	return &testPhone{engine: engine, muxer: muxer, phone: phone, record: record, udid: DeviceID(phone.UDID), objects: objects}
+	return &testPhone{engine: engine, muxer: muxer, phone: phone, record: record, udid: DeviceID(phone.UDID)}
 }
 
 // servePlist answers each request of a plist service with reply's result;

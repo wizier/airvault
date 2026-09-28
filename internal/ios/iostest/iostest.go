@@ -26,6 +26,7 @@ type Muxer struct {
 	records   map[string][]byte
 	listeners []net.Conn
 	down      bool
+	hung      bool
 }
 
 type attachment struct {
@@ -93,6 +94,13 @@ func (m *Muxer) SetDown(down bool) {
 	}
 }
 
+// Hang accepts every request and answers none, like a stuck netmuxd.
+func (m *Muxer) Hang(hung bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hung = hung
+}
+
 func (m *Muxer) Record(udid string) []byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -114,6 +122,12 @@ func (m *Muxer) serve(conn net.Conn) {
 	m.mu.Lock()
 	if m.down {
 		m.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	if m.hung {
+		m.mu.Unlock()
+		_, _ = io.Copy(io.Discard, conn) // until the client gives up
 		_ = conn.Close()
 		return
 	}

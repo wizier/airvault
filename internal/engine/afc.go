@@ -13,6 +13,44 @@ import (
 	"github.com/wizier/airvault/internal/ios/afc"
 )
 
+// AFCEntry is raw metadata for one path in an AFC file tree.
+type AFCEntry struct {
+	IsDir    bool
+	Size     int64
+	Modified int64 // unix seconds, 0 if unknown
+}
+
+// AFCSource selects which device service opens an AFC connection.
+type AFCSource int32
+
+const (
+	AFCMedia        AFCSource = iota // whole media partition (com.apple.afc)
+	AFCAppDocuments                  // one app's Documents container (house_arrest)
+)
+
+// AFCSession is one sequential conversation on an AFC connection; the engine
+// pools idle connections, so Close returns a healthy one for the next session.
+// Open consumes the session because a file reader owns the transport until Close.
+type AFCSession interface {
+	List(path string) ([]string, error)
+	Stat(path string) (AFCEntry, error)
+	Open(path string) (AFCFile, error)
+	// ReadSmall reads one whole small file without consuming the session, so one
+	// session serves a batch of reads (thumbnails). Large files use Open.
+	ReadSmall(path string) ([]byte, error)
+	Remove(path string) error
+	Close() error
+}
+
+// AFCFile is a cancellable reader that owns its AFC connection until Close.
+type AFCFile interface {
+	io.ReadCloser
+	Size() int64
+	ModTime() time.Time // zero if unknown
+	// SeekTo moves the device read cursor to an absolute offset (one round trip).
+	SeekTo(offset int64) error
+}
+
 const (
 	maxSmallRead    = 1 << 20 // ReadSmall's bound: thumbnails, not files
 	afcCloseTimeout = 2 * time.Second

@@ -10,7 +10,6 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 	"github.com/wizier/airvault/internal/model"
 )
 
@@ -87,7 +86,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 	if err != nil {
 		return nil, err
 	}
-	summary, err := s.store.Backup.SummaryBySource(ctx)
+	summary, err := s.library.Summary(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +135,7 @@ func (s *Service) pairedDevice(ctx context.Context, udid string) (*model.Device,
 }
 
 func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoint, error) {
-	rows, err := s.store.Backup.ListCompleteBySource(ctx, udid)
+	rows, err := s.library.RestorePoints(ctx, udid)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +144,30 @@ func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoin
 		points = append(points, restorePoint(&rows[i]))
 	}
 	return points, nil
+}
+
+// Catalog only: no manifest is reparsed on a page load.
+func (s *Service) RestoreSources(ctx context.Context) ([]RestorePoint, error) {
+	snapshots, err := s.library.AllRestorePoints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	devices, err := s.store.Device.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]string, len(devices))
+	for _, device := range devices {
+		names[device.UDID] = device.Name
+	}
+	out := make([]RestorePoint, 0, len(snapshots))
+	for i := range snapshots {
+		point := restorePoint(&snapshots[i])
+		point.UDID = snapshots[i].SourceUDID
+		point.DeviceName = cmp.Or(names[point.UDID], point.DeviceName)
+		out = append(out, point)
+	}
+	return out, nil
 }
 
 // Only Unpair calls this, holding the device write lease; otherwise discovery
@@ -158,7 +181,7 @@ func (s *Service) forgetDevice(ctx context.Context, udid string) error {
 	if err := s.store.Device.Delete(ctx, udid); err != nil {
 		return err
 	}
-	s.bus.Emit(events.DeviceRemoved, map[string]any{"udid": udid})
+	s.bus.Emit(deviceRemoved(udid))
 	return nil
 }
 
@@ -181,7 +204,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 		if releaseSnapshots, err = s.acquireFor(ctx, "unpair", udid, snapshotWriteResource(udid)); err != nil {
 			return err
 		}
-		// Every path that does not reach deleteBackupSource gives the lease back
+		// Every path that does not reach DeleteSource gives the lease back
 		// here; a leaked one wedges the source until restart.
 		defer func() {
 			if !handedOff {
@@ -201,7 +224,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	finalCtx := context.WithoutCancel(ctx)
 	if deleteBackups {
 		handedOff = true
-		if err := s.deleteBackupSource(finalCtx, releaseSnapshots, udid); err != nil {
+		if err := s.library.DeleteSource(finalCtx, udid, releaseSnapshots); err != nil {
 			return err
 		}
 	}
@@ -210,7 +233,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	}
 	// Emit only after the registry write committed, so a refetch it triggers
 	// can't see stale rows.
-	s.bus.Emit(events.PairChanged, map[string]any{"udid": udid, "paired": false})
+	s.bus.Emit(pairingChanged(udid, false))
 	return nil
 }
 
@@ -221,20 +244,5 @@ func (s *Service) reachableDevice(ctx context.Context, udid string) error {
 	if s.live.connection(udid) == "" {
 		return domain.ErrDeviceOffline
 	}
-	return nil
-}
-
-// The device row may be absent: the catalog is rebuilt from disk independently.
-// No device lease: nothing here touches the phone.
-func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
-	release, err := s.acquireFor(ctx, "backup deletion", udid, snapshotWriteResource(udid))
-	if err != nil {
-		return err
-	}
-	if err := s.deleteBackupSource(ctx, release, udid); err != nil {
-		return err
-	}
-	// Wiping a source's history resets its status to "never", stale failure included.
-	s.clearRunOutcomes(udid)
 	return nil
 }

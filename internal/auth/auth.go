@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wizier/airvault/internal/durable"
 )
 
 const (
@@ -79,29 +81,8 @@ func persistToken(dir, path, token string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating auth directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".auth-token-*")
-	if err != nil {
-		return fmt.Errorf("creating auth token: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.WriteString(token + "\n"); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing auth token: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("syncing auth token: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing auth token: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("publishing auth token: %w", err)
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	if err := durable.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return fmt.Errorf("saving auth token: %w", err)
 	}
 	return nil
 }

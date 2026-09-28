@@ -1,92 +1,149 @@
+// Package iosbackup is the iOS backup format stored in a snapshot: the plists
+// that describe a backup and the keybag behind its password.
 package iosbackup
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"time"
+
+	"howett.net/plist"
 
 	"github.com/wizier/airvault/internal/objectstore"
-	"howett.net/plist"
 )
 
-type backupManifest struct {
-	IsEncrypted bool `plist:"IsEncrypted"`
-	Lockdown    struct {
-		ProductVersion string `plist:"ProductVersion"`
-	} `plist:"Lockdown"`
-}
+const (
+	infoPlist    = "Info.plist"
+	maxPlistSize = 256 << 20 // Info.plist grows with the app census past 64 MiB
+)
 
-type backupStatus struct {
-	SnapshotState string `plist:"SnapshotState"`
-}
-
+// Info is a backup's Info.plist: the device and its App Store apps. Finder
+// shows it, and a restore reinstalls the apps from it.
 type Info struct {
-	Encrypted   bool
-	IOSVersion  string
-	DeviceName  string
-	ProductType string
+	BuildVersion          string                 `plist:"Build Version,omitempty"`
+	DeviceName            string                 `plist:"Device Name,omitempty"`
+	DisplayName           string                 `plist:"Display Name,omitempty"`
+	GUID                  string                 `plist:"GUID"`
+	ICCID                 string                 `plist:"ICCID,omitempty"`
+	IMEI                  string                 `plist:"IMEI,omitempty"`
+	MEID                  string                 `plist:"MEID,omitempty"`
+	PhoneNumber           string                 `plist:"Phone Number,omitempty"`
+	ProductType           string                 `plist:"Product Type,omitempty"`
+	ProductVersion        string                 `plist:"Product Version,omitempty"`
+	SerialNumber          string                 `plist:"Serial Number,omitempty"`
+	TargetIdentifier      string                 `plist:"Target Identifier"`
+	TargetType            string                 `plist:"Target Type"`
+	UniqueIdentifier      string                 `plist:"Unique Identifier"`
+	LastBackupDate        time.Time              `plist:"Last Backup Date"`
+	ITunesVersion         string                 `plist:"iTunes Version"`
+	ITunesSettings        any                    `plist:"iTunes Settings"`
+	ITunesFiles           map[string][]byte      `plist:"iTunes Files"`
+	IBooksData            []byte                 `plist:"iBooks Data 2,omitempty"`
+	Applications          map[string]Application `plist:"Applications"`
+	InstalledApplications []string               `plist:"Installed Applications"`
 }
 
-// Inspect checks only the minimum structure a restore needs.
-func Inspect(view *objectstore.View) (Info, error) {
-	var manifest backupManifest
-	if err := readPlist(view, "Manifest.plist", &manifest); err != nil {
-		return Info{}, fmt.Errorf("read Manifest.plist: %w", err)
-	}
+// Application is what a restore needs to reinstall an App Store app; the
+// store data is opaque.
+type Application struct {
+	SINF            any    `plist:"ApplicationSINF"`
+	Metadata        any    `plist:"iTunesMetadata"`
+	PlaceholderIcon []byte `plist:"PlaceholderIcon,omitempty"`
+}
 
-	var status backupStatus
+// WriteInfo records info as the snapshot's Info.plist.
+func WriteInfo(session *objectstore.Session, info *Info) error {
+	data, err := plist.MarshalIndent(info, plist.XMLFormat, "\t")
+	if err != nil {
+		return fmt.Errorf("encode Info.plist: %w", err)
+	}
+	writer, err := session.Create(infoPlist)
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write(data); err != nil {
+		writer.Abort()
+		return err
+	}
+	return writer.Commit()
+}
+
+// Backup is an iOS backup stored in a snapshot, checked complete.
+type Backup struct {
+	*objectstore.View
+	Info       Info
+	Encrypted  bool
+	IOSVersion string
+	keybag     []byte
+}
+
+// Open reads a snapshot's backup plists and checks the backup is complete
+// enough to restore.
+func Open(view *objectstore.View) (*Backup, error) {
+	var manifest struct {
+		IsEncrypted  bool   `plist:"IsEncrypted"`
+		BackupKeyBag []byte `plist:"BackupKeyBag"`
+		Lockdown     struct {
+			ProductVersion string `plist:"ProductVersion"`
+		} `plist:"Lockdown"`
+	}
+	if err := readPlist(view, "Manifest.plist", &manifest); err != nil {
+		return nil, fmt.Errorf("read Manifest.plist: %w", err)
+	}
+	var status struct {
+		SnapshotState string `plist:"SnapshotState"`
+	}
 	if err := readPlist(view, "Status.plist", &status); err != nil {
-		return Info{}, fmt.Errorf("read Status.plist: %w", err)
+		return nil, fmt.Errorf("read Status.plist: %w", err)
 	}
 	if status.SnapshotState != "finished" {
-		return Info{}, fmt.Errorf("backup Status.plist SnapshotState is %q, want %q",
-			status.SnapshotState, "finished")
+		return nil, fmt.Errorf("backup Status.plist SnapshotState is %q, want %q", status.SnapshotState, "finished")
 	}
-
-	var info map[string]any
-	if err := readPlist(view, "Info.plist", &info); err != nil {
-		return Info{}, fmt.Errorf("read Info.plist: %w", err)
+	backup := &Backup{View: view, Encrypted: manifest.IsEncrypted, IOSVersion: manifest.Lockdown.ProductVersion,
+		keybag: manifest.BackupKeyBag}
+	if err := readPlist(view, infoPlist, &backup.Info); err != nil {
+		return nil, fmt.Errorf("read Info.plist: %w", err)
 	}
-	if target, ok := info["Target Identifier"].(string); !ok || target == "" {
-		return Info{}, fmt.Errorf("backup Info.plist has no Target Identifier")
+	if backup.Info.TargetIdentifier == "" {
+		return nil, errors.New("backup Info.plist has no Target Identifier")
 	}
-	size, ok := view.FileSize("Manifest.db")
-	if !ok || size == 0 {
-		return Info{}, fmt.Errorf("backup Manifest.db is not a non-empty regular file")
+	if size, ok := view.FileSize("Manifest.db"); !ok || size == 0 {
+		return nil, errors.New("backup Manifest.db is not a non-empty regular file")
 	}
 	file, err := view.Open("Manifest.db")
 	if err != nil {
-		return Info{}, fmt.Errorf("open Manifest.db: %w", err)
+		return nil, fmt.Errorf("open Manifest.db: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return Info{}, fmt.Errorf("close Manifest.db: %w", err)
+		return nil, fmt.Errorf("close Manifest.db: %w", err)
 	}
-	name, _ := info["Device Name"].(string)
-	product, _ := info["Product Type"].(string)
-	return Info{
-		Encrypted:   manifest.IsEncrypted,
-		DeviceName:  name,
-		ProductType: product,
-		IOSVersion:  manifest.Lockdown.ProductVersion,
-	}, nil
+	return backup, nil
 }
 
-func readPlist(view *objectstore.View, logicalPath string, value any) error {
-	file, err := view.Open(logicalPath)
+// RestoreApplications is the list a restore hands the device to reinstall
+// the App Store apps, nil when there are none.
+func (b *Backup) RestoreApplications() ([]byte, error) {
+	if len(b.Info.Applications) == 0 {
+		return nil, nil
+	}
+	return plist.MarshalIndent(b.Info.Applications, plist.XMLFormat, "\t")
+}
+
+func readPlist(view *objectstore.View, key string, value any) error {
+	file, err := view.Open(key)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	// OOM guard only: Info.plist grows with the app census and can pass 64 MiB
-	// on large libraries.
-	const maxBackupPlistBytes = 256 << 20
-	data, err := io.ReadAll(io.LimitReader(file, maxBackupPlistBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, maxPlistSize+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > maxBackupPlistBytes {
-		return fmt.Errorf("plist exceeds %d-byte limit", maxBackupPlistBytes)
+	if len(data) > maxPlistSize {
+		return fmt.Errorf("plist exceeds %d-byte limit", maxPlistSize)
 	}
 	_, err = plist.Unmarshal(data, value)
 	return err

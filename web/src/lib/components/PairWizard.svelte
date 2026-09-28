@@ -159,15 +159,15 @@
       {:else if loading}
         <div class="flex items-center gap-3 rounded-box bg-base-200 p-4 text-sm text-base-content/60">
           <span class="loading loading-spinner loading-sm"></span>
-          Connecting to the device bridge…
+          Looking for devices…
         </div>
       {:else if muxerOffline}
         <div role="alert" class="alert alert-warning alert-soft">
           <Icon name="alert" size={20} />
           <div>
-            <h4 class="font-semibold">Device bridge unavailable</h4>
+            <h4 class="font-semibold">USB/Wi-Fi unavailable</h4>
             <div class="text-sm opacity-90">
-              The USB/Wi-Fi device bridge isn't available, so USB devices can't be detected. This screen recovers
+              netmuxd isn't answering, so USB devices can't be detected. This screen recovers
               automatically once it's back.
             </div>
           </div>

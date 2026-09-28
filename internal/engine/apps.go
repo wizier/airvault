@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -12,8 +13,30 @@ import (
 
 	"github.com/wizier/airvault/internal/ios"
 	"github.com/wizier/airvault/internal/ios/afc"
-	airlog "github.com/wizier/airvault/internal/logging"
 )
+
+// App is one installed application. FileSharing is true when the app exposes
+// its Documents over house_arrest.
+type App struct {
+	BundleID    string `json:"bundleId"`
+	Name        string `json:"name"`
+	Version     string `json:"version,omitempty"`
+	FileSharing bool   `json:"fileSharing,omitempty"`
+}
+
+// InstallPhase identifies one device-side phase of installing an IPA.
+type InstallPhase string
+
+const (
+	InstallPhaseStaging    InstallPhase = "staging"
+	InstallPhaseInstalling InstallPhase = "installing"
+)
+
+// InstallProgress is phase-local progress reported by the device engine.
+type InstallProgress struct {
+	Phase   InstallPhase `json:"phase"`
+	Percent int          `json:"percent"`
+}
 
 func (e *Engine) ListApps(ctx context.Context, device DeviceID) ([]App, error) {
 	return call(ctx, deviceWorkTimeout, "app list", func(ctx context.Context) ([]App, error) {
@@ -176,7 +199,7 @@ func (e *Engine) removeStagedIPA(ctx context.Context, device DeviceID) {
 		return nil
 	})
 	if err != nil {
-		airlog.Component("engine").WarnContext(ctx, "staged app cleanup failed", "udid", device, "error", err)
+		slog.WarnContext(ctx, "staged app cleanup failed", "udid", device, "error", err)
 	}
 }
 

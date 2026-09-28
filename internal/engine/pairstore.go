@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,15 +13,15 @@ import (
 
 	"howett.net/plist"
 
+	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/durable"
 	"github.com/wizier/airvault/internal/ios"
-	airlog "github.com/wizier/airvault/internal/logging"
 )
 
 const (
 	pendingDir      = ".pending"
 	maxRecordSize   = 4 << 20
 	maxIdentitySize = 16 << 10
-	maxUDIDLength   = 64
 )
 
 // pairStore keeps AirVault's pairing records in the lockdown directory shared
@@ -67,7 +68,7 @@ func (s *pairStore) Load(udid string) (*ios.PairRecord, error) {
 	}
 	record, err := ios.ParsePairRecord(data)
 	if err != nil {
-		airlog.Component("engine").Warn("unusable pairing record counts as absent; pairing again replaces it", "path", path, "error", err)
+		slog.Warn("unusable pairing record counts as absent; pairing again replaces it", "path", path, "error", err)
 		return nil, nil
 	}
 	return record, nil
@@ -85,10 +86,10 @@ func (s *pairStore) Save(udid string, record *ios.PairRecord) error {
 	return writePrivate(path, data)
 }
 
-func (s *pairStore) Delete(udid string) (bool, error) {
+func (s *pairStore) Delete(udid string) error {
 	path, err := s.recordPath(udid)
 	if err != nil {
-		return false, err
+		return err
 	}
 	return removePrivate(path)
 }
@@ -133,22 +134,17 @@ func (s *pairStore) ReserveIdentity(udid string, candidate pairIdentity) (pairId
 	return candidate, writePrivate(path, data)
 }
 
-func (s *pairStore) DeleteIdentity(udid string) (bool, error) {
+func (s *pairStore) DeleteIdentity(udid string) error {
 	path, err := s.identityPath(udid)
 	if err != nil {
-		return false, err
+		return err
 	}
 	return removePrivate(path)
 }
 
 func validateUDID(udid string) error {
-	valid := udid != "" && len(udid) <= maxUDIDLength
-	for i := 0; valid && i < len(udid); i++ {
-		c := udid[i]
-		valid = 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_'
-	}
-	if !valid {
-		return &Error{Kind: ErrorInvalidArgument, Detail: fmt.Sprintf("invalid udid %q", udid)}
+	if err := domain.ValidateSource(udid); err != nil {
+		return &Error{Kind: ErrorInvalidArgument, Detail: fmt.Sprintf("invalid udid %q: %v", udid, err)}
 	}
 	return nil
 }
@@ -180,8 +176,7 @@ func readPrivate(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// writePrivate replaces path atomically and durably with a 0600 file in a
-// 0700 directory.
+// writePrivate replaces path with a 0600 file in a 0700 directory.
 func writePrivate(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -190,43 +185,16 @@ func writePrivate(path string, data []byte) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(temp.Name()) // a no-op once renamed
-	_, err = temp.Write(data)
-	if err == nil {
-		err = temp.Sync()
-	}
-	if closeErr := temp.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(temp.Name(), path)
-	}
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return syncDir(dir)
+	return durable.WriteFile(path, data, 0o600)
 }
 
-func removePrivate(path string) (bool, error) {
+func removePrivate(path string) error {
 	err := os.Remove(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return nil
 	}
-	if err != nil {
-		return false, err
-	}
-	return true, syncDir(filepath.Dir(path))
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	return durable.SyncDir(filepath.Dir(path))
 }

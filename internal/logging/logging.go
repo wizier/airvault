@@ -21,18 +21,10 @@ func WithJobID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, jobIDKey{}, id)
 }
 
-func JobID(ctx context.Context) string {
-	id, _ := ctx.Value(jobIDKey{}).(string)
-	return id
-}
-
-var root = slog.Default()
-
 func Setup(level slog.Level) {
 	info, err := os.Stdout.Stat()
 	noColor := err != nil || info.Mode()&os.ModeCharDevice == 0
-	root = newRoot(os.Stdout, level, noColor)
-	slog.SetDefault(root.With("component", "go"))
+	slog.SetDefault(newRoot(os.Stdout, level, noColor))
 }
 
 func newRoot(out io.Writer, level slog.Level, noColor bool) *slog.Logger {
@@ -44,16 +36,12 @@ func newRoot(out io.Writer, level slog.Level, noColor bool) *slog.Logger {
 	return slog.New(handler).With("service", "airvault")
 }
 
-func Component(name string) *slog.Logger {
-	return root.With("component", name)
-}
-
 type contextHandler struct {
 	slog.Handler
 }
 
 func (h contextHandler) Handle(ctx context.Context, record slog.Record) error {
-	if id := JobID(ctx); id != "" {
+	if id, _ := ctx.Value(jobIDKey{}).(string); id != "" {
 		record = record.Clone()
 		record.AddAttrs(slog.String("job_id", id))
 	}

@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"encoding/json"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -18,9 +19,9 @@ func entriesChecksum(entries map[string]manifestEntry) string {
 	return seal.checksum()
 }
 
-// Golden vectors of the Rust engine's seal: stores it wrote must stay
-// readable. The multi-entry vector pins byte-wise key order ("B" < "a" < UTF-8 "а").
-func TestEntriesChecksumMatchesRustVector(t *testing.T) {
+// Golden vectors pin the seal: existing stores must stay readable. The
+// multi-entry vector pins byte-wise key order ("B" < "a" < UTF-8 "а").
+func TestEntriesChecksumMatchesGoldenVector(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		entries map[string]manifestEntry
@@ -51,6 +52,50 @@ func TestEntriesChecksumMatchesRustVector(t *testing.T) {
 	}
 }
 
+// A format 1 snapshot as an earlier release wrote it: the layout, the field
+// names and the seal are what existing stores hold.
+func TestOpenSnapshotReadsFormatOne(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const source = "testphoneudid0001"
+	const ref = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	files := map[string]string{
+		"snapshots/" + genA + ".json": `{"version":1,"sourceUdid":"` + source + `","snapshotId":"` + genA + `",` +
+			`"createdUnix":1700000000,"sizeBytes":5,` +
+			`"entriesSha256":"7ed12164b7b06c61d83459be84998d051a75e61868bc585618713da7ffa3221d","entries":{` +
+			`"Documents":{"kind":"directory","modifiedUnix":5},` +
+			`"Documents/note.txt":{"kind":"file","objectRef":"` + ref + `","size":5,"modifiedUnix":7}}}`,
+		"objects/2c/" + ref: "hello",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, source, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view, err := store.OpenSnapshot(source, genA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.CreatedUnix() != 1_700_000_000 || view.SizeBytes() != 5 {
+		t.Fatalf("created %d, size %d", view.CreatedUnix(), view.SizeBytes())
+	}
+	file, err := view.Open("Documents/note.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if data, err := io.ReadAll(file); err != nil || string(data) != "hello" {
+		t.Fatalf("content = %q, %v", data, err)
+	}
+}
+
 func TestManifestEntryValidation(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -68,8 +113,8 @@ func TestManifestEntryValidation(t *testing.T) {
 			"parent/child": {Kind: entryFile, ObjectRef: obj2, Size: 1},
 		}, "is not a directory"},
 		{"excessive depth", map[string]manifestEntry{
-			strings.Repeat("a/", maxLogicalDepth) + "a": {Kind: entryDirectory},
-		}, "exceeds 128 components"},
+			strings.Repeat("a/", maxKeyDepth) + "a": {Kind: entryDirectory},
+		}, "invalid key"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			manifest := manifestProjection{SourceUDID: "testphoneudid0001", SnapshotID: genA, Entries: test.entries}
@@ -100,5 +145,21 @@ func TestOpenSnapshotRejectsSealedEntryMutation(t *testing.T) {
 	}
 	if _, err := store.OpenSnapshot(source, genA); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("mutated manifest error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestValidKey(t *testing.T) {
+	long := strings.Repeat("a", 255)
+	for key, want := range map[string]bool{
+		"Manifest.db": true, "ab/abc": true, long: true, long + "a": false,
+		strings.Repeat("a/", 127) + "a": true, strings.Repeat("a/", 128) + "a": false,
+		strings.Repeat(strings.Repeat("a", 200)+"/", 20) + strings.Repeat("a", 76): true,
+		strings.Repeat(strings.Repeat("a", 200)+"/", 20) + strings.Repeat("a", 77): false,
+		"": false, ".": false, "/abs": false, "a//b": false, "a/../b": false, "a/./b": false, "a/": false,
+		"a\\b": false, "a\x00b": false, "a b": false, "a b": false, "a/\xff": false,
+	} {
+		if got := ValidKey(key); got != want {
+			t.Errorf("ValidKey(%.40q) = %v, want %v", key, got, want)
+		}
 	}
 }

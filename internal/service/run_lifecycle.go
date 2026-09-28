@@ -11,7 +11,6 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
-	"github.com/wizier/airvault/internal/events"
 )
 
 // Speed averages the interval each emit covers, total makes the percentage an
@@ -58,7 +57,7 @@ func (s *Service) progressSink(run *runReservation, idleStage, activeStage RunSt
 		// Keep progress ordered with cancellation and terminal removal.
 		if emit {
 			emitted, lastEmit = transferred, time.Now()
-			s.bus.Emit(events.BackupProgress, progress)
+			s.bus.Emit(runProgressed(progress))
 		}
 		s.runMu.Unlock()
 	}
@@ -96,7 +95,7 @@ func (s *Service) setRunStage(run *runReservation, stage RunStage) {
 		return
 	}
 	active.progress.Stage = stage
-	s.bus.Emit(events.BackupProgress, active.progress)
+	s.bus.Emit(runProgressed(active.progress))
 }
 
 type runOutcome struct {
@@ -148,31 +147,11 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 	}
 	logOperationFinished(context.WithoutCancel(run.ctx), run.kind, run.udid, state,
 		run.started, runErr, extra...)
-	data := map[string]any{
-		"runId": run.id,
-		"udid":  run.udid,
-		"state": state,
+	var sizeBytes int64
+	if state == runStateCompleted {
+		sizeBytes = outcome.sizeBytes
 	}
-	if run.kind == runKindRestore {
-		data["restore"] = true
-	}
-	if run.auto {
-		data["auto"] = true
-	}
-	if eventErrorCode != "" {
-		data["errorCode"] = eventErrorCode
-	}
-	switch state {
-	case runStateCompleted:
-		if outcome.sizeBytes > 0 {
-			data["sizeBytes"] = outcome.sizeBytes
-		}
-		s.bus.Emit(events.BackupDone, data)
-	case runStateCancelled:
-		s.bus.Emit(events.BackupCancelled, data)
-	default:
-		s.bus.Emit(events.BackupFailed, data)
-	}
+	s.bus.Emit(runEnded(run, state, eventErrorCode, sizeBytes))
 }
 
 func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, error)) string {
@@ -185,7 +164,7 @@ func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, err
 				// write lease is still held, so every staging envelope for the source
 				// is this run's. A stranded one disables object collection.
 				if run.kind == runKindBackup {
-					if err := s.objects.ReconcileSourceStaging(run.udid); err != nil {
+					if err := s.library.ReconcileStaging(run.udid); err != nil {
 						slog.ErrorContext(run.ctx, "staging cleanup after panic failed",
 							"source", run.udid, "error", err)
 					}

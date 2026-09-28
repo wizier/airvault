@@ -4,17 +4,18 @@
   import { link, push } from 'svelte-spa-router';
   import Logo from './Logo.svelte';
   import Icon from './Icon.svelte';
+  import Pill from './Pill.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
   import { statusStore } from '../stores.svelte';
   import { eventsClient } from '../events.svelte';
   import { logout } from '../api/session';
 
-  // Mounted on every non-login route: owns the status fetch (bridge badge here,
+  // Mounted on every non-login route: owns the status fetch (muxer pill here,
   // offline banner in App) and the single shared SSE stream.
   $effect(() => statusStore.start());
   $effect(() => eventsClient.start());
 
-  const status = $derived(statusStore.data);
+  const muxer = $derived(statusStore.data?.muxer);
 
   async function signOut() {
     try {
@@ -35,18 +36,12 @@
     </div>
 
     <div class="navbar-end gap-2">
-      {#if status}
-        <span
-          class={`hidden gap-1.5 sm:inline-flex badge badge-soft ${
-            status.muxerUp ? 'badge-success' : 'badge-error'
-          }`}
-          title={status.muxerUp ? 'Device bridge ready' : 'Device bridge unavailable'}
-        >
-          <span
-            class={`status ${status.muxerUp ? 'status-success animate-pulse' : 'status-error'}`}
-          ></span>
-          device bridge
+      {#if muxer?.up}
+        <span class="hidden sm:inline-flex">
+          <Pill tone="green" dot>USB {muxer.usb} · Wi-Fi {muxer.wifi}</Pill>
         </span>
+      {:else if muxer}
+        <span title={muxer.error}><Pill tone="red" dot>USB/Wi-Fi down</Pill></span>
       {/if}
       <ThemeToggle />
       <button

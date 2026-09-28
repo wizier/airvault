@@ -32,7 +32,7 @@ func (h *Handler) getPairingState(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, pairingStateResponse{
-		MuxerReady: h.svc.MuxerReady(c.Request().Context()),
+		MuxerReady: h.svc.Muxer().Up,
 		USBDevices: usb,
 	})
 }
