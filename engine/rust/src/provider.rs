@@ -247,6 +247,33 @@ pub(crate) async fn send_framed(connection: &mut Idevice, body: &[u8]) -> Result
     connection.send_raw(&framed).await
 }
 
+/// How a plain service expects its requests encoded.
+pub(crate) enum PlistFormat {
+    Xml,
+    Binary,
+}
+
+/// One framed plist round trip on a plain service connection: encode, send,
+/// read at most `max` bytes back, decode. `what` names the step in errors.
+pub(crate) async fn plist_exchange(
+    connection: &mut Idevice,
+    request: &plist::Dictionary,
+    format: PlistFormat,
+    max: usize,
+    what: &str,
+) -> Result<plist::Value, IdeviceError> {
+    let mut body = Vec::new();
+    match format {
+        PlistFormat::Xml => plist::to_writer_xml(&mut body, request),
+        PlistFormat::Binary => plist::to_writer_binary(&mut body, request),
+    }
+    .map_err(|e| IdeviceError::UnexpectedResponse(format!("encode {what}: {e}")))?;
+    send_framed(connection, &body).await?;
+    let reply = recv_framed(connection, max).await?;
+    plist::from_bytes(&reply)
+        .map_err(|e| IdeviceError::UnexpectedResponse(format!("decode {what} reply: {e}")))
+}
+
 /// Reads one length-prefixed message, refusing an empty or over-`max` frame
 /// before allocating for it.
 pub(crate) async fn recv_framed(

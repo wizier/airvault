@@ -232,10 +232,9 @@ func (s *Session) ReadFile(path Path) ([]byte, error) {
 // File is one device file as sized when it was opened; bytes appended later
 // are not part of it. It is an io.ReadSeeker for http.ServeContent.
 type File struct {
-	native  engine.AFCFile
-	release func()
-	size    int64
-	once    sync.Once
+	native engine.AFCFile
+	size   int64
+	close  func() error // closes the file and frees its session once; repeats return that result
 
 	readAhead *bufio.Reader
 	offset    int64 // logical position, moved by Seek and Read
@@ -260,9 +259,12 @@ func (s *Session) OpenFile(path Path) (*File, error) {
 		return nil, err
 	}
 	return &File{
-		native:    nativeFile,
-		release:   release,
-		size:      nativeFile.Size(),
+		native: nativeFile,
+		size:   nativeFile.Size(),
+		close: sync.OnceValue(func() error {
+			defer release()
+			return nativeFile.Close()
+		}),
 		readAhead: bufio.NewReaderSize(nativeFile, readAheadSize),
 	}, nil
 }
@@ -310,11 +312,4 @@ func (f *File) Size() int64 { return f.size }
 
 func (f *File) ModTime() time.Time { return f.native.ModTime() }
 
-func (f *File) Close() error {
-	var err error
-	f.once.Do(func() {
-		err = f.native.Close()
-		f.release()
-	})
-	return err
-}
+func (f *File) Close() error { return f.close() }

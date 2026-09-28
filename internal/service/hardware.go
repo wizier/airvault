@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"math"
@@ -71,10 +72,7 @@ func hardwareInfo(report engine.HardwareReport) HardwareInfo {
 
 	// AmountDataAvailable is the honest free figure (what Settings shows);
 	// TotalDataAvailable counts purgeable space as free — fall back if absent.
-	dataAvail := d.AmountDataAvailable
-	if dataAvail == 0 {
-		dataAvail = d.TotalDataAvailable
-	}
+	dataAvail := cmp.Or(d.AmountDataAvailable, d.TotalDataAvailable)
 
 	return HardwareInfo{
 		FindMyEnabled: report.FindMy,

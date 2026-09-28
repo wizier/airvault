@@ -8,7 +8,7 @@ use idevice::{Idevice, IdeviceError};
 use plist::Value;
 
 use crate::bounded;
-use crate::provider::{connect_service, recv_framed, send_framed, AirvaultProvider};
+use crate::provider::{connect_service, plist_exchange, AirvaultProvider, PlistFormat};
 use crate::timeouts;
 
 const ASSERTION_SERVICE: &str = "com.apple.mobile.assertion_agent";
@@ -43,13 +43,14 @@ async fn hold_wireless_sync(
     .into_iter()
     .collect();
     // Apple sends this as a binary plist (AMDServiceConnectionSendMessage, format 200).
-    let mut body = Vec::new();
-    plist::to_writer_binary(&mut body, &request)
-        .map_err(|e| IdeviceError::UnexpectedResponse(format!("encode assertion request: {e}")))?;
-    send_framed(&mut connection, &body).await?;
-    let reply = recv_framed(&mut connection, MAX_REPLY_BYTES).await?;
-    let reply: Value = plist::from_bytes(&reply)
-        .map_err(|e| IdeviceError::UnexpectedResponse(format!("decode assertion reply: {e}")))?;
+    let reply = plist_exchange(
+        &mut connection,
+        &request,
+        PlistFormat::Binary,
+        MAX_REPLY_BYTES,
+        "assertion",
+    )
+    .await?;
     tracing::debug!(
         ?reply,
         "assertion agent acknowledged CommandCreateAssertion"

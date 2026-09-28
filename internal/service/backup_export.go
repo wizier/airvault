@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -44,10 +45,7 @@ func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*Bac
 	if err != nil {
 		return nil, fmt.Errorf("pack snapshot: %w", err)
 	}
-	name := snapshot.DeviceName
-	if name == "" {
-		name = snapshot.SourceUDID
-	}
+	name := cmp.Or(snapshot.DeviceName, snapshot.SourceUDID)
 	return &BackupExport{
 		Tar:  archive,
 		Name: fmt.Sprintf("AirVault-%s-%s.tar", name, created.Format("2006-01-02-1504")),

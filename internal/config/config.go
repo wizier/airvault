@@ -4,6 +4,8 @@
 package config
 
 import (
+	"cmp"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +36,7 @@ func Load() *Config {
 	configDir := env("AIRVAULT_CONFIG_DIR", "data/config")
 
 	c := &Config{
-		ListenAddr:  env("AIRVAULT_LISTEN_ADDR", host+":"+port),
+		ListenAddr:  env("AIRVAULT_LISTEN_ADDR", net.JoinHostPort(strings.Trim(host, "[]"), port)),
 		LogLevel:    strings.ToLower(strings.TrimSpace(env("AIRVAULT_LOG_LEVEL", "info"))),
 		BackupDir:   env("AIRVAULT_BACKUP_DIR", "data/backups"),
 		ConfigDir:   configDir,
@@ -47,8 +49,5 @@ func Load() *Config {
 }
 
 func env(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
-		return v
-	}
-	return def
+	return cmp.Or(os.Getenv(key), def)
 }

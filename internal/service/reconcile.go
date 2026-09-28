@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 
@@ -54,11 +55,7 @@ func (s *Service) reconcileCatalogFromStore(ctx context.Context) ([]string, erro
 		if err != nil {
 			// Without a listing none of this source's rows can be judged stale.
 			slog.ErrorContext(ctx, "catalog reconcile: source skipped", "source", source, "error", err)
-			for id, owner := range unaccounted {
-				if owner == source {
-					delete(unaccounted, id)
-				}
-			}
+			maps.DeleteFunc(unaccounted, func(_, owner string) bool { return owner == source })
 			continue
 		}
 		for _, id := range ids {

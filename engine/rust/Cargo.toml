@@ -30,7 +30,7 @@ idevice = { version = "0.1.68", default-features = false, features = [
     "mobileactivationd",     # av_activation_* (Setup Assistant restore needs activation)
 ] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "fs"] }
-tokio-util = { version = "0.7", features = ["io"] }
+tokio-util = { version = "0.7.12", features = ["io"] }
 thiserror = "2"
 plist = "1"
 # C-ABI JSON payloads (device lists, hardware info, console records).

@@ -111,10 +111,13 @@ async fn watch_once(
 ) -> Result<(), IdeviceError> {
     let mut sock = bounded::within(timeouts::MUX, context.mux_addr().to_socket()).await?;
 
-    let mut request = plist::Dictionary::new();
-    request.insert("MessageType".into(), "Listen".into());
-    request.insert("ClientVersionString".into(), "AirVault".into());
-    request.insert("kLibUSBMuxVersion".into(), 3.into());
+    let request: plist::Dictionary = [
+        ("MessageType", plist::Value::from("Listen")),
+        ("ClientVersionString", "AirVault".into()),
+        ("kLibUSBMuxVersion", 3.into()),
+    ]
+    .into_iter()
+    .collect();
     let packet: Vec<u8> = RawPacket::new(request, 1, 8, 1).into();
     bounded::within(timeouts::MUX, async {
         sock.write_all(&packet).await?;

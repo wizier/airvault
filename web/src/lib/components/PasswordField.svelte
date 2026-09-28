@@ -20,12 +20,6 @@
     focus?: boolean;
     className?: string;
   } = $props();
-
-  let input = $state<HTMLInputElement>();
-
-  $effect(() => {
-    if (focus) input?.focus();
-  });
 </script>
 
 <label class={`${className} flex flex-col gap-1.5`}>
@@ -34,7 +28,9 @@
     type="password"
     class={`input w-full ${error ? 'input-error' : ''}`}
     bind:value
-    bind:this={input}
+    {@attach (input) => {
+      if (focus) input.focus();
+    }}
     {placeholder}
     {autocomplete}
     {disabled}

@@ -1,6 +1,7 @@
 package iosbackup
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/pbkdf2"
 	"crypto/sha1"
@@ -56,11 +57,11 @@ func parseKeybag(data []byte) (*backupKeybag, error) {
 		var err error
 		switch tag {
 		case "DPSL":
-			bag.dpsl = append([]byte(nil), payload...)
+			bag.dpsl = bytes.Clone(payload)
 		case "DPIC":
 			bag.dpic, err = uint32Field(tag, payload)
 		case "SALT":
-			bag.salt = append([]byte(nil), payload...)
+			bag.salt = bytes.Clone(payload)
 		case "ITER":
 			bag.iter, err = uint32Field(tag, payload)
 		case "CLAS":
@@ -72,7 +73,7 @@ func parseKeybag(data []byte) (*backupKeybag, error) {
 			}
 		case "WPKY":
 			if current != nil {
-				current.wpky = append([]byte(nil), payload...)
+				current.wpky = bytes.Clone(payload)
 			}
 		}
 		if err != nil {

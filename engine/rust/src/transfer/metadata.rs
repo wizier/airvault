@@ -153,21 +153,16 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
     for (info_key, lockdown_key) in IDENTITY_KEYS {
         if let Some(value) = root.get(lockdown_key).and_then(Value::as_string) {
             if !value.is_empty() {
-                info.insert(info_key.into(), Value::String(value.into()));
+                info.insert(info_key.into(), value.into());
             }
         }
     }
 
-    info.insert(
-        "GUID".into(),
-        Value::String(uuid::Uuid::new_v4().simple().to_string().to_uppercase()),
-    );
-    info.insert("Target Identifier".into(), Value::String(udid.into()));
-    info.insert("Target Type".into(), Value::String("Device".into()));
-    info.insert(
-        "Unique Identifier".into(),
-        Value::String(udid.to_uppercase()),
-    );
+    let guid = uuid::Uuid::new_v4().simple().to_string().to_uppercase();
+    info.insert("GUID".into(), guid.into());
+    info.insert("Target Identifier".into(), udid.into());
+    info.insert("Target Type".into(), "Device".into());
+    info.insert("Unique Identifier".into(), udid.to_uppercase().into());
     // CFDate only accepts whole seconds.
     let mut now = Value::Date(SystemTime::now().into());
     truncate_dates_to_seconds(&mut now);
@@ -179,7 +174,7 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
         .ok()
         .and_then(|value| value.as_string().map(str::to_owned))
         .unwrap_or_else(|| "10.0.1".into());
-    info.insert("iTunes Version".into(), Value::String(itunes_version));
+    info.insert("iTunes Version".into(), itunes_version.into());
     let itunes_settings = lockdown
         .get_value(None, Some("com.apple.iTunes"))
         .await
@@ -205,24 +200,20 @@ async fn build_info_plist(provider: &AirvaultProvider, udid: &str) -> Result<Vec
             itunes_files.insert(name.into(), Value::Data(data));
         }
     }
-    info.insert("iTunes Files".into(), Value::Dictionary(itunes_files));
+    info.insert("iTunes Files".into(), itunes_files.into());
 
     let mut installation = InstallationProxyClient::connect(provider)
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let mut options = plist::Dictionary::new();
-    options.insert("ApplicationType".into(), Value::String("User".into()));
-    options.insert(
-        "ReturnAttributes".into(),
-        Value::Array(
-            ["CFBundleIdentifier", "ApplicationSINF", "iTunesMetadata"]
-                .into_iter()
-                .map(|attribute| Value::String(attribute.into()))
-                .collect(),
-        ),
-    );
+    let attributes = ["CFBundleIdentifier", "ApplicationSINF", "iTunesMetadata"].map(Value::from);
+    let options: plist::Dictionary = [
+        ("ApplicationType", Value::from("User")),
+        ("ReturnAttributes", Value::Array(attributes.into())),
+    ]
+    .into_iter()
+    .collect();
     let apps = installation
-        .browse(Some(Value::Dictionary(options)))
+        .browse(Some(options.into()))
         .await
         .map_err(|error| format!("{error:?}"))?;
     let mut installed = Vec::new();

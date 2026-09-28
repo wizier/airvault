@@ -40,13 +40,8 @@ impl<T: Send + 'static> PullStream<T> {
         let producer = producer(sender.clone());
         let stopped = cancel.clone();
         let task = spawn(async move {
-            tokio::select! {
-                _ = stopped.cancelled() => {}
-                result = producer => {
-                    if let Err(failure) = result {
-                        let _ = sender.send(Err(failure)).await;
-                    }
-                }
+            if let Some(Err(failure)) = stopped.run_until_cancelled(producer).await {
+                let _ = sender.send(Err(failure)).await;
             }
         });
         Self {

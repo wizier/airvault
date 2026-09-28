@@ -429,19 +429,16 @@ async fn send_backup_password_request(
 ) -> Result<(), EngineFailure> {
     // The ChangePassword message: passwords live at the TOP level of the
     // message dict (not under Options), exactly as iTunes sends it.
-    let mut msg = plist::Dictionary::new();
-    msg.insert("MessageName".into(), Value::String("ChangePassword".into()));
-    msg.insert("TargetIdentifier".into(), Value::String(udid.into()));
-    if let Some(old) = old {
-        msg.insert("OldPassword".into(), Value::String(old.into()));
-    }
-    if let Some(new) = new {
-        msg.insert("NewPassword".into(), Value::String(new.into()));
-    }
-    let dl = Value::Array(vec![
-        Value::String("DLMessageProcessMessage".into()),
-        Value::Dictionary(msg),
-    ]);
+    let msg: plist::Dictionary = [
+        Some(("MessageName", "ChangePassword")),
+        Some(("TargetIdentifier", udid)),
+        old.map(|old| ("OldPassword", old)),
+        new.map(|new| ("NewPassword", new)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let dl = Value::Array(vec!["DLMessageProcessMessage".into(), msg.into()]);
     // Device-link framing: u32 BE length + binary plist, over the raw socket.
     let mut body = Vec::new();
     plist::to_writer_binary(&mut body, &dl)

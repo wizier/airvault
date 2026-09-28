@@ -15,7 +15,7 @@ use crate::engine_error::EngineFailure;
 use crate::ffi::{block_bounded, engine_udid, guard_error, opt_owned, out_str, AvEngine, AvError};
 use crate::logging::operation_span;
 use crate::provider::{
-    authed_lockdown, connect_service, provider_for, recv_framed, send_framed, AirvaultProvider,
+    authed_lockdown, connect_service, plist_exchange, provider_for, AirvaultProvider, PlistFormat,
 };
 use crate::timeouts;
 
@@ -31,19 +31,19 @@ async fn activation_command(
     command: &str,
     extra: plist::Dictionary,
 ) -> Result<plist::Dictionary, IdeviceError> {
-    let mut request = plist::Dictionary::new();
-    request.insert("Command".into(), Value::String(command.into()));
+    let mut request: plist::Dictionary = [("Command", command)].into_iter().collect();
     request.extend(extra);
-    let mut body = Vec::new();
-    plist::to_writer_xml(&mut body, &request)
-        .map_err(|e| IdeviceError::UnexpectedResponse(format!("encode {command}: {e}")))?;
     // Fresh service connection per request — the daemon requires it (the crate
     // module and both canonical clients reconnect for every command).
     let mut connection = connect_service(provider, ACTIVATION_SERVICE).await?;
-    send_framed(&mut connection, &body).await?;
-    let reply = recv_framed(&mut connection, MAX_REPLY_BYTES).await?;
-    let reply: Value = plist::from_bytes(&reply)
-        .map_err(|e| IdeviceError::UnexpectedResponse(format!("decode {command} reply: {e}")))?;
+    let reply = plist_exchange(
+        &mut connection,
+        &request,
+        PlistFormat::Xml,
+        MAX_REPLY_BYTES,
+        command,
+    )
+    .await?;
     let Value::Dictionary(dict) = reply else {
         return Err(IdeviceError::UnexpectedResponse(format!(
             "{command} reply is not a dictionary"
@@ -79,8 +79,7 @@ async fn activation_info_xml(
     provider: &AirvaultProvider,
     handshake: Vec<u8>,
 ) -> Result<String, IdeviceError> {
-    let mut extra = plist::Dictionary::new();
-    extra.insert("Value".into(), Value::Data(handshake));
+    let extra = [("Value", Value::Data(handshake))].into_iter().collect();
     let reply = activation_command(provider, "CreateTunnel1ActivationInfoRequest", extra).await?;
     let value = reply.get("Value").ok_or_else(|| {
         IdeviceError::UnexpectedResponse("activation info reply is missing Value".into())
@@ -96,16 +95,16 @@ async fn apply_record(
     record: Vec<u8>,
     headers: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), IdeviceError> {
-    let mut extra = plist::Dictionary::new();
-    extra.insert("Value".into(), Value::Data(record));
+    let mut extra: plist::Dictionary = [("Value", Value::Data(record))].into_iter().collect();
     if !headers.is_empty() {
-        let mut dict = plist::Dictionary::new();
-        for (key, value) in headers {
-            if let serde_json::Value::String(text) = value {
-                dict.insert(key, Value::String(text));
-            }
-        }
-        extra.insert("ActivationResponseHeaders".into(), Value::Dictionary(dict));
+        let dict: plist::Dictionary = headers
+            .into_iter()
+            .filter_map(|(key, value)| match value {
+                serde_json::Value::String(text) => Some((key, text)),
+                _ => None,
+            })
+            .collect();
+        extra.insert("ActivationResponseHeaders".into(), dict.into());
     }
     activation_command(provider, "HandleActivationInfoWithSessionRequest", extra).await?;
     let ack = async {

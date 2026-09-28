@@ -111,8 +111,7 @@ func (s *Service) executeTrustFlow(app context.Context, runID, udid string) erro
 		case status == engine.TrustDenied:
 			return fmt.Errorf("pairing was denied on the phone")
 		}
-		select {
-		case <-ctx.Done():
+		if !sleepContext(ctx, 1500*time.Millisecond) {
 			reason := "pairing timed out — start it again when the phone is ready"
 			errorCode := "pairing_timeout"
 			if app.Err() != nil {
@@ -122,7 +121,6 @@ func (s *Service) executeTrustFlow(app context.Context, runID, udid string) erro
 			s.bus.Emit(events.PairTrust, map[string]any{"runId": runID, "udid": udid, "status": engine.TrustError,
 				"errorCode": errorCode})
 			return fmt.Errorf("%s", reason)
-		case <-time.After(1500 * time.Millisecond):
 		}
 	}
 }
