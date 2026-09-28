@@ -46,11 +46,23 @@
   let downloading = $state<string | null>(null);
   let downloadError = $state<string | null>(null);
 
+  // Newest first, PAGE_SIZE per page.
+  const PAGE_SIZE = 10;
+  let page = $state(1);
+  const pageCount = $derived(Math.max(1, Math.ceil(restorePoints.length / PAGE_SIZE)));
+  const pageStart = $derived((page - 1) * PAGE_SIZE);
+  const pagePoints = $derived(restorePoints.slice(pageStart, pageStart + PAGE_SIZE));
+
   // The selection acts only on listed points — a refresh may have dropped some.
+  // It survives paging; the header checkbox covers the open page.
   const selectedPoints = $derived(restorePoints.filter((point) => selected.has(point.snapshotId)));
-  const allSelected = $derived(
-    restorePoints.length > 0 && selectedPoints.length === restorePoints.length,
-  );
+  const allSelected = $derived(pagePoints.every((point) => selected.has(point.snapshotId)));
+
+  // A deletion can shrink the list under the open page; follow it down so a
+  // later backup doesn't jump the view back.
+  $effect(() => {
+    if (page > pageCount) page = pageCount;
+  });
 
   // Nothing left to select (e.g. everything was deleted) ends the mode.
   $effect(() => {
@@ -63,11 +75,10 @@
   }
 
   function toggleAll(select: boolean) {
-    if (!select) {
-      selected.clear();
-      return;
+    for (const point of pagePoints) {
+      if (select) selected.add(point.snapshotId);
+      else selected.delete(point.snapshotId);
     }
-    for (const point of restorePoints) selected.add(point.snapshotId);
   }
 
   function askDelete(targets: RestorePoint[]) {
@@ -141,7 +152,7 @@
                   type="checkbox"
                   class="checkbox checkbox-xs"
                   checked={allSelected}
-                  aria-label="Select all restore points"
+                  aria-label="Select all restore points on this page"
                   onchange={(event) => toggleAll(event.currentTarget.checked)}
                 />
               </th>
@@ -153,7 +164,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each restorePoints as point (point.snapshotId)}
+          {#each pagePoints as point (point.snapshotId)}
             <tr class="hover:bg-base-200/60">
               {#if selecting}
                 <td>
@@ -224,6 +235,33 @@
         </tbody>
       </table>
     </div>
+    {#if pageCount > 1}
+      <nav class="flex items-center justify-end gap-2 text-xs text-base-content/60" aria-label="Restore point pages">
+        <span class="tabular-nums">
+          {pageStart + 1}–{pageStart + pagePoints.length} of {restorePoints.length}
+        </span>
+        <div class="join">
+          <button
+            type="button"
+            class="join-item btn btn-ghost btn-xs"
+            disabled={page === 1}
+            onclick={() => (page -= 1)}
+            aria-label="Previous page"
+          >
+            <Icon name="chevronLeft" size={13} />
+          </button>
+          <button
+            type="button"
+            class="join-item btn btn-ghost btn-xs"
+            disabled={page === pageCount}
+            onclick={() => (page += 1)}
+            aria-label="Next page"
+          >
+            <Icon name="chevronRight" size={13} />
+          </button>
+        </div>
+      </nav>
+    {/if}
   {/if}
 </section>
 

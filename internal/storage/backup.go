@@ -92,18 +92,6 @@ func (r *BackupRepo) ListCompleteBySource(ctx context.Context, source string) ([
 		ORDER BY created_at DESC, id DESC`, source)
 }
 
-// restorePointsLimit bounds the per-source restore-point projection.
-const restorePointsLimit = 50
-
-// ListRestorePoints is the bounded user-facing projection for one source.
-func (r *BackupRepo) ListRestorePoints(ctx context.Context, source string) ([]model.Backup, error) {
-	return listOf[model.Backup](ctx, r.s.ext(), `
-		SELECT * FROM backups
-		WHERE source_udid = ?
-		ORDER BY created_at DESC, id DESC
-		LIMIT ?`, source, restorePointsLimit)
-}
-
 // listCompleteLimit bounds the global restore-source projection.
 const listCompleteLimit = 1000
 

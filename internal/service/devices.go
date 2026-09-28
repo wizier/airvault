@@ -142,7 +142,7 @@ func (s *Service) pairedDevice(ctx context.Context, udid string) (*model.Device,
 
 // RestorePoints returns the device's live restore points, newest first.
 func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoint, error) {
-	rows, err := s.store.Backup.ListRestorePoints(ctx, udid)
+	rows, err := s.store.Backup.ListCompleteBySource(ctx, udid)
 	if err != nil {
 		return nil, err
 	}
