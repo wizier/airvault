@@ -4,7 +4,7 @@ const BASE = '/api';
 const CSRF_COOKIE = '_csrf';
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   signal?: AbortSignal;
   /** Don't bounce to the login page on 401 — used by the login/logout calls. */
@@ -187,7 +187,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     signal: options.signal,
   };
 
-  if (method !== 'GET') {
+  if (method !== 'GET' && method !== 'HEAD') {
     const csrf = cookieValue(CSRF_COOKIE);
     if (csrf) init.headers = { ...init.headers, 'X-CSRF-Token': csrf };
   }
@@ -212,7 +212,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw apiErrorFromBody(response.status, body.data, options.skipAuthRedirect);
   }
 
-  if (response.status === 204) return undefined as T;
+  if (response.status === 204 || method === 'HEAD') return undefined as T;
   if (!body.json) {
     throw new ApiError(response.status, 'invalid_response');
   }

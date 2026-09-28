@@ -56,8 +56,14 @@ export function deviceFileSource(udid: string): FileSource {
 export async function downloadFile(source: FileSource, path: string, name: string, signal: AbortSignal): Promise<void> {
   await source.stat(path, signal);
   if (signal.aborted) return;
+  saveUrl(source.downloadUrl(path), name);
+}
+
+/** Hands an attachment URL to the browser's own download manager; an empty
+ *  name keeps the server's Content-Disposition file name. */
+export function saveUrl(url: string, name = ''): void {
   const link = document.createElement('a');
-  link.href = source.downloadUrl(path);
+  link.href = url;
   link.download = name;
   // Attached for the click: older Firefox ignores clicks on detached anchors.
   document.body.append(link);

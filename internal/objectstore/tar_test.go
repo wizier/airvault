@@ -57,16 +57,16 @@ func TestTarPacksSnapshotUnderRootWithExactSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	written, err := archive.WriteTo(&out)
+	defer archive.Close()
+	out, err := io.ReadAll(archive)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if written != archive.Size() || int64(out.Len()) != archive.Size() {
-		t.Fatalf("wrote %d (%d buffered), promised %d", written, out.Len(), archive.Size())
+	if int64(len(out)) != archive.Size() {
+		t.Fatalf("read %d bytes, promised %d", len(out), archive.Size())
 	}
 
-	reader := tar.NewReader(&out)
+	reader := tar.NewReader(bytes.NewReader(out))
 	var names []string
 	for {
 		header, err := reader.Next()
@@ -104,7 +104,37 @@ func TestTarFailsOnDamagedObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := archive.WriteTo(io.Discard); err == nil || !strings.Contains(err.Error(), "does not match its hash") {
-		t.Fatalf("WriteTo error = %v, want a hash mismatch", err)
+	defer archive.Close()
+	if _, err := io.ReadAll(archive); err == nil || !strings.Contains(err.Error(), "does not match its hash") {
+		t.Fatalf("read error = %v, want a hash mismatch", err)
+	}
+}
+
+// Every offset reads what a whole-archive read has there, so any Range a
+// resumed download asks for lands on the right bytes.
+func TestTarSeeksToAnyOffset(t *testing.T) {
+	view, _, _ := newTarTestSnapshot(t)
+	archive, err := view.Tar("backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	full, err := io.ReadAll(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 700)
+	for offset := range int64(len(full)) {
+		if _, err := archive.Seek(offset, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		want := full[offset:min(offset+int64(len(chunk)), int64(len(full)))]
+		got := chunk[:len(want)]
+		if _, err := io.ReadFull(archive, got); err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("offset %d: bytes differ from the whole-archive read", offset)
+		}
 	}
 }

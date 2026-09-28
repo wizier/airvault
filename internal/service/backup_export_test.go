@@ -2,7 +2,6 @@ package service
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -23,15 +22,12 @@ func TestOpenBackupExportNamesFileAndFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer export.Close()
 	created := time.Unix(fixtureCreatedUnix, 0)
-	if want := "AirVault-Test iPhone-" + created.Format("2006-01-02") + ".tar"; export.Name != want {
+	if want := "AirVault-Test iPhone-" + created.Format("2006-01-02-1504") + ".tar"; export.Name != want {
 		t.Fatalf("name = %q, want %q", export.Name, want)
 	}
-	var out bytes.Buffer
-	if _, err := export.WriteTo(&out); err != nil {
-		t.Fatal(err)
-	}
-	header, err := tar.NewReader(&out).Next()
+	header, err := tar.NewReader(export).Next()
 	if err != nil {
 		t.Fatal(err)
 	}

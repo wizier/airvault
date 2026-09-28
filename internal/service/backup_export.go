@@ -18,8 +18,9 @@ type BackupExport struct {
 	Name string // attachment file name
 }
 
-// OpenBackupExport packs a restore point for download. A snapshot's logical
-// paths already are Finder's backup layout, so its files go in unchanged.
+// OpenBackupExport packs a restore point for download; the caller closes it. A
+// snapshot's logical paths already are Finder's backup layout, so its files go
+// in unchanged. Names use the server's time zone (TZ).
 //
 // It takes no lease: a published snapshot never changes and object collection
 // keeps everything it references, so backups run on meanwhile. Only deleting
@@ -49,6 +50,6 @@ func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*Bac
 	}
 	return &BackupExport{
 		Tar:  archive,
-		Name: fmt.Sprintf("AirVault-%s-%s.tar", name, created.Format("2006-01-02")),
+		Name: fmt.Sprintf("AirVault-%s-%s.tar", name, created.Format("2006-01-02-1504")),
 	}, nil
 }

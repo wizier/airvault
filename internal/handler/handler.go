@@ -58,9 +58,10 @@ func (h *Handler) Router() *echo.Echo {
 		ReferrerPolicy:     "same-origin",
 	}))
 	e.Use(echoMiddleware.GzipWithConfig(echoMiddleware.GzipConfig{
-		// SSE and the install progress stream must flush immediately; downloads,
-		// previews and wallpapers carry already compressed media (JPEG/HEIC/PNG) with
-		// an exact Content-Length — re-compressing them only wastes CPU and voids the length.
+		// SSE and the install progress stream must flush immediately; downloads
+		// (device files and whole backup archives, …/download), previews and
+		// wallpapers carry an exact Content-Length and Range — compressing them
+		// wastes CPU and voids both.
 		Skipper: func(c *echo.Context) bool {
 			p := c.Request().URL.Path
 			return p == "/api/events" || strings.HasSuffix(p, "/console") ||
@@ -97,6 +98,7 @@ func (h *Handler) Router() *echo.Echo {
 	// Backup catalog and restore selection.
 	api.GET("/restore-sources", h.listRestoreSources)
 	api.GET("/backups/:snapshotId/download", h.downloadBackup)
+	api.HEAD("/backups/:snapshotId/download", h.downloadBackup)
 
 	// Guided pairing wizard — pairing ONLY; backups and encryption are
 	// configured later on the device page (a paired-but-never-backed-up phone

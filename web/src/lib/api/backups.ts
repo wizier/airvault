@@ -1,4 +1,5 @@
-import { apiUrl, devicePath, request } from './client';
+import { ApiError, apiUrl, devicePath, request } from './client';
+import { saveUrl } from './files';
 import type { AcceptedRun } from './runs';
 
 /** Phase of a run, as the server names it (see Go service.Stage*). Labels for
@@ -98,9 +99,19 @@ export async function snapshotsReclaimable(
   return response.reclaimableBytes;
 }
 
-/** The snapshot as a Finder-format backup (tar), downloaded natively by the browser. */
-export function backupDownloadUrl(snapshotId: string): string {
-  return apiUrl(`/backups/${encodeURIComponent(snapshotId)}/download`);
+/** Downloads the snapshot as a Finder-format backup (tar). A HEAD check first
+ *  reports a vanished snapshot or an expired session in the UI; the browser then
+ *  streams the archive to disk and can resume it if the connection drops. */
+export async function downloadBackup(snapshotId: string): Promise<void> {
+  const path = `/backups/${encodeURIComponent(snapshotId)}/download`;
+  try {
+    await request<void>(path, { method: 'HEAD' });
+  } catch (err) {
+    // A HEAD answer has no body to carry the error code; 404 can only mean this.
+    if (err instanceof ApiError && err.status === 404) throw new ApiError(404, 'snapshot_not_found');
+    throw err;
+  }
+  saveUrl(apiUrl(path));
 }
 
 export async function listRestoreSources(signal?: AbortSignal): Promise<RestoreSource[]> {

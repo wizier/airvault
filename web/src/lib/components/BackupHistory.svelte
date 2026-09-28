@@ -4,7 +4,8 @@
   // deletion; the freed-space estimate covers the whole selection.
   import { untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { backupDownloadUrl, snapshotsReclaimable, type RestorePoint } from '../api/backups';
+  import { downloadBackup, snapshotsReclaimable, type RestorePoint } from '../api/backups';
+  import { errMsg } from '../api/client';
   import type { Device } from '../api/devices';
   import { blockedReason } from '../device-ui';
   import { liveRun } from '../events.svelte';
@@ -41,6 +42,9 @@
   const selected = new SvelteSet<string>();
   let pending = $state<RestorePoint[]>([]);
   let reclaim = $state<Promise<number>>();
+  // The snapshot whose download is being checked before the browser takes it.
+  let downloading = $state<string | null>(null);
+  let downloadError = $state<string | null>(null);
 
   // The selection acts only on listed points — a refresh may have dropped some.
   const selectedPoints = $derived(restorePoints.filter((point) => selected.has(point.snapshotId)));
@@ -76,6 +80,18 @@
     await deleteRestorePoints(udid, pending.map((point) => point.snapshotId));
     stopSelecting();
   }
+
+  async function download(snapshotId: string): Promise<void> {
+    downloading = snapshotId;
+    downloadError = null;
+    try {
+      await downloadBackup(snapshotId);
+    } catch (err) {
+      downloadError = errMsg(err, 'download_failed');
+    } finally {
+      downloading = null;
+    }
+  }
 </script>
 
 <section class="flex flex-col gap-3">
@@ -104,6 +120,7 @@
     {/if}
   </div>
 
+  <ErrorLine error={downloadError} size="xs" />
   {#if pointsError}
     <ErrorLine error={pointsError} variant="alert" />
   {:else if !pointsLoaded}
@@ -176,15 +193,20 @@
                   >
                     <Icon name="backup" size={13} />
                   </button>
-                  <a
+                  <button
+                    type="button"
                     class="btn btn-ghost btn-xs"
-                    href={backupDownloadUrl(point.snapshotId)}
-                    download
-                    title={`Download as a Finder backup (${formatBytes(point.sizeBytes)})`}
+                    disabled={downloading !== null}
+                    onclick={() => download(point.snapshotId)}
+                    title={`Download as a Finder backup (≈ ${formatBytes(point.sizeBytes)})`}
                     aria-label="Download this snapshot as a Finder backup"
                   >
-                    <Icon name="download" size={13} />
-                  </a>
+                    {#if downloading === point.snapshotId}
+                      <span class="loading loading-spinner loading-xs"></span>
+                    {:else}
+                      <Icon name="download" size={13} />
+                    {/if}
+                  </button>
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs text-error"
