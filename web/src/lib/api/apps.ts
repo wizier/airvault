@@ -18,7 +18,6 @@ export interface InstallProgress {
   percent: number;
 }
 
-/** User apps installed on the device (the endpoint never lists system apps). */
 export async function listApps(udid: string, signal?: AbortSignal): Promise<DeviceApp[]> {
   const response = await request<ListAppsResponse>(`${devicePath(udid)}/apps`, { signal });
   return response.apps;
@@ -46,8 +45,7 @@ interface AppIconsResponse {
   icons: Record<string, string>; // bundle id -> base64 PNG
 }
 
-/** Reads many app icons in one request (one springboard connection server-side).
- *  Returns a bundle id -> PNG data URL map; apps without an icon are absent. */
+/** Apps without an icon are absent from the result. */
 export async function appIcons(
   udid: string,
   bundleIds: string[],

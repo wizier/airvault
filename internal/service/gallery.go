@@ -18,10 +18,8 @@ import (
 	"github.com/wizier/airvault/internal/domain"
 )
 
-// GalleryAsset is one camera-roll item addressed by its media-partition path.
-// Live marks a photo that has a paired .MOV (Live Photo).
 type GalleryAsset struct {
-	Path string `json:"path"` // e.g. "DCIM/100APPLE/IMG_0049.HEIC"
+	Path string `json:"path"`
 	Name string `json:"name"`
 	Kind string `json:"kind"` // "photo" | "video"
 	Live bool   `json:"live,omitempty"`
@@ -75,8 +73,7 @@ func (g *galleryIndex) remove(udid string) {
 var imageExts = map[string]bool{".heic": true, ".heif": true, ".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".dng": true}
 var videoExts = map[string]bool{".mov": true, ".mp4": true, ".m4v": true}
 
-// galleryRevision is an order-sensitive fingerprint of the asset paths, the
-// opaque token that keeps pagination on one scan.
+// An order-sensitive fingerprint that keeps pagination on one scan.
 func galleryRevision(assets []GalleryAsset) string {
 	digest := sha256.New()
 	var length [4]byte
@@ -88,7 +85,6 @@ func galleryRevision(assets []GalleryAsset) string {
 	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
-// GalleryPage returns a stable page from one indexed camera-roll revision.
 func (s *Service) GalleryPage(ctx context.Context, udid string, offset, limit int, revision string) ([]GalleryAsset, int, string, error) {
 	if offset < 0 || limit < 1 || limit > 500 {
 		return nil, 0, "", &domain.ValidationError{Code: "invalid_gallery_page", Message: "offset must be non-negative and limit must be 1-500"}
@@ -126,9 +122,8 @@ func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (gal
 	return entry, nil
 }
 
-// enumerateCameraRoll stats only the handful of DCIM root children to identify
-// albums, then lists every album names-only (never one stat per asset). Results
-// are grouped in deterministic descending path order.
+// Stats only the handful of DCIM root children, then lists albums names-only:
+// never one stat per asset.
 func (s *Service) enumerateCameraRoll(ctx context.Context, udid string) ([]GalleryAsset, error) {
 	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "gallery_failed")
 	if err != nil {
@@ -165,9 +160,8 @@ func (s *Service) enumerateCameraRoll(ctx context.Context, udid string) ([]Galle
 	return assets, nil
 }
 
-// groupAlbum turns a DCIM album's files into assets: an image with a
-// same-stem .MOV is a Live Photo; a lone .MOV is a video; .AAE edit sidecars
-// and everything else are dropped.
+// An image with a same-stem .MOV is a Live Photo; a lone .MOV is a video; .AAE
+// edit sidecars and everything else are dropped.
 func groupAlbum(files []devicefs.Path) []GalleryAsset {
 	type item struct{ image, video devicefs.Path }
 	byStem := map[string]*item{}
@@ -213,8 +207,7 @@ func groupAlbum(files []devicefs.Path) []GalleryAsset {
 	return out
 }
 
-// readThumbInSession resolves and reads one compatibility thumbnail on an
-// already-open media session, so a batch reuses one session. iOS keeps them at
+// iOS keeps compatibility thumbnails at
 // PhotoData/Thumbnails/V2/<dcimPath>/<code>.JPG (tiny JPEGs, videos included).
 func readThumbInSession(session *devicefs.Session, dcimPath string) ([]byte, error) {
 	assetPath, err := parseRequiredPath(dcimPath)
@@ -236,14 +229,13 @@ func readThumbInSession(session *devicefs.Session, dcimPath string) ([]byte, err
 	return session.ReadFile(thumb)
 }
 
-// sessionDead reports a transport-level failure: the AFC session died (e.g. a
-// timed-out read closed it) while the request itself is still alive.
+// The AFC session died (e.g. a timed-out read closed it) while the request
+// itself is still alive.
 func sessionDead(ctx context.Context, err error) bool {
 	return ctx.Err() == nil && errors.Is(err, io.ErrClosedPipe)
 }
 
-// ThumbBatch reads a whole gallery page's thumbnails on one media session — one
-// lockdown handshake instead of one per tile. Missing thumbnails are omitted.
+// One media session per page: one lockdown handshake instead of one per tile.
 func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []string) (map[string][]byte, error) {
 	if len(dcimPaths) == 0 {
 		return nil, &domain.ValidationError{Code: "paths_required", Message: "at least one path is required"}
@@ -256,8 +248,7 @@ func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []strin
 	}, dcimPaths)
 }
 
-// thumbBatch drains dcimPaths on one session from open, retrying once on a
-// fresh session when the transport dies mid-batch.
+// Retries once on a fresh session when the transport dies mid-batch.
 func thumbBatch(ctx context.Context, open func() (*devicefs.Session, func(), error), dcimPaths []string) (map[string][]byte, error) {
 	session, release, err := open()
 	if err != nil {

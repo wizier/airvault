@@ -8,8 +8,7 @@ import (
 	"github.com/wizier/airvault/internal/auth"
 )
 
-// apiAuthMiddleware gates /api on a login-session cookie or Basic auth. No
-// WWW-Authenticate: browsers get the SPA login page instead of the native
+// No WWW-Authenticate: browsers get the SPA login page instead of the native
 // dialog, and `curl -u` still authenticates preemptively.
 func apiAuthMiddleware(credentials *auth.Credentials) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {

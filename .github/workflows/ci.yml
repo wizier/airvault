@@ -19,8 +19,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CBINDGEN_VERSION: "0.29.4"
-  CBINDGEN_SHA256: "27ac237e2ad3ffaffc8ecce0c03e3caa1d1b09e691906c3cb0967367ff6d783d"
   GOLANGCI_LINT_VERSION: "v2.12.2"
 
 jobs:
@@ -33,11 +31,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -52,23 +45,11 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
-        with:
-          workspaces: engine/rust
-
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@d583c34f0599d37dbac4a198b9c83201be380893 # v9.3.0
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           install-only: true
-
-      - name: Install cbindgen
-        run: |
-          curl -fsSL --retry 3 -o /tmp/cbindgen \
-            "https://github.com/mozilla/cbindgen/releases/download/${CBINDGEN_VERSION}/cbindgen-ubuntu22.04"
-          echo "${CBINDGEN_SHA256}  /tmp/cbindgen" | sha256sum --check -
-          sudo install -m 0755 /tmp/cbindgen /usr/local/bin/cbindgen
 
       - name: Check
         run: make check

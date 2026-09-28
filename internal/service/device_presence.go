@@ -15,9 +15,6 @@ import (
 // pulse, not a separate unlock — iOS announces a lock as {lockcomplete, lockstate}.
 const screenLockPairWindow = time.Second
 
-// applySnapshot folds raw muxer presence into the low-level runtime store, then
-// performs the Service-layer registration/event policy for its transitions.
-// deviceTransitionMu keeps state commits and emitted domain effects ordered.
 func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresence) bool {
 	s.deviceTransitionMu.Lock()
 	defer s.deviceTransitionMu.Unlock()
@@ -45,8 +42,6 @@ func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresen
 	return s.publishConnections(ctx, transitions, pairable) || wantRefresh
 }
 
-// screenLockSignal resolves SpringBoard's paired notifications into an
-// absolute lock state without leaking notification ordering into business code.
 func (s *Service) screenLockSignal(udid string, signal engine.ScreenLockSignal) {
 	s.deviceTransitionMu.Lock()
 	defer s.deviceTransitionMu.Unlock()
@@ -57,8 +52,6 @@ func (s *Service) screenLockSignal(udid string, signal engine.ScreenLockSignal) 
 	}
 }
 
-// publishConnections translates pure runtime transitions into persistence and
-// domain events. The runtime store itself knows nothing about either concern.
 func (s *Service) publishConnections(ctx context.Context, transitions []connectionTransition, pairable map[string]bool) bool {
 	wantRefresh := false
 	for _, transition := range transitions {

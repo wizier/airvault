@@ -1,4 +1,3 @@
-// Package objectstore owns AirVault's portable whole-file snapshot format.
 package objectstore
 
 import (
@@ -41,7 +40,6 @@ func corrupt(err error) error {
 	return fmt.Errorf("%w: %w", ErrManifestCorrupt, err)
 }
 
-// manifestEntry is the subset Go needs to open files and collect unused objects.
 type manifestEntry struct {
 	Kind         string `json:"kind"`
 	ObjectRef    string `json:"objectRef,omitempty"`
@@ -49,8 +47,8 @@ type manifestEntry struct {
 	ModifiedUnix int64  `json:"modifiedUnix,omitempty"`
 }
 
-// manifestProjection is the complete portable wire contract. Rust writes it
-// while serving mobilebackup2; Go validates, publishes, indexes and collects it.
+// The portable wire contract of a snapshot, identical to what the Rust engine
+// wrote, so its stores stay readable.
 type manifestProjection struct {
 	Version     int    `json:"version"`
 	SourceUDID  string `json:"sourceUdid"`
@@ -63,24 +61,22 @@ type manifestProjection struct {
 	Entries       map[string]manifestEntry `json:"entries"`
 }
 
-// View provides read-only access to one immutable snapshot.
 type View struct {
 	store    *Store
 	relative string
 	manifest *manifestProjection
 }
 
-// StagingView is a sealed but not yet published snapshot; only Publish
-// accepts it, so a published manifest can never be "published" twice by type.
+// A sealed but unpublished snapshot. Only Publish accepts it, so the type rules
+// out publishing a manifest twice.
 type StagingView struct{ View }
 
 func (v *View) SizeBytes() int64 { return v.manifest.SizeBytes }
 
-// CreatedUnix is when the immutable snapshot was created: the moment its
-// contents were finalized. It rebuilds created_at after SQLite is lost.
+// The moment the contents were finalized; it rebuilds created_at after SQLite
+// is lost.
 func (v *View) CreatedUnix() int64 { return v.manifest.CreatedUnix }
 
-// FileSize returns the size of a regular file in the snapshot.
 func (v *View) FileSize(logicalPath string) (int64, bool) {
 	entry, ok := v.manifest.Entries[logicalPath]
 	if !ok || entry.Kind != entryFile {
@@ -157,9 +153,8 @@ func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxManifestSize {
 		return nil, corrupt(fmt.Errorf("manifest %q has invalid size", relative))
 	}
-	// Unknown fields are ignored on purpose: the Rust engine writes these
-	// manifests, so rejecting them here would break every read after an additive
-	// field lands — and before formatVersion, the gate meant to catch that, runs.
+	// Unknown fields are ignored: rejecting them would break every read after an
+	// additive field lands, before formatVersion, the gate meant for that, runs.
 	manifest := new(manifestProjection)
 	decoder := json.NewDecoder(io.LimitReader(file, maxManifestSize+1))
 	if err := decoder.Decode(manifest); err != nil {
@@ -229,8 +224,6 @@ type manifestEntryFacts struct {
 	entriesSHA256 string
 }
 
-// inspectManifestEntries validates the entry graph, totals file sizes and builds
-// the seal in one sorted pass.
 func inspectManifestEntries(relative string, manifest *manifestProjection) (manifestEntryFacts, error) {
 	seal := newManifestEntriesSeal()
 	var snapshotSize int64
@@ -295,8 +288,8 @@ func validLowerHex(value string, length int) bool {
 }
 
 // manifestEntriesSeal is SHA-256 over a length-prefixed, little-endian encoding
-// of the entries in sorted-key order, which Rust's seal_entry reproduces
-// byte-for-byte. Changing the layout makes every existing store unreadable.
+// of the entries in sorted-key order. Changing the layout makes every existing
+// store unreadable.
 type manifestEntriesSeal struct {
 	digest  hash.Hash
 	scratch [8]byte

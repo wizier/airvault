@@ -31,8 +31,7 @@ const (
 	autoBackupLimitWindow = 24 * time.Hour
 )
 
-// errorBackupNotConfirmed is the code of a backup whose passcode prompt was
-// dismissed or left to time out on the phone.
+// The passcode prompt was dismissed or left to time out on the phone.
 const errorBackupNotConfirmed = "backup_not_confirmed"
 
 // Why the next automatic backup cannot start yet.
@@ -45,23 +44,20 @@ const (
 
 var autoBackupPresets = []int{1, 3, 7}
 
-// AutoBackupSettings is a device's automatic-backup configuration as the API
-// accepts it.
 type AutoBackupSettings struct {
 	Enabled   bool              `json:"enabled"`
 	EveryDays int               `json:"everyDays"`
 	Window    *AutoBackupWindow `json:"window,omitempty"`
 }
 
-// AutoBackupWindow limits automatic backups to a daily span of local time,
-// which may cross midnight. TimeZone is the IANA zone the times are read in.
+// The window may cross midnight. TimeZone is the IANA zone the times are read
+// in.
 type AutoBackupWindow struct {
 	Start    string `json:"start"` // "HH:MM"
 	End      string `json:"end"`
 	TimeZone string `json:"timeZone"`
 }
 
-// AutoBackupView is the automatic-backup part of the device read model.
 type AutoBackupView struct {
 	AutoBackupSettings
 	// Wait names why an enabled automatic backup cannot start yet (see the
@@ -70,7 +66,7 @@ type AutoBackupView struct {
 	NotBefore *time.Time `json:"notBefore,omitempty"`
 }
 
-// clockWindow is AutoBackupWindow in evaluable form; nil means any time.
+// A nil clockWindow means any time.
 type clockWindow struct {
 	start, end int // minutes after local midnight
 	loc        *time.Location
@@ -88,15 +84,13 @@ func (w *clockWindow) contains(t time.Time) bool {
 	return minute >= w.start || minute < w.end
 }
 
-// autoHistory is what pauses the trigger: the latest failed automatic
-// attempts and the end of the pause the latest setback caused.
 type autoHistory struct {
 	failures    [autoBackupLimit]time.Time // oldest first; zero until that many
 	pausedUntil time.Time
 }
 
-// autoWait decides whether an automatic backup may start at now, ignoring the
-// window: the reason and end of the latest constraint still in force.
+// autoWait ignores the window. It returns the reason and end of the latest
+// constraint still in force.
 func autoWait(every time.Duration, lastBackup *time.Time, history autoHistory, now time.Time) (string, time.Time) {
 	if lastBackup == nil {
 		return autoWaitFirstBackup, time.Time{}
@@ -122,11 +116,9 @@ func autoBackupEvery(days int) time.Duration {
 	return time.Duration(days)*24*time.Hour - autoBackupSlack
 }
 
-// recordAutoBackup folds a finished backup into the device's history: a
-// success clears it; a failed or cancelled automatic attempt counts toward the
-// limit and pauses the trigger, and so does any backup whose prompt went
-// unanswered. hideRun calls it under runMu, so a run that has left s.runs has
-// always been recorded.
+// A success clears the history. A failed or cancelled automatic attempt counts
+// toward the limit and pauses the trigger; an unanswered prompt also pauses it.
+// hideRun calls this under runMu, so a run gone from s.runs was recorded.
 func (s *Service) recordAutoBackup(run *runReservation, state, errorCode string, now time.Time) {
 	switch {
 	case state == runStateCompleted:
@@ -142,8 +134,7 @@ func (s *Service) recordAutoBackup(run *runReservation, state, errorCode string,
 	}
 }
 
-// autoBackupWait evaluates udid's policy under runMu: the history never
-// leaves the lock that guards it.
+// The history never leaves the lock that guards it.
 func (s *Service) autoBackupWait(udid string, every time.Duration, lastBackup *time.Time,
 	now time.Time) (string, time.Time) {
 	s.runMu.RLock()
@@ -151,7 +142,6 @@ func (s *Service) autoBackupWait(udid string, every time.Duration, lastBackup *t
 	return autoWait(every, lastBackup, s.autoHistory[udid], now)
 }
 
-// wakeAutoBackup makes the trigger re-read the lock states.
 func (s *Service) wakeAutoBackup() {
 	select {
 	case s.autoBackupKick <- struct{}{}:
@@ -159,9 +149,7 @@ func (s *Service) wakeAutoBackup() {
 	}
 }
 
-// runAutoBackupTrigger calls fire once for every unlock of a Wi-Fi phone that
-// has lasted autoBackupDwell, reading the lock state the runtime store keeps.
-// It runs on a goroutine s.wg tracks, so the runs it starts never race Wait.
+// Runs on a goroutine s.wg tracks, so the runs it starts never race Wait.
 func (s *Service) runAutoBackupTrigger(ctx context.Context, fire func(ctx context.Context, udid string)) {
 	fired := map[string]time.Time{} // udid → the unlock already acted on
 	for {
@@ -193,7 +181,6 @@ func (s *Service) runAutoBackupTrigger(ctx context.Context, fire func(ctx contex
 	}
 }
 
-// fireAutoBackup starts an automatic backup of udid if one is due.
 func (s *Service) fireAutoBackup(ctx context.Context, udid string) {
 	// Our own run holds the leases: reserving would only log a rejection. With
 	// no run active, the last one's outcome is already in the history.
@@ -209,7 +196,6 @@ func (s *Service) fireAutoBackup(ctx context.Context, udid string) {
 	}
 }
 
-// autoBackupDue evaluates the device's policy now.
 func (s *Service) autoBackupDue(ctx context.Context, udid string) (bool, error) {
 	device, err := s.pairedDevice(ctx, udid)
 	if err != nil {
@@ -239,7 +225,6 @@ func (s *Service) runActive(udid string) bool {
 	return active
 }
 
-// SetAutoBackup validates and stores a device's automatic-backup settings.
 func (s *Service) SetAutoBackup(ctx context.Context, udid string, settings AutoBackupSettings) error {
 	stored, err := autoBackupRow(settings)
 	if err != nil {
@@ -252,8 +237,6 @@ func (s *Service) SetAutoBackup(ctx context.Context, udid string, settings AutoB
 	return nil
 }
 
-// autoBackupView projects a device's settings and, while enabled, what the
-// next automatic backup waits for.
 func (s *Service) autoBackupView(d model.Device, lastBackup *time.Time, now time.Time) *AutoBackupView {
 	settings := d.AutoBackup
 	view := &AutoBackupView{AutoBackupSettings: autoBackupSettingsOf(settings)}
@@ -318,7 +301,6 @@ func loadWindowZone(name string) (*time.Location, error) {
 	return time.LoadLocation(name)
 }
 
-// parseClock reads "HH:MM" as minutes after midnight.
 func parseClock(value string) (int64, error) {
 	clock, err := time.Parse("15:04", value)
 	return int64(clock.Hour()*60 + clock.Minute()), err

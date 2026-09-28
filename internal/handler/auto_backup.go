@@ -7,7 +7,6 @@ import (
 	"github.com/wizier/airvault/internal/service"
 )
 
-// [PUT] /api/devices/:udid/auto-backup
 func (h *Handler) setAutoBackup(c *echo.Context) error {
 	var settings service.AutoBackupSettings
 	if err := echo.BindBody(c, &settings); err != nil {

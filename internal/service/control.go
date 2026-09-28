@@ -15,9 +15,8 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// Power sends a restart/shutdown/sleep command. Refused mid-backup (ErrBusy);
-// unreachable surfaces as ErrDeviceOffline. No event is emitted — the watcher
-// reports the resulting detach/reattach as ordinary presence changes.
+// No event is emitted: the watcher reports the resulting detach/reattach as
+// ordinary presence changes.
 func (s *Service) Power(ctx context.Context, udid, action string) error {
 	var engineAction engine.PowerAction
 	switch action {
@@ -53,8 +52,7 @@ type (
 	USBDevice       = engine.USBDevice
 )
 
-// LiveBattery is passive telemetry: an on-demand charge read that never wakes
-// the phone and never drives presence. Unreachable surfaces as device-offline.
+// Passive telemetry: the read never wakes the phone and never drives presence.
 func (s *Service) LiveBattery(ctx context.Context, udid string) (Battery, error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return Battery{}, err
@@ -66,7 +64,6 @@ func (s *Service) LiveBattery(ctx context.Context, udid string) (Battery, error)
 	return battery, nil
 }
 
-// Apps lists the device's installed user applications.
 func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
@@ -82,12 +79,8 @@ func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
 	return apps, nil
 }
 
-// maxAppIconBatch bounds one icon request; the API policy lives here, not in
-// the engine.
 const maxAppIconBatch = 100
 
-// AppIcons reads a batch of home-screen icons (PNG bytes by bundle id) over
-// one springboard connection. Apps without a readable icon are absent.
 func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string) (map[string][]byte, error) {
 	if len(bundleIDs) == 0 || slices.Contains(bundleIDs, "") {
 		return nil, &domain.ValidationError{Code: "bundle_id_required", Message: "non-empty bundle ids are required"}
@@ -107,7 +100,6 @@ func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string)
 	return icons, nil
 }
 
-// Wallpaper fetches SpringBoard's rendered lock- or home-screen preview.
 func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) ([]byte, error) {
 	// Loaded automatically by device cards; never wakes the phone.
 	if err := s.reachableDevice(ctx, udid); err != nil {
@@ -121,8 +113,6 @@ func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) (
 	return png, nil
 }
 
-// InstallApp persists an uploaded .ipa, then serializes its device installation.
-// onProgress receives each distinct phase/percent while the device works.
 func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, onProgress func(InstallProgress)) error {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
@@ -161,8 +151,6 @@ func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, on
 	return err
 }
 
-// UninstallApp removes an app by bundle id. Reachable device required and the
-// mutation is serialized with other device work like install.
 func (s *Service) UninstallApp(ctx context.Context, udid, bundleID string) error {
 	if bundleID == "" {
 		return &domain.ValidationError{Code: "bundle_id_required", Message: "bundle id is required"}
@@ -184,8 +172,6 @@ func (s *Service) UninstallApp(ctx context.Context, udid, bundleID string) error
 	return err
 }
 
-// parseRequiredPath validates a raw device path that must name an entry (the
-// root "" is not acceptable).
 func parseRequiredPath(raw string) (devicefs.Path, error) {
 	devicePath, err := devicefs.ParsePath(raw)
 	if err != nil || devicePath.String() == "" {
@@ -194,7 +180,6 @@ func parseRequiredPath(raw string) (devicefs.Path, error) {
 	return devicePath, nil
 }
 
-// appDocumentsRoot maps a bundle id onto its Documents root (house_arrest).
 func appDocumentsRoot(bundleID string) (devicefs.Root, error) {
 	if bundleID == "" {
 		return devicefs.Root{}, &domain.ValidationError{Code: "bundle_id_required", Message: "bundle id is required"}
@@ -206,8 +191,6 @@ func appDocumentsRoot(bundleID string) (devicefs.Root, error) {
 	return root, nil
 }
 
-// openLeasedSession opens a device filesystem session behind the reachability
-// check and a device lease; release closes the session and frees the lease.
 func (s *Service) openLeasedSession(ctx context.Context, udid string, root devicefs.Root,
 	resource resourceRequest, errorCode string) (*devicefs.Session, func(), error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
@@ -227,7 +210,6 @@ func (s *Service) openLeasedSession(ctx context.Context, udid string, root devic
 	return session, func() { _ = session.Close(); release() }, nil
 }
 
-// FileEntry is one row of a device directory listing.
 type FileEntry struct {
 	Name     string             `json:"name"`
 	Kind     devicefs.EntryKind `json:"kind"`
@@ -235,8 +217,7 @@ type FileEntry struct {
 	Modified *int64             `json:"modified,omitempty"`
 }
 
-// AppFiles lists one directory of an app's Documents container (house_arrest).
-// path "" or "/" is the Documents root; only apps with file sharing enabled.
+// Only apps with file sharing enabled expose their Documents (house_arrest).
 func (s *Service) AppFiles(ctx context.Context, udid, bundleID, rawPath string) ([]FileEntry, error) {
 	root, err := appDocumentsRoot(bundleID)
 	if err != nil {
@@ -273,7 +254,6 @@ func (s *Service) deviceFileList(
 	return out, nil
 }
 
-// AppFileDelete removes one file from an app's Documents container.
 func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath string) error {
 	root, err := appDocumentsRoot(bundleID)
 	if err != nil {
@@ -295,14 +275,10 @@ func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath 
 	return nil
 }
 
-// MediaList lists one directory of the device media partition (com.apple.afc);
-// path "" or "/" is the media root (DCIM, Recordings, …). Read-only.
 func (s *Service) MediaList(ctx context.Context, udid, rawPath string) ([]FileEntry, error) {
 	return s.deviceFileList(ctx, udid, devicefs.Media(), rawPath, "media_list_failed")
 }
 
-// Console streams the device's structured system log to onLine until ctx
-// ends. The caller (the SSE handler) owns the transport; this only guards.
 func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleLine)) error {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err

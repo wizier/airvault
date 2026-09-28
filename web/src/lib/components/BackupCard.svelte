@@ -1,6 +1,4 @@
 <script lang="ts">
-  // Backup snapshot, live transfer controls, encryption and restore. History is a
-  // separate feature card but both react to the same SSE invalidation.
   import { startBackup } from '../api/backups';
   import { errMsg } from '../api/client';
   import type { Device } from '../api/devices';

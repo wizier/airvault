@@ -5,7 +5,6 @@ set -euo pipefail
 
 MUX_LOG_LEVEL="${AIRVAULT_MUX_LOG_LEVEL:-warn}"
 
-# Storage layout: /config (app state, lockdown records inside) + /backups.
 export AIRVAULT_CONFIG_DIR="${AIRVAULT_CONFIG_DIR:-/config}"
 export AIRVAULT_LOCKDOWN_DIR="${AIRVAULT_LOCKDOWN_DIR:-$AIRVAULT_CONFIG_DIR/lockdown}"
 export AIRVAULT_BACKUP_DIR="${AIRVAULT_BACKUP_DIR:-/backups}"
@@ -50,9 +49,8 @@ run_component() {
   exec "$@" > >(prefix_lines "$component") 2>&1
 }
 
-# USB transport: the mature libusb usbmuxd owns /var/run/usbmuxd. -p disables
-# its preflight so only AirVault's pair wizard ever triggers the Trust dialog
-# (netmuxd's own young nusb USB stack is not used — see --upstream below).
+# libusb usbmuxd owns USB at /var/run/usbmuxd. -p disables its preflight so
+# only AirVault's pair wizard ever triggers the Trust dialog.
 USBMUXD_ARGS=(-f -p)
 if [[ "$MUX_LOG_LEVEL" == "debug" || "$MUX_LOG_LEVEL" == "trace" ]]; then
   USBMUXD_ARGS+=(-v)
@@ -63,13 +61,9 @@ for _ in $(seq 1 100); do [ -S /var/run/usbmuxd ] && break; sleep 0.1; done
 [ -S /var/run/usbmuxd ] || echo "[entrypoint] usbmuxd socket absent after 10s" >&2
 chmod 0666 /var/run/usbmuxd 2>/dev/null || true
 
-# Wi-Fi (mdns-sd) via netmuxd in shim mode over usbmuxd: it serves usbmuxd's USB
-# devices plus its own network discoveries on a second socket. Passing an
-# upstream muxer disables netmuxd's own USB backend.
-#
-# netmuxd owns the device's single iOS heartbeat — the Marco/Polo keepalive that
-# stops iOS from reaping service connections. iOS allows one heartbeat per device
-# and AirVault runs none of its own, so netmuxd keeps it (no --disable-heartbeat).
+# netmuxd serves usbmuxd's USB devices plus its own Wi-Fi discoveries; the
+# upstream disables its own USB backend. It owns the single iOS heartbeat per
+# device (AirVault runs none), so never pass --disable-heartbeat.
 run_component netmuxd "${RUN_AS[@]}" env RUST_LOG="$MUX_LOG_LEVEL" netmuxd \
         --upstream-usbmuxd /var/run/usbmuxd \
         --socket-path "$SOCKET_DIR/usbmuxd-net" \
@@ -78,7 +72,7 @@ NETMUXD=$!
 for _ in $(seq 1 100); do [ -S "$SOCKET_DIR/usbmuxd-net" ] && break; sleep 0.1; done
 [ -S "$SOCKET_DIR/usbmuxd-net" ] || echo "[entrypoint] netmuxd socket absent after 10s" >&2
 
-# The shim connects to netmuxd (no colon -> unix path).
+# The engine connects to netmuxd (no colon -> unix path).
 export USBMUXD_SOCKET_ADDRESS="$SOCKET_DIR/usbmuxd-net"
 "${RUN_AS[@]}" airvault &
 APP=$!

@@ -1,4 +1,3 @@
-// Package devicefs owns the Go-side model and orchestration for AFC file trees.
 package devicefs
 
 import (
@@ -39,7 +38,6 @@ func validComponent(name string) bool {
 
 func (p Path) String() string { return p.relative }
 
-// Name is the final component. The root has no name in the UI projection.
 func (p Path) Name() string {
 	if index := strings.LastIndexByte(p.relative, '/'); index >= 0 {
 		return p.relative[index+1:]
@@ -61,7 +59,6 @@ func (p Path) Child(name string) (Path, error) {
 	return Path{relative: child}, nil
 }
 
-// Root captures the native service and the path prefix it exposes to users.
 type Root struct {
 	source   engine.AFCSource
 	bundleID string

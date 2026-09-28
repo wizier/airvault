@@ -1,7 +1,5 @@
 <script lang="ts">
-  // Standard inline form-error line (icon + message), or a soft alert box for a
-  // failed load. Renders nothing while error is null, so callers just pass
-  // their error state.
+  // Renders nothing while error is null, so callers just pass their error state.
   import Icon from './Icon.svelte';
 
   let {

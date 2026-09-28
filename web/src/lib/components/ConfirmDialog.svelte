@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Confirmation modal for one async action, open while mounted. It owns the
-  // busy and failure state; a successful action closes it.
+  // Open while mounted; it owns busy and failure state, and a successful action
+  // closes it.
   import type { Snippet } from 'svelte';
   import { errMsg } from '../api/client';
   import type { ErrorTextKey } from '../error-text';

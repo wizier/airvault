@@ -1,21 +1,17 @@
 package engine
 
 import (
-	"context"
 	"errors"
-	"io"
+	"io/fs"
 	"testing"
 )
 
-// A slot closed under a live caller is a dead session, not a cancelled request.
-func TestAFCErrorKeepsClosedSlotApartFromCancellation(t *testing.T) {
-	closed := &Error{Kind: ErrorCancelled, Detail: "AFC session is closed"}
-	if err := afcError(context.Background(), closed); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("live caller: %v, want io.ErrClosedPipe", err)
+// A missing device item reads as fs.ErrNotExist; no other kind does.
+func TestNotFoundIsErrNotExist(t *testing.T) {
+	if !errors.Is(&Error{Kind: ErrorNotFound}, fs.ErrNotExist) {
+		t.Fatal("ErrorNotFound must match fs.ErrNotExist")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := afcError(ctx, closed); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled caller: %v, want context.Canceled", err)
+	if errors.Is(&Error{Kind: ErrorIntegrity}, fs.ErrNotExist) {
+		t.Fatal("only ErrorNotFound matches fs.ErrNotExist")
 	}
 }

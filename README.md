@@ -37,15 +37,15 @@ from then on.
 
 ```bash
 make build          # production binary
-make test           # Go and Rust tests
-make lint           # Go, Rust and Svelte static analysis
+make test           # Go tests
+make lint           # Go and Svelte static analysis
 make check          # complete local/CI gate
 make dev            # live-reload daemon and UI
 make docker-build   # local container image
 ```
 
-Builds need Go, Rust (pinned in `rust-toolchain.toml`) and Node. The complete
-check also needs `golangci-lint` and cbindgen 0.29.4.
+Builds need Go and Node; the complete check also needs `golangci-lint`. The
+binary is pure Go (`CGO_ENABLED=0`).
 
 ## License
 

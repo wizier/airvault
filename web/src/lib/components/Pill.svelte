@@ -12,8 +12,6 @@
     children?: Snippet;
   } = $props();
 
-  // Map the shared Tone vocabulary onto daisyUI semantic badge colors so both
-  // themes work automatically. Offline/neutral reads as a muted ghost badge.
   const badgeClass: Record<Tone, string> = {
     green: 'badge-soft badge-success',
     amber: 'badge-soft badge-warning',

@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Route boundary only: resolve the requested device and compose the feature
-  // cards. Each card owns its requests, mutations, modals and transient state;
-  // only the restore flow, opened from two cards, lives here.
+  // Each card owns its own state; only the restore flow, opened from two cards,
+  // lives here.
   import { link, push } from 'svelte-spa-router';
   import BackupCard from '../lib/components/BackupCard.svelte';
   import BackupHistory from '../lib/components/BackupHistory.svelte';

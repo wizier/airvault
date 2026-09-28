@@ -1,6 +1,4 @@
 <script lang="ts">
-  // Home: the device list. Click a device to drill into its page — backups and
-  // management all live there. Pairing opens as a modal.
   import { statusStore, devicesStore } from '../lib/stores.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import DeviceTile from '../lib/components/DeviceTile.svelte';

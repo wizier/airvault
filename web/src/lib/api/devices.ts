@@ -11,16 +11,15 @@ export interface Device {
   paired: boolean;
   encrypted: boolean;
   lockScreen?: boolean;
-  /** Lockdown ActivationState ("Activated", "Unactivated", ...); absent = unknown. */
+  /** Lockdown ActivationState; absent = unknown. */
   activationState?: string;
   lastSeen?: string;
   lastBackup?: string;
-  /** Per-kind stable error code of the device's most recent failed run
-   *  (server runtime state); the displayed status is derived client-side. */
+  /** Per-kind code of the most recent failed run; the displayed status is
+   *  derived client-side. */
   lastRunErrors?: { backup?: string; restore?: string };
   /** Unique object payload referenced by all restore points. */
   diskBytes?: number;
-  /** How many validated backup snapshots are kept. */
   restorePoints?: number;
   /** Restore points exist on disk but the phone is no longer registered. */
   orphaned?: boolean;
@@ -71,7 +70,6 @@ interface UnpairOptions {
 
 export type PowerAction = 'restart' | 'shutdown' | 'sleep';
 
-/** One cellular slot: friendly carrier ("MTS (RU)") and that slot's IMEI. */
 export interface SIM {
   slot?: string;
   carrier?: string;
@@ -79,10 +77,9 @@ export interface SIM {
 }
 
 export interface HardwareInfo {
-  /** Find My iPhone state — the phone refuses any restore while it is on. */
+  /** The phone refuses any restore while Find My is on. */
   findMyEnabled?: boolean;
   serial?: string;
-  /** Lockdown identifier, e.g. "iPhone16,2". */
   productType?: string;
   modelNumber?: string;
   hardwareModel?: string;

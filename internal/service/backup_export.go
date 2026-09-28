@@ -12,20 +12,14 @@ import (
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// BackupExport is a restore point packed as a Finder-format backup: a tar of
-// one "<UDID>-<date>" folder that Finder, Apple Devices and backup readers open.
 type BackupExport struct {
 	*objectstore.Tar
-	Name string // attachment file name
+	Name string
 }
 
-// OpenBackupExport packs a restore point for download; the caller closes it. A
-// snapshot's logical paths already are Finder's backup layout, so its files go
-// in unchanged. Names use the server's time zone (TZ).
-//
-// It takes no lease: a published snapshot never changes and object collection
-// keeps everything it references, so backups run on meanwhile. Only deleting
-// this very snapshot can cut a download short.
+// No lease: a published snapshot never changes and collection keeps what it
+// references, so only deleting this snapshot can cut a download short. Names
+// use the server's time zone (TZ).
 func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*BackupExport, error) {
 	snapshot, err := s.store.Backup.Get(ctx, snapshotID)
 	if err != nil {

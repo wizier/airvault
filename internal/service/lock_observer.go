@@ -9,11 +9,10 @@ import (
 	"github.com/wizier/airvault/internal/engine"
 )
 
-// lockObserverMgr runs one SpringBoard lock observer per online Wi-Fi device,
-// started and stopped on presence transitions. The notification_proxy socket
-// dies with the muxer attachment; the next online transition restarts it.
+// The notification_proxy socket dies with the muxer attachment; the next online
+// transition restarts the observer.
 type lockObserverMgr struct {
-	base   context.Context // app lifetime — observer goroutines die with it
+	base   context.Context
 	engine lockObservation
 	onLock func(udid string, signal engine.ScreenLockSignal)
 
@@ -36,7 +35,6 @@ func newLockObserverMgr(base context.Context, eng lockObservation,
 	}
 }
 
-// setOnline starts a lock observer for udid unless one is already running.
 func (m *lockObserverMgr) setOnline(udid string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -48,7 +46,6 @@ func (m *lockObserverMgr) setOnline(udid string) {
 	m.wg.Go(func() { m.run(ctx, udid) })
 }
 
-// setOffline stops udid's lock observer if one is running.
 func (m *lockObserverMgr) setOffline(udid string) {
 	m.mu.Lock()
 	cancel := m.workers[udid]
@@ -59,8 +56,6 @@ func (m *lockObserverMgr) setOffline(udid string) {
 	}
 }
 
-// run keeps a lock observer up while the device is online, re-establishing with
-// backoff (reset on a successful open) until setOffline or shutdown cancels ctx.
 func (m *lockObserverMgr) run(ctx context.Context, udid string) {
 	const initialRetry = 3 * time.Second
 	const maxRetry = time.Minute

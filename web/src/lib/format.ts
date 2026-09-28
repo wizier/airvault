@@ -1,14 +1,10 @@
-// Small, dependency-free formatting helpers shared across the UI.
-
-/** Middle-truncate a UDID for compact display, keeping head + tail. */
 export function shortUdid(udid: string): string {
   if (!udid) return '';
   if (udid.length <= 15) return udid;
   return `${udid.slice(0, 10)}…${udid.slice(-4)}`;
 }
 
-/** Compact relative time like "just now", "6m ago", "3h ago", "in 5h". Pass the
- *  live `$now` store to make the label tick; omit it for a static reading. */
+/** Pass the live `$now` store to make the label tick. */
 export function relativeTime(iso: string, now: number = Date.now()): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '—';
@@ -27,7 +23,6 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
   return past ? `${out} ago` : `in ${out}`;
 }
 
-/** Absolute, locale-aware date + time. */
 export function formatDateTime(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -35,7 +30,7 @@ export function formatDateTime(iso?: string | null): string {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-/** Short date from unix seconds (AFC mtimes). Empty string for 0/unknown. */
+/** From unix seconds (AFC mtimes). */
 export function formatDate(unixSec?: number): string {
   if (!unixSec) return '';
   return new Date(unixSec * 1000).toLocaleDateString(undefined, {
@@ -45,7 +40,6 @@ export function formatDate(unixSec?: number): string {
   });
 }
 
-/** Human-readable byte size. Returns "—" for 0/unknown. */
 export function formatBytes(n?: number): string {
   if (!n || n <= 0) return '—';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -59,19 +53,16 @@ export function formatBytes(n?: number): string {
   return `${v.toFixed(digits)} ${units[i]}`;
 }
 
-/** A file's size and, when known, its modified date: "2.4 MB · Mar 3, 2025". */
 export function fileFacts(f: { size?: number; modified?: number }): string {
   return f.modified ? `${formatBytes(f.size)} · ${formatDate(f.modified)}` : formatBytes(f.size);
 }
 
-/** Human-readable transfer rate like "12.3 MB/s". Empty string for 0/unknown
- *  so callers can hide the speed line gracefully. */
+/** Empty for 0/unknown so callers can hide the speed line. */
 export function formatSpeed(bytesPerSec?: number): string {
   if (!bytesPerSec || bytesPerSec <= 0) return '';
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
-/** Duration between two ISO timestamps, e.g. "4m 12s". */
 export function formatDuration(startIso?: string, endIso?: string): string {
   if (!startIso || !endIso) return '—';
   const a = new Date(startIso).getTime();

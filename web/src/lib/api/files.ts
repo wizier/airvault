@@ -1,7 +1,6 @@
 import { apiUrl, devicePath, request } from './client';
 
-// One entry in an AFC-backed directory listing. size/modified are absent for
-// directories (AFC only reports them for files).
+// size/modified are absent for directories: AFC only reports them for files.
 export interface AFCEntry {
   name: string;
   kind: 'file' | 'directory';
@@ -14,21 +13,14 @@ export interface FileStat {
   modified?: number; // unix seconds; absent when AFC did not report it
 }
 
-// A file tree the FileBrowser navigates. The optional remove capability lights
-// up delete in the UI. list returns one whole directory, folders-first.
 export interface FileSource {
   list(path: string, signal?: AbortSignal): Promise<AFCEntry[]>;
-  /** One file's size and modified time (a single device stat). */
   stat(path: string, signal?: AbortSignal): Promise<FileStat>;
-  /** An attachment URL the browser downloads natively. */
   downloadUrl(path: string): string;
-  /** An <img> src: native image bytes or a server-side HEIC transcode. */
   previewUrl(path: string): string;
   remove?(path: string): Promise<void>;
 }
 
-// The AFC file endpoints share one shape across the media partition and app
-// Documents; only the base path differs.
 function afcFileSource(base: string, writable: boolean): FileSource {
   const at = (endpoint: string, path: string) => `${base}${endpoint}?${new URLSearchParams({ path })}`;
   return {
@@ -40,27 +32,23 @@ function afcFileSource(base: string, writable: boolean): FileSource {
   };
 }
 
-// An app's Documents container (house_arrest over AFC): download + preview + delete.
 export function appFileSource(udid: string, bundleId: string, writable: boolean): FileSource {
   return afcFileSource(`${devicePath(udid)}/apps/${encodeURIComponent(bundleId)}/files`, writable);
 }
 
-// The device media partition (com.apple.afc): download + inline preview, read-only.
 export function deviceFileSource(udid: string): FileSource {
   return afcFileSource(`${devicePath(udid)}/media`, false);
 }
 
 /** Stats the file first, so an offline, locked or busy phone reports in the UI
- *  rather than as a failed browser download, then hands the download to the
- *  browser, which streams it to disk. */
+ *  rather than as a failed browser download. */
 export async function downloadFile(source: FileSource, path: string, name: string, signal: AbortSignal): Promise<void> {
   await source.stat(path, signal);
   if (signal.aborted) return;
   saveUrl(source.downloadUrl(path), name);
 }
 
-/** Hands an attachment URL to the browser's own download manager; an empty
- *  name keeps the server's Content-Disposition file name. */
+/** An empty name keeps the server's Content-Disposition file name. */
 export function saveUrl(url: string, name = ''): void {
   const link = document.createElement('a');
   link.href = url;

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,9 +14,8 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// progressSink builds the engine-progress callback for backup/restore. Speed is
-// the average over the interval each emit covers, `total` makes the percentage an
-// exact byte ratio, and `idleStage` names the wait before the first payload byte.
+// Speed averages the interval each emit covers, total makes the percentage an
+// exact byte ratio, and idleStage names the wait before the first payload byte.
 func (s *Service) progressSink(run *runReservation, idleStage, activeStage RunStage, total int64) func(engine.Progress) {
 	const emitEvery = 5 * time.Second
 	var (
@@ -88,8 +88,6 @@ const (
 	StageCancellingRestore RunStage = "cancelling_restore"
 )
 
-// setRunStage publishes a coarse Go-side stage (e.g. activation) before the
-// engine's own progress stream takes over.
 func (s *Service) setRunStage(run *runReservation, stage RunStage) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
@@ -119,19 +117,16 @@ func (s *Service) beginCommit(run *runReservation) bool {
 	return true
 }
 
-// completeRun alone classifies a run: a failure after a user cancel (not
-// shutdown) is cancelled, whether the cancel came from the UI or from the
-// phone, which the engine reports as a cancelled transfer. It removes the
-// runtime run before publishing the terminal SSE, so no later progress frame
-// can overtake the terminal event.
+// completeRun alone classifies a run: a failure after a user cancel from the UI
+// or the phone (not shutdown) is cancelled. The run is removed before the
+// terminal SSE, so no later progress frame can overtake it.
 func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr error) {
 	state := runStateCompleted
 	eventErrorCode := outcome.errorCode
 	switch {
 	case runErr == nil:
-		// The engine and publication path returned a verified success. A cancel
-		// arriving just after that point cannot retroactively turn an immutable
-		// published snapshot (or completed restore) into a cancelled run.
+		// A verified success: a cancel arriving just after cannot turn a published
+		// snapshot or completed restore into a cancelled run.
 	case s.app.Err() == nil && (run.ctx.Err() != nil || engineErrorCode(runErr) == "operation_cancelled"):
 		state = runStateCancelled
 		eventErrorCode = "operation_cancelled"
@@ -180,8 +175,6 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 	}
 }
 
-// launchRun supervises one reserved run and returns its id; completion reaches
-// clients through the terminal SSE event, never a join.
 func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, error)) string {
 	s.wg.Go(func() {
 		defer func() {
@@ -208,8 +201,7 @@ func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, err
 	return run.id
 }
 
-// engineErrorCode maps only the engine's stable typed classification to the
-// HTTP/SSE contract; diagnostic text is never inspected.
+// engineErrorCode maps an engine error to a transfer's public code, "" for none.
 func engineErrorCode(err error) string {
 	var engineErr *engine.Error
 	if !errors.As(err, &engineErr) {
@@ -220,9 +212,11 @@ func engineErrorCode(err error) string {
 		return "invalid_backup_password"
 	case engine.ErrorStorageFull:
 		return "storage_full"
+	case engine.ErrorDeviceStorageFull:
+		return "device_storage_full"
 	case engine.ErrorBusy:
 		return "resource_busy"
-	case engine.ErrorProtocol:
+	case engine.ErrorProtocol, engine.ErrorConnectionLost:
 		return "device_connection_interrupted"
 	case engine.ErrorTimeout:
 		return "device_timeout"
@@ -247,10 +241,21 @@ func engineErrorCode(err error) string {
 	}
 }
 
-func newEngineActionError(operationCode string, err error) *domain.ActionError {
-	code := engineErrorCode(err)
-	if code == "" {
-		code = operationCode
+func newTransferActionError(operationCode string, err error) *domain.ActionError {
+	return domain.NewActionError(cmp.Or(engineErrorCode(err), operationCode), err)
+}
+
+// newEngineActionError is for device requests: a missing item is a 404, and
+// protocol or integrity failures keep the operation's own code.
+func newEngineActionError(operationCode string, err error) error {
+	var engineErr *engine.Error
+	if errors.As(err, &engineErr) {
+		switch engineErr.Kind {
+		case engine.ErrorNotFound:
+			return fmt.Errorf("%w: %w", domain.ErrNotFound, err)
+		case engine.ErrorProtocol, engine.ErrorIntegrity:
+			return domain.NewActionError(operationCode, err)
+		}
 	}
-	return domain.NewActionError(code, err)
+	return newTransferActionError(operationCode, err)
 }

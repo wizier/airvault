@@ -1,6 +1,5 @@
 /bin/
 /.air/
-/engine/rust/target/
 /web/node_modules/
 /web/dist/
 

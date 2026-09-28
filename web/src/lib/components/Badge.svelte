@@ -2,8 +2,6 @@
   import Icon from './Icon.svelte';
   import type { IconName } from './icons';
 
-  // A small on/off capability chip: `on` drives the accent styling; off reads
-  // as a muted ghost badge with an X.
   let {
     label,
     icon,

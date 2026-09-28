@@ -10,25 +10,24 @@ import (
 	"github.com/wizier/airvault/internal/engine"
 )
 
-// HardwareInfo is a hardware/storage/battery snapshot. Every field is
-// best-effort — keys an iOS version doesn't expose stay zero/empty and are
-// omitted from the JSON.
+// Every field is best-effort: keys an iOS version doesn't expose stay empty and
+// are omitted from the JSON.
 type HardwareInfo struct {
 	Serial        string `json:"serial,omitempty"`
-	ProductType   string `json:"productType,omitempty"` // lockdown identifier, e.g. "iPhone16,2"
+	ProductType   string `json:"productType,omitempty"`
 	ModelNumber   string `json:"modelNumber,omitempty"`
 	HardwareModel string `json:"hardwareModel,omitempty"`
-	Region        string `json:"region,omitempty"` // model region suffix, e.g. "LL/A"
+	Region        string `json:"region,omitempty"`
 	WifiMac       string `json:"wifiMac,omitempty"`
 	BluetoothMac  string `json:"bluetoothMac,omitempty"`
 
 	PhoneNumber  string `json:"phoneNumber,omitempty"`
-	SIMs         []SIM  `json:"sims,omitempty"` // one entry per active SIM slot
+	SIMs         []SIM  `json:"sims,omitempty"`
 	BuildVersion string `json:"buildVersion,omitempty"`
 	TimeZone     string `json:"timeZone,omitempty"`
 
-	// FindMyEnabled reports com.apple.fmip IsAssociated — a restore blocker.
-	// Nil means the value could not be read, never "off".
+	// com.apple.fmip IsAssociated, a restore blocker. Nil means the value could
+	// not be read, never "off".
 	FindMyEnabled *bool `json:"findMyEnabled,omitempty"`
 
 	DiskDataCapacity  uint64 `json:"diskDataCapacity,omitempty"`  // data partition, bytes
@@ -46,15 +45,12 @@ type HardwareInfo struct {
 	BatterySerial         string `json:"batterySerial,omitempty"`
 }
 
-// SIM is one cellular slot: friendly carrier ("MTS (RU)") and that slot's IMEI.
 type SIM struct {
 	Slot    string `json:"slot,omitempty"` // "Primary"/"Secondary", set only on dual-SIM
 	Carrier string `json:"carrier,omitempty"`
 	IMEI    string `json:"imei,omitempty"`
 }
 
-// HardwareInfo reads the hardware/storage/battery-health snapshot live from
-// the device (a couple of lockdown+diagnostics round-trips).
 func (s *Service) HardwareInfo(ctx context.Context, udid string) (HardwareInfo, error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return HardwareInfo{}, err
@@ -104,7 +100,6 @@ func hardwareInfo(report engine.HardwareReport) HardwareInfo {
 	}
 }
 
-// fullChargeCapacity returns the best available full-charge capacity in mAh.
 // AppleSmartBattery overloads MaxCapacity: newer iOS reports a normalized
 // 0..100 there, so values <= 100 are never treated as mAh.
 func fullChargeCapacity(b engine.BatteryGauge) int64 {
@@ -120,9 +115,8 @@ func fullChargeCapacity(b engine.BatteryGauge) int64 {
 	}
 }
 
-// batteryHealthPercent prefers an explicit OS value when exposed. Diagnostics
-// relay normally omits that private value, so fall back to the full-charge
-// capacity divided by the design capacity. This is an estimate, not charge %.
+// Diagnostics relay normally omits the OS health value, so the fallback is
+// full-charge over design capacity: an estimate, not charge %.
 func batteryHealthPercent(b engine.BatteryGauge) uint64 {
 	reported := b.MaximumCapacityPercent
 	if b.MaximumCapacityPercentWithSpaces > 0 {
@@ -140,8 +134,6 @@ func batteryHealthPercent(b engine.BatteryGauge) uint64 {
 	return uint64(min(max(estimate, 0), 100))
 }
 
-// parseSIMs builds one SIM per CarrierBundleInfoArray entry, joining the slot's
-// IMEI (kOne -> imei1, kTwo -> imei2). Empty slots are dropped.
 func parseSIMs(carriers []engine.CarrierBundle, imei1, imei2 string) []SIM {
 	var sims []SIM
 	for i, c := range carriers {
@@ -165,8 +157,7 @@ func parseSIMs(carriers []engine.CarrierBundle, imei1, imei2 string) []SIM {
 	return sims
 }
 
-// friendlyCarrier turns a carrier bundle id into "Name (CC)": "com.apple.MTS_ru"
-// -> "MTS (RU)". The trailing "_xx" is the region; CarrierDefault/empty yields "".
+// "com.apple.MTS_ru" -> "MTS (RU)": the trailing "_xx" is the region.
 func friendlyCarrier(bundleID string) string {
 	name := strings.TrimPrefix(bundleID, "com.apple.")
 	if name == "" || strings.EqualFold(name, "CarrierDefault") {
@@ -181,7 +172,6 @@ func friendlyCarrier(bundleID string) string {
 	return name
 }
 
-// slotLabel maps the raw slot id to a display label; unknown slots drop the "k".
 func slotLabel(slot string) string {
 	switch slot {
 	case "kOne":

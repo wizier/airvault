@@ -11,7 +11,6 @@ type changeBackupPasswordRequest struct {
 	New string `json:"new"`
 }
 
-// [POST] /api/devices/:udid/backup-password
 func (h *Handler) changeBackupPassword(c *echo.Context) error {
 	var request changeBackupPasswordRequest
 	if err := echo.BindBody(c, &request); err != nil {

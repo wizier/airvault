@@ -1,6 +1,4 @@
 <script lang="ts">
-  // Device identity plus the direct controls: console, apps, files, media,
-  // power. Backup policy and transfer controls live in BackupCard.
   import { errMsg } from '../api/client';
   import { powerDevice, type Device } from '../api/devices';
   import { deviceFileSource } from '../api/files';

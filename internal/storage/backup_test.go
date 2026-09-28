@@ -45,10 +45,9 @@ func insertTestSnapshot(t *testing.T, store *Store, id string) {
 	}
 }
 
-// Re-adopting a source starts its size from nothing, so no cached footprint may
-// outlive the source's snapshots. A delta then needs a measured base: applied to
-// an unknown size it must leave it unknown, not seed one short by everything
-// already on disk.
+// No cached footprint may outlive the source's snapshots. A delta needs a
+// measured base: applied to an unknown size it must leave it unknown, not seed
+// one short by everything already on disk.
 func TestNoCachedFootprintOutlivesItsSnapshots(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

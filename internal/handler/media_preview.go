@@ -9,7 +9,6 @@ import (
 	"github.com/gen2brain/heic"
 )
 
-// Browser-renderable image types stream unchanged, keyed to their MIME type.
 // Both maps mirror PREVIEW_IMAGE_EXT in web/src/lib/components/PreviewImage.svelte.
 var nativeImageType = map[string]string{
 	".jpg":  "image/jpeg",
@@ -20,16 +19,13 @@ var nativeImageType = map[string]string{
 	".bmp":  "image/bmp",
 }
 
-// Types the browser can't render but the pure-Go HEIC decoder can.
 var transcodeImageExt = map[string]bool{".heic": true, ".heif": true}
 
 // Force the embedded WASM decoder (pure Go, no cgo, no external libheif) so
 // preview rendering is identical on every host.
 func init() { heic.ForceWasmMode = true }
 
-// renderHEICPreview decodes a HEIC/HEIF stream and returns it as JPEG bytes.
-// Pure Go: gen2brain/heic runs a HEIC decoder compiled to WASM via wazero — no
-// cgo, no external binary. Orientation is applied by the decoder.
+// Orientation is applied by the decoder.
 func renderHEICPreview(r io.Reader) ([]byte, error) {
 	img, err := heic.Decode(r)
 	if err != nil {

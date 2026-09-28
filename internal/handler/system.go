@@ -13,7 +13,6 @@ type statusResponse struct {
 	Running []service.RunProgress `json:"running"`
 }
 
-// [GET] /api/status
 func (h *Handler) status(c *echo.Context) error {
 	return c.JSON(http.StatusOK, statusResponse{
 		MuxerUp: h.svc.MuxerReady(c.Request().Context()), Running: h.svc.Running(),

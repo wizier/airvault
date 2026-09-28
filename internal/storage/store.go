@@ -1,6 +1,3 @@
-// Package storage is the sqlx data-access layer: a Store owns one repo per
-// aggregate, every repo method is a single statement, and callers compose the
-// ones that must commit together with WithTx.
 package storage
 
 import (
@@ -9,16 +6,14 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// Store is the single dependency services hold for DB access.
 type Store struct {
 	db *sqlx.DB
-	tx *sqlx.Tx // non-nil inside a transaction
+	tx *sqlx.Tx
 
 	Device *DeviceRepo
 	Backup *BackupRepo
 }
 
-// NewStore wires the repo graph on top of db.
 func NewStore(db *sqlx.DB) *Store {
 	s := &Store{db: db}
 	s.wireRepos()
@@ -30,12 +25,10 @@ func (s *Store) wireRepos() {
 	s.Backup = &BackupRepo{s: s}
 }
 
-// Ping reports DB reachability for the /healthz endpoint.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-// ext is the in-flight transaction when there is one, the shared pool otherwise.
 func (s *Store) ext() sqlx.ExtContext {
 	if s.tx != nil {
 		return s.tx
@@ -43,8 +36,7 @@ func (s *Store) ext() sqlx.ExtContext {
 	return s.db
 }
 
-// WithTx runs fn inside one transaction; the Store it receives routes every repo
-// to it, and nested calls join the outer one. Connections use _txlock=immediate,
+// Nested calls join the outer transaction. Connections use _txlock=immediate,
 // so a transaction takes the write lock up front: wrap writes, never plain reads.
 func (s *Store) WithTx(ctx context.Context, fn func(*Store) error) error {
 	if s.tx != nil {

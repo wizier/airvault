@@ -9,15 +9,12 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// availabilityReconcileInterval is a coarse, muxer-local drift correction.
-// It never opens a phone service; metadata is refreshed only after an actual
-// presence/pairing event, and live battery is requested by its consumer.
+// A coarse, muxer-local drift correction. It never opens a phone service;
+// metadata is refreshed only after an actual presence/pairing event.
 const availabilityReconcileInterval = 5 * time.Minute
 
-// StartWatch launches the presence workers in the background: a refresh worker
-// that coalesces metadata passes, the muxer's event-driven watcher, reopened
-// with backoff so a stream failure never leaves only interval reconciliation,
-// and the automatic-backup trigger fed by the lock state they observe.
+// The presence watcher is reopened with backoff so a stream failure never
+// leaves only interval reconciliation.
 func (s *Service) StartWatch(ctx context.Context) {
 	s.wg.Go(func() { s.runAutoBackupTrigger(ctx, s.fireAutoBackup) })
 	// The refresh worker owns every active metadata pass. The periodic branch only
@@ -76,8 +73,7 @@ func (s *Service) StartWatch(ctx context.Context) {
 	})
 }
 
-// consumePresence applies snapshots until the stream ends; true means at least
-// one snapshot arrived, so the reopen backoff resets.
+// True means at least one snapshot arrived, so the reopen backoff resets.
 func (s *Service) consumePresence(ctx context.Context, watcher *engine.PresenceWatcher) bool {
 	muxUp := false
 	received := false

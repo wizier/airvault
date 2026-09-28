@@ -10,8 +10,6 @@ import (
 	"testing"
 )
 
-// entriesChecksum seals a finished entry map. Loading a manifest seals as it
-// validates; this builds fixtures and the golden vectors.
 func entriesChecksum(entries map[string]manifestEntry) string {
 	seal := newManifestEntriesSeal()
 	for _, key := range slices.Sorted(maps.Keys(entries)) {
@@ -20,9 +18,8 @@ func entriesChecksum(entries map[string]manifestEntry) string {
 	return seal.checksum()
 }
 
-// Golden vectors shared with Rust (manifest_seal_matches_go_golden): both must
-// hash identically or the seal is unportable. The multi-entry vector pins
-// byte-wise key order ("B" < "a" < UTF-8 "а").
+// Golden vectors of the Rust engine's seal: stores it wrote must stay
+// readable. The multi-entry vector pins byte-wise key order ("B" < "a" < UTF-8 "а").
 func TestEntriesChecksumMatchesRustVector(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -83,7 +80,6 @@ func TestManifestEntryValidation(t *testing.T) {
 	}
 }
 
-// A manifest whose entries no longer match its recorded seal is refused.
 func TestOpenSnapshotRejectsSealedEntryMutation(t *testing.T) {
 	store, source := newTestStore(t)
 	manifestPath := filepath.Join(store.root, source, "snapshots", genA+".json")

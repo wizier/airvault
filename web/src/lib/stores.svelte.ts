@@ -1,6 +1,5 @@
-// Shared live-state Resources built on Svelte 5 runes: ref-counted start(), last
-// good value kept across refreshes so the UI never flickers to empty. One fetch
-// per idle→active transition; SSE pushes keep them fresh while subscribed.
+// A Resource keeps its last good value across refreshes so the UI never flickers
+// to empty; it fetches once per idle→active transition and SSE keeps it fresh.
 
 import { errMsg, isOffline } from './api/client';
 import { listApps } from './api/apps';
@@ -31,7 +30,6 @@ class Resource<T> {
     this.#fetcher = fetcher;
   }
 
-  /** Whether we have ever successfully loaded data. */
   get ready(): boolean {
     return this.data !== null;
   }
@@ -45,8 +43,8 @@ class Resource<T> {
     return !this.ready && this.error !== null && !this.offline ? errMsg(this.error, fallback) : null;
   }
 
-  /** Whether any component is currently subscribed. The SSE client skips
-   *  refreshes of inactive resources — a mount refetches anyway. */
+  /** The SSE client skips refreshes of inactive resources; a mount refetches
+   *  anyway. */
   get active(): boolean {
     return this.#subscribers > 0;
   }
@@ -90,17 +88,14 @@ class Resource<T> {
     this.loading = false;
   }
 
-  /** Apply an already-confirmed HTTP or pushed-event projection immediately;
-   *  the SSE invalidation remains the cross-client canonical refresh. No-op
-   *  until the first successful load. */
+  /** For an already-confirmed projection; the SSE invalidation remains the
+   *  canonical refresh. No-op until the first successful load. */
   mutate(updater: (current: T) => T): void {
     if (this.data === null) return;
     this.data = updater(this.data);
   }
 
-  /** Begin observing this resource (shared across components); returns a stop
-   *  function for an $effect. Fetches on each idle→active transition — SSE
-   *  keeps it fresh while active and resyncs on reconnect. */
+  /** Returns a stop function for an $effect. */
   start(): () => void {
     const wasIdle = this.#subscribers === 0;
     this.#subscribers += 1;

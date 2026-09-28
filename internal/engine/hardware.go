@@ -1,55 +1,53 @@
 package engine
 
-// HardwareReport is av_device_hardware's raw dump: the lockdown root, the
-// com.apple.disk_usage domain and the AppleSmartBattery gas gauge as they come
-// off the phone. Selecting and interpreting fields is the service's job.
+// HardwareReport is raw device facts; interpreting them is the service's job.
 type HardwareReport struct {
-	Lockdown  LockdownValues `json:"lockdown"`
-	DiskUsage DiskUsage      `json:"diskUsage"`
-	Battery   BatteryGauge   `json:"battery"`
+	Lockdown  LockdownValues
+	DiskUsage DiskUsage
+	Battery   BatteryGauge
 	// com.apple.fmip IsAssociated; nil when the read was unavailable.
-	FindMy *bool `json:"findMy"`
+	FindMy *bool
 }
 
 type LockdownValues struct {
-	SerialNumber     string          `json:"SerialNumber"`
-	ProductType      string          `json:"ProductType"`
-	ModelNumber      string          `json:"ModelNumber"`
-	HardwareModel    string          `json:"HardwareModel"`
-	RegionInfo       string          `json:"RegionInfo"`
-	WiFiAddress      string          `json:"WiFiAddress"`
-	BluetoothAddress string          `json:"BluetoothAddress"`
-	PhoneNumber      string          `json:"PhoneNumber"`
-	BuildVersion     string          `json:"BuildVersion"`
-	TimeZone         string          `json:"TimeZone"`
-	IMEI             string          `json:"InternationalMobileEquipmentIdentity"`
-	IMEI2            string          `json:"InternationalMobileEquipmentIdentity2"`
-	Carriers         []CarrierBundle `json:"CarrierBundleInfoArray"`
+	SerialNumber     string          `plist:"SerialNumber"`
+	ProductType      string          `plist:"ProductType"`
+	ModelNumber      string          `plist:"ModelNumber"`
+	HardwareModel    string          `plist:"HardwareModel"`
+	RegionInfo       string          `plist:"RegionInfo"`
+	WiFiAddress      string          `plist:"WiFiAddress"`
+	BluetoothAddress string          `plist:"BluetoothAddress"`
+	PhoneNumber      string          `plist:"PhoneNumber"`
+	BuildVersion     string          `plist:"BuildVersion"`
+	TimeZone         string          `plist:"TimeZone"`
+	IMEI             string          `plist:"InternationalMobileEquipmentIdentity"`
+	IMEI2            string          `plist:"InternationalMobileEquipmentIdentity2"`
+	Carriers         []CarrierBundle `plist:"CarrierBundleInfoArray"`
 }
 
 type CarrierBundle struct {
-	Bundle string `json:"CFBundleIdentifier"`
-	Slot   string `json:"Slot"`
+	Bundle string `plist:"CFBundleIdentifier"`
+	Slot   string `plist:"Slot"`
 }
 
 type DiskUsage struct {
-	TotalDataCapacity   uint64 `json:"TotalDataCapacity"`
-	AmountDataAvailable uint64 `json:"AmountDataAvailable"`
-	TotalDataAvailable  uint64 `json:"TotalDataAvailable"`
-	PhotoUsage          uint64 `json:"PhotoUsage"`
-	MediaCacheUsage     uint64 `json:"MediaCacheUsage"`
+	TotalDataCapacity   uint64 `plist:"TotalDataCapacity"`
+	AmountDataAvailable uint64 `plist:"AmountDataAvailable"`
+	TotalDataAvailable  uint64 `plist:"TotalDataAvailable"`
+	PhotoUsage          uint64 `plist:"PhotoUsage"`
+	MediaCacheUsage     uint64 `plist:"MediaCacheUsage"`
 }
 
 type BatteryGauge struct {
-	MaxCapacity                      int64  `json:"MaxCapacity"`
-	MaximumCapacityPercent           int64  `json:"MaximumCapacityPercent"`
-	MaximumCapacityPercentWithSpaces int64  `json:"Maximum Capacity Percent"`
-	CycleCount                       int64  `json:"CycleCount"`
-	DesignCapacity                   int64  `json:"DesignCapacity"`
-	AppleRawMaxCapacity              int64  `json:"AppleRawMaxCapacity"`
-	NominalChargeCapacity            int64  `json:"NominalChargeCapacity"`
-	Voltage                          int64  `json:"Voltage"`
-	InstantAmperage                  int64  `json:"InstantAmperage"`
-	Temperature                      int64  `json:"Temperature"`
-	Serial                           string `json:"Serial"`
+	MaxCapacity                      int64  `plist:"MaxCapacity"`
+	MaximumCapacityPercent           int64  `plist:"MaximumCapacityPercent"`
+	MaximumCapacityPercentWithSpaces int64  `plist:"Maximum Capacity Percent"`
+	CycleCount                       int64  `plist:"CycleCount"`
+	DesignCapacity                   int64  `plist:"DesignCapacity"`
+	AppleRawMaxCapacity              int64  `plist:"AppleRawMaxCapacity"`
+	NominalChargeCapacity            int64  `plist:"NominalChargeCapacity"`
+	Voltage                          int64  `plist:"Voltage"`
+	InstantAmperage                  int64  `plist:"InstantAmperage"`
+	Temperature                      int64  `plist:"Temperature"`
+	Serial                           string `plist:"Serial"`
 }

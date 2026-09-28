@@ -1,5 +1,4 @@
 <script lang="ts">
-  // The device's own outline around its wallpaper — the model decides the shape.
   import { wallpaperUrl, type Connection } from '../api/devices';
   import { deviceScreen } from '../device-ui';
   import Icon from './Icon.svelte';

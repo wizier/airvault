@@ -1,23 +1,17 @@
-# Full-app dev loop: real cgo idevice engine + real device via the host's
-# usbmuxd (macOS: /var/run/usbmuxd). No Docker, no netmuxd, no env — the shim's
-# mux_addr() falls back to the host socket when USBMUXD_SOCKET_ADDRESS is unset.
-# Run with: make dev
+# Uses the host's usbmuxd (macOS: /var/run/usbmuxd) when USBMUXD_SOCKET_ADDRESS
+# is unset. Run with: make dev
 root = "."
 tmp_dir = ".air"
 
 [build]
-  # Rebuild the DEBUG shim first. `make shim-dev` is a file rule: a no-op unless
-  # a .rs / Cargo.toml changed, a ~1s cargo build when they did.
-  pre_cmd = ["make shim-dev"]
-  # Native cgo build. Do NOT set USBMUXD_SOCKET_ADDRESS (that's prod/netmuxd).
-  cmd = "CGO_ENABLED=1 go build -o ./.air/airvault ./cmd/airvault"
+  # Do NOT set USBMUXD_SOCKET_ADDRESS (that's prod/netmuxd).
+  cmd = "CGO_ENABLED=0 go build -o .air/airvault ./cmd/airvault"
   bin = "./.air/airvault"
   # :8081 — in dev the browser talks to Vite at :8080, which proxies /api here.
   full_bin = "AIRVAULT_LOG_LEVEL=debug AIRVAULT_LISTEN_ADDR=127.0.0.1:8081 ./.air/airvault"
   delay = 800
-  include_ext = ["go", "rs", "sql"]
-  # Excluding the cargo target dir is non-negotiable — else air loops forever.
-  exclude_dir = [".air", "bin", "data", "engine/rust/target", "web/node_modules", "web/dist"]
+  include_ext = ["go", "sql"]
+  exclude_dir = [".air", "bin", "data", "web/node_modules", "web/dist"]
   exclude_regex = ["_test\\.go$"]
   stop_on_error = true
 

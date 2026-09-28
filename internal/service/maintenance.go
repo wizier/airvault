@@ -8,14 +8,12 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// StartMaintenance runs one background recovery pass after startup: collect
-// every source once. It never spins or blocks the caller.
 func (s *Service) StartMaintenance(ctx context.Context, sources []string) {
 	s.wg.Go(func() { s.scrub(ctx, sources) })
 }
 
-// scrub collects each source under the write lease live mutations take. A busy
-// source is left to its owner and a failing one logged; both retry next startup.
+// A busy source is left to its owner and a failing one logged; both retry on
+// the next startup.
 func (s *Service) scrub(ctx context.Context, sources []string) {
 	for _, source := range sources {
 		if ctx.Err() != nil {
@@ -36,9 +34,7 @@ func (s *Service) scrub(ctx context.Context, sources []string) {
 	}
 }
 
-// collectSource reads a source's manifests to rebuild its live object set, drops
-// the corrupt restore points that surface, reclaims dead objects and publishes
-// the size of what remains. The caller holds the source write lease.
+// The caller holds the source write lease.
 func (s *Service) collectSource(ctx context.Context, source string) error {
 	live, corrupt, err := s.objects.ScanLive(ctx, source, nil)
 	if err != nil {
@@ -60,8 +56,6 @@ func (s *Service) collectSource(ctx context.Context, source string) error {
 	return nil
 }
 
-// dropCorruptSnapshot removes a manifest whose seal no longer verifies and its
-// catalog row, so a bit-rotted restore point stops pinning objects.
 func (s *Service) dropCorruptSnapshot(ctx context.Context, source, id string) error {
 	// Projection first: if the unlink then fails, the manifest is rediscovered on
 	// the next pass and the incomplete live set never reaches the sweep.

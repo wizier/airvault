@@ -1,7 +1,6 @@
 <script lang="ts">
   // The inline script in index.html applies the saved theme before first paint;
-  // this toggle reads it back from <html> and persists changes under the same
-  // key and daisyUI theme names (see src/app.css).
+  // this toggle must persist under the same key and theme names.
   import Icon from './Icon.svelte';
 
   const root = document.documentElement;

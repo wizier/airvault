@@ -14,8 +14,6 @@ type galleryResponse struct {
 	Revision string                 `json:"revision"`
 }
 
-// [GET] /api/devices/:udid/media/gallery?offset=&limit=&revision=
-// One page of a stable camera-roll index; later pages carry its revision.
 func (h *Handler) galleryList(c *echo.Context) error {
 	offset, err := echo.QueryParamOr(c, "offset", 0)
 	if err != nil {
@@ -42,9 +40,8 @@ type thumbBatchResponse struct {
 	Thumbs map[string][]byte `json:"thumbs"` // dcim path -> base64 JPEG; missing thumbs omitted
 }
 
-// [POST] /api/devices/:udid/media/thumbs  body: {paths:[…]}
-// A body-carried batch (not a query string) has no URL-length ceiling; the
-// batch reads all thumbnails in one AFC session (one handshake per gallery page).
+// A body-carried batch has no URL-length ceiling; it reads all thumbnails in one
+// AFC session.
 func (h *Handler) mediaThumbs(c *echo.Context) error {
 	var req thumbBatchRequest
 	if err := echo.BindBody(c, &req); err != nil {
@@ -57,8 +54,6 @@ func (h *Handler) mediaThumbs(c *echo.Context) error {
 	return c.JSON(http.StatusOK, thumbBatchResponse{Thumbs: thumbs})
 }
 
-// [GET] /api/devices/:udid/media/stat?path=
-// One media file's size and modified time (a single device stat).
 func (h *Handler) mediaStat(c *echo.Context) error {
 	stat, err := h.svc.MediaStat(c.Request().Context(), c.Param("udid"), c.QueryParam("path"))
 	if err != nil {

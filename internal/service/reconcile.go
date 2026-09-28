@@ -13,10 +13,9 @@ import (
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// ReconcileBackupStore resolves interrupted transitions, then rebuilds the
-// catalog from the manifests on disk. It returns every source — agreeing IDs
-// cannot rule out orphaned pool objects — for the background collection pass.
-// A source it cannot read is logged and left as it is, never failing startup.
+// Every source is returned for collection, since agreeing IDs cannot rule out
+// orphaned pool objects. A source that cannot be read is logged and left as it
+// is, never failing startup.
 func (s *Service) ReconcileBackupStore(ctx context.Context) ([]string, error) {
 	sources, err := s.objects.ListSources()
 	if err != nil {
@@ -35,9 +34,8 @@ func (s *Service) ReconcileBackupStore(ctx context.Context) ([]string, error) {
 	return sources, nil
 }
 
-// reconcileCatalogFromStore projects the published manifests onto the catalog.
-// Only manifests new to it are opened — an admitted row was seal-verified when it
-// was let in, and leaving it alone is what preserves its runtime-only facts.
+// Only manifests new to the catalog are opened: an admitted row was
+// seal-verified when let in, and leaving it alone preserves its runtime facts.
 func (s *Service) reconcileCatalogFromStore(ctx context.Context) ([]string, error) {
 	diskSources, err := s.objects.ListSources()
 	if err != nil {
@@ -89,8 +87,8 @@ func (s *Service) reconcileCatalogFromStore(ctx context.Context) ([]string, erro
 	return diskSources, nil
 }
 
-// projectNewSnapshot opens a manifest not yet in the catalog. A provably corrupt
-// one is unlinked; an otherwise invalid one is skipped, never advertised.
+// A provably corrupt manifest is unlinked; an otherwise invalid one is skipped,
+// never advertised.
 func (s *Service) projectNewSnapshot(ctx context.Context, source, id string) (model.Backup, bool) {
 	view, err := s.objects.OpenSnapshot(source, id)
 	if err != nil {
@@ -109,8 +107,6 @@ func (s *Service) projectNewSnapshot(ctx context.Context, source, id string) (mo
 	return projection, true
 }
 
-// removeIfCorrupt unlinks a manifest whose seal is provably corrupt, reporting
-// whether it went. Other open errors are left for the caller to classify.
 func (s *Service) removeIfCorrupt(ctx context.Context, source, id string, openErr error) bool {
 	if !errors.Is(openErr, objectstore.ErrManifestCorrupt) {
 		return false

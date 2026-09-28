@@ -9,8 +9,7 @@ import (
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// RestoreSources lists every restore point from the catalog alone — the cached
-// per-snapshot metadata means no manifest is reparsed on a page load.
+// Catalog only: no manifest is reparsed on a page load.
 func (s *Service) RestoreSources(ctx context.Context) ([]RestorePoint, error) {
 	snapshots, err := s.store.Backup.ListComplete(ctx)
 	if err != nil {

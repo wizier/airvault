@@ -41,8 +41,7 @@ func (s *Service) reserveRestore(ctx context.Context, udid string, opts RestoreO
 	return run, plan, nil
 }
 
-// StartRestore admits a restore on the request's ctx; the run itself lives as
-// long as the app.
+// Admission runs on the request's ctx; the run itself lives as long as the app.
 func (s *Service) StartRestore(ctx context.Context, udid string, opts RestoreOptions) (string, error) {
 	run, plan, err := s.reserveRestore(ctx, udid, opts)
 	if err != nil {
@@ -90,7 +89,6 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	return runOutcome{}, nil
 }
 
-// RestoreOptions selects one immutable rollback point and how to apply it.
 type RestoreOptions struct {
 	SnapshotID             string `json:"snapshotId"`
 	Password               string `json:"password"`
@@ -100,8 +98,7 @@ type RestoreOptions struct {
 	RemoveItemsNotRestored bool   `json:"removeItemsNotRestored"`
 }
 
-// DefaultRestoreOptions is Finder's standard restore; callers override single
-// fields on top of it.
+// Finder's standard restore; callers override single fields on top of it.
 func DefaultRestoreOptions() RestoreOptions {
 	return RestoreOptions{
 		SystemFiles:            true,
@@ -131,8 +128,7 @@ func (s *Service) lookupSnapshot(ctx context.Context, snapshotID string) (*model
 	return snapshot, nil
 }
 
-// buildRestorePlan resolves and validates the whole plan in one pass, called
-// under the run's leases so nothing it reads can change underneath.
+// Called under the run's leases, so nothing it reads can change underneath.
 func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts RestoreOptions) (*restorePlan, error) {
 	device, err := s.pairedDevice(ctx, targetUDID)
 	if err != nil {

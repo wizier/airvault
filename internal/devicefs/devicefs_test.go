@@ -37,7 +37,6 @@ func (s *fakeSession) Open(string) (engine.AFCFile, error) { return s.file, nil 
 func (s *fakeSession) ReadSmall(string) ([]byte, error)    { return nil, nil }
 func (s *fakeSession) Close() error                        { return nil }
 
-// fakeFile is a native device file that counts its round trips.
 type fakeFile struct {
 	*bytes.Reader
 	size        int64
@@ -72,13 +71,13 @@ func managerForFile(file engine.AFCFile) *Manager {
 	}})
 }
 
-func openTestFile(t *testing.T, native engine.AFCFile) *File {
+func openTestFile(t *testing.T, remote engine.AFCFile) *File {
 	t.Helper()
 	path, err := ParsePath("file.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := managerForFile(native).Open(context.Background(), "device", Media())
+	session, err := managerForFile(remote).Open(context.Background(), "device", Media())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,23 +103,23 @@ func TestReadStopsAtOpeningSize(t *testing.T) {
 		{name: "grew", data: "abcd", size: 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			native := newFakeFile(test.data, test.size)
-			read, err := io.ReadAll(openTestFile(t, native))
+			remote := newFakeFile(test.data, test.size)
+			read, err := io.ReadAll(openTestFile(t, remote))
 			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("error = %v, want %v", err, test.wantErr)
 			}
 			if got, want := string(read), test.data[:min(len(test.data), int(test.size))]; got != want {
 				t.Fatalf("read %q, want %q", got, want)
 			}
-			if test.wantErr == nil && native.reads != 1 {
-				t.Fatalf("native reads = %d, want 1", native.reads)
+			if test.wantErr == nil && remote.reads != 1 {
+				t.Fatalf("remote reads = %d, want 1", remote.reads)
 			}
 		})
 	}
 }
 
 // http.ServeContent sizes the file with two seeks and copies in 32 KiB reads.
-// Neither may cost a device round trip: a whole file takes one native read per
+// Neither may cost a device round trip: a whole file takes one remote read per
 // MiB and no seek, a range exactly one seek.
 func TestServeContentReadsAheadAndSeeksLazily(t *testing.T) {
 	data := make([]byte, 3*readAheadSize+7)
@@ -128,7 +127,7 @@ func TestServeContentReadsAheadAndSeeksLazily(t *testing.T) {
 		data[i] = byte(i % 251)
 	}
 	serve := func(byteRange string) (*fakeFile, *httptest.ResponseRecorder) {
-		native := newFakeFile(string(data), int64(len(data)))
+		remote := newFakeFile(string(data), int64(len(data)))
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		if byteRange != "" {
 			request.Header.Set("Range", byteRange)
@@ -136,26 +135,26 @@ func TestServeContentReadsAheadAndSeeksLazily(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		// Set as the handler does; ServeContent would otherwise sniff and rewind.
 		recorder.Header().Set("Content-Type", "application/octet-stream")
-		http.ServeContent(recorder, request, "file.bin", time.Time{}, openTestFile(t, native))
-		return native, recorder
+		http.ServeContent(recorder, request, "file.bin", time.Time{}, openTestFile(t, remote))
+		return remote, recorder
 	}
 
-	native, recorder := serve("")
+	remote, recorder := serve("")
 	if !bytes.Equal(recorder.Body.Bytes(), data) {
 		t.Fatalf("full body differs (%d bytes)", recorder.Body.Len())
 	}
-	if native.seeks != 0 || native.reads != 4 || native.largestRead > readAheadSize {
+	if remote.seeks != 0 || remote.reads != 4 || remote.largestRead > readAheadSize {
 		t.Fatalf("full: seeks = %d, reads = %d, largest read = %d; want 0, 4, <= %d",
-			native.seeks, native.reads, native.largestRead, readAheadSize)
+			remote.seeks, remote.reads, remote.largestRead, readAheadSize)
 	}
 
 	const start = readAheadSize + 5
-	native, recorder = serve(fmt.Sprintf("bytes=%d-", start))
+	remote, recorder = serve(fmt.Sprintf("bytes=%d-", start))
 	if recorder.Code != http.StatusPartialContent || !bytes.Equal(recorder.Body.Bytes(), data[start:]) {
 		t.Fatalf("range: status %d, %d bytes", recorder.Code, recorder.Body.Len())
 	}
-	if native.seeks != 1 {
-		t.Fatalf("range: seeks = %d, want 1", native.seeks)
+	if remote.seeks != 1 {
+		t.Fatalf("range: seeks = %d, want 1", remote.seeks)
 	}
 }
 

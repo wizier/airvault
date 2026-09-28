@@ -17,9 +17,6 @@ const (
 	screenLocked
 )
 
-// deviceRuntime is the low-level, volatile evidence known about one muxer
-// device. It deliberately contains no registry row, backup state or UI event
-// policy; those belong to the Service layer.
 type deviceRuntime struct {
 	presence   string
 	screen     screenLockState
@@ -28,7 +25,7 @@ type deviceRuntime struct {
 	activation string
 }
 
-// lockScreen is the projection the UI shows: anything but a seen unlock.
+// Anything but a seen unlock counts as the lock screen.
 func (r *deviceRuntime) lockScreen() bool { return r.screen != screenUnlocked }
 
 type connectionTransition struct {
@@ -37,9 +34,9 @@ type connectionTransition struct {
 	to   string
 }
 
-// deviceRuntimeStore owns only live device evidence. Keeping this mutex
-// separate from Service.runMu stops presence callbacks from sharing a lock with
-// backup business state. changed is closed and renewed on every connection change.
+// The mutex is separate from Service.runMu so presence callbacks never share a
+// lock with backup state. changed is closed and renewed on every connection
+// change.
 type deviceRuntimeStore struct {
 	mu      sync.RWMutex
 	devices map[string]*deviceRuntime
@@ -79,9 +76,6 @@ func (s *deviceRuntimeStore) snapshot() map[string]deviceRuntime {
 	return out
 }
 
-// applyPresence replaces raw muxer evidence and returns the connection
-// transitions. The Service layer decides which logs, database writes and domain
-// events follow; pairing/registration policy is intentionally absent.
 func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connectionTransition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -116,8 +110,7 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connect
 	return transitions
 }
 
-// applyScreenLock returns whether the lock-screen projection changed and its
-// new value; the first unlock after a (re)connect changes it too.
+// The first unlock after a (re)connect counts as a change too.
 func (s *deviceRuntimeStore) applyScreenLock(
 	udid string,
 	signal engine.ScreenLockSignal,
@@ -150,9 +143,8 @@ func (s *deviceRuntimeStore) applyScreenLock(
 	return wasLockScreen != r.lockScreen(), r.lockScreen(), true
 }
 
-// applyActivation records the lockdown activation state; true when a listed
-// device's value actually changed. Empty means the read failed — keep the
-// last known state, same rule as the identity fields.
+// Empty means the read failed: keep the last known state, as for the identity
+// fields.
 func (s *deviceRuntimeStore) applyActivation(udid, state string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,8 +156,7 @@ func (s *deviceRuntimeStore) applyActivation(udid, state string) bool {
 	return true
 }
 
-// removeLocal is used after an explicit registry removal. It intentionally
-// emits no online/offline transition; the caller publishes device.removed.
+// No online/offline transition: the caller publishes device.removed.
 func (s *deviceRuntimeStore) removeLocal(udid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

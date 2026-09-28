@@ -1,8 +1,7 @@
 import { devicePath, request } from './client';
 
-// One camera-roll item. live marks a photo with a paired .MOV (Live Photo).
 export interface GalleryAsset {
-  path: string; // media-partition path, e.g. "DCIM/100APPLE/IMG_0049.HEIC"
+  path: string;
   name: string;
   kind: 'photo' | 'video';
   live?: boolean;
@@ -31,8 +30,7 @@ interface ThumbBatchResponse {
   thumbs: Record<string, string>; // path -> base64 JPEG
 }
 
-/** Reads many thumbnails in one request (one AFC session server-side). Returns a
- *  path -> JPEG data URL map; paths with no thumbnail are absent. */
+/** Paths with no thumbnail are absent from the result. */
 export async function mediaThumbsBatch(
   udid: string,
   paths: string[],

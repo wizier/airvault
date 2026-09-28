@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Backups whose phone is no longer registered: kept visible so stored data
-  // never lingers unnoticed. A row opens the device page (browse, migrate or
-  // delete individual points); the button here removes the whole source.
+  // Backups whose phone is no longer registered stay visible so stored data
+  // never lingers unnoticed.
   import { link } from 'svelte-spa-router';
   import type { Device } from '../api/devices';
   import { deleteAllBackups } from '../stores.svelte';

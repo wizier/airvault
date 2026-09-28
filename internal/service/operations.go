@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// runIdentity keys per-kind, per-device run outcome state.
 type runIdentity struct{ udid, kind string }
 
 const (
@@ -44,7 +43,6 @@ type runReservation struct {
 	started time.Time
 }
 
-// logAttrs are the run's attributes beyond kind and udid for its operation.* logs.
 func (r *runReservation) logAttrs() []slog.Attr {
 	if r.auto {
 		return []slog.Attr{slog.Bool("auto", true)}
@@ -52,9 +50,8 @@ func (r *runReservation) logAttrs() []slog.Attr {
 	return nil
 }
 
-// acquireFor takes a named operation's resources and logs a refusal at Info, so
-// no rejection loses the holder it names. A site that wants another level, or
-// none, acquires directly and says why.
+// A refusal is logged at Info so no rejection loses the holder it names. A site
+// that wants another level, or none, acquires directly and says why.
 func (s *Service) acquireFor(ctx context.Context, kind, udid string,
 	requests ...resourceRequest) (func(), error) {
 	release, err := s.ops.acquire(kind, requests...)
@@ -64,10 +61,9 @@ func (s *Service) acquireFor(ctx context.Context, kind, udid string,
 	return release, nil
 }
 
-// reserveRun acquires the run's resources and nothing else. The run stays
-// invisible until announceRun, so validation may reject the request without
-// ever producing a run, a terminal event or a sticky error. The run lives as
-// long as the app, not the request that admitted it.
+// The run stays invisible until announceRun, so validation may reject the
+// request without a run, terminal event or sticky error. The run lives as long
+// as the app, not the request that admitted it.
 func (s *Service) reserveRun(kind, udid string, requests ...resourceRequest) (*runReservation, error) {
 	id := uuid.NewString()
 	runCtx := airlog.WithJobID(s.app, id)
@@ -82,14 +78,13 @@ func (s *Service) reserveRun(kind, udid string, requests ...resourceRequest) (*r
 	}, nil
 }
 
-// discardRun releases a reservation that was never announced.
 func (s *Service) discardRun(run *runReservation) {
 	run.cancel()
 	run.release()
 }
 
-// announceRun publishes the reserved run. From here it is visible to Running(),
-// progress and cancellation, and it must reach a terminal event via completeRun.
+// From here the run is visible to Running(), progress and cancellation, and it
+// must reach a terminal event via completeRun.
 func (s *Service) announceRun(run *runReservation, stage RunStage) error {
 	s.runMu.Lock()
 	if _, busy := s.runs[run.udid]; busy {
@@ -140,9 +135,8 @@ func (s *Service) finishCommand(command *commandReservation, runErr error) error
 	state := runStateCompleted
 	switch {
 	case runErr == nil:
-		// A verified side effect stays successful even if the HTTP client went
-		// away immediately after it completed; request cancellation cannot undo
-		// a command already accepted by the phone.
+		// A verified side effect stays successful even if the client left right
+		// after: cancellation cannot undo a command the phone already accepted.
 	case command.ctx.Err() != nil:
 		state = runStateCancelled
 	default:
@@ -155,9 +149,7 @@ func (s *Service) finishCommand(command *commandReservation, runErr error) error
 	return runErr
 }
 
-// runCommand gives synchronous mutations the same atomic admission and
-// structured logging as backup/restore runs. Validation that does not need a
-// lease should happen before this call.
+// Validation that does not need a lease should happen before this call.
 func (s *Service) runCommand(ctx context.Context, kind, udid string,
 	execute func(context.Context) error, requests ...resourceRequest) error {
 	command, err := s.reserveCommand(ctx, kind, udid, requests...)
@@ -170,8 +162,7 @@ func (s *Service) runCommand(ctx context.Context, kind, udid string,
 	return s.finishCommand(command, execute(command.ctx))
 }
 
-// launchCommand is the supervised background counterpart to runCommand. It
-// returns the run id; completion reaches clients through SSE, never a join.
+// Completion reaches clients through SSE, never a join.
 func (s *Service) launchCommand(ctx context.Context, kind, udid string,
 	execute func(context.Context, string) error, requests ...resourceRequest) (string, error) {
 	command, err := s.reserveCommand(ctx, kind, udid, requests...)
@@ -243,8 +234,8 @@ func logOperationFinished(
 	slog.LogAttrs(ctx, level, message, attrs...)
 }
 
-// hideRun removes the runtime run and records the run's terminal outcome in
-// the same critical section, so a refetch can never see them disagree.
+// Removing the run and recording its outcome share one critical section, so a
+// refetch can never see them disagree.
 func (s *Service) hideRun(run *runReservation, state, errorCode string) {
 	s.runMu.Lock()
 	delete(s.runs, run.udid)

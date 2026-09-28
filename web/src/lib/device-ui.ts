@@ -1,6 +1,3 @@
-// Shared mappings from backend enums to display tone/label/icon so the device
-// tile and the device page stay visually consistent.
-
 import type { RunningProgress, RunStage } from './api/backups';
 import type { AutoBackupDays, AutoBackupState, BatteryState, Connection, Device } from './api/devices';
 import type { IconName } from './components/icons';
@@ -77,8 +74,7 @@ export function connectionUi(c: Connection): { tone: Tone; label: string; icon: 
   }
 }
 
-/** Battery presentation from a charge reading — icon, tone class, texts. Null
- *  when no reading is available, so callers just hide the block. */
+/** Null when no reading is available, so callers just hide the block. */
 export function batteryUi(
   b: BatteryState | null,
 ): { icon: IconName; cls: string; label: string; title: string } | null {
@@ -113,7 +109,6 @@ export function batteryUi(
   };
 }
 
-/** How a model's body is drawn in the preview — a tablet is not a big phone. */
 export interface DeviceScreen {
   form: 'phone' | 'tablet';
   /** Screen aspect in portrait (width / height); the frame's proportions. */
@@ -322,7 +317,6 @@ const IPAD_MINI_MODELS: Record<string, string> = {
   'iPad16,2': 'iPad mini (A17 Pro)',
 };
 
-/** One lookup over every table above: name for the label, screen for the frame. */
 const MODELS = new Map<string, { name: string; screen: DeviceScreen }>(
   (
     [
@@ -337,8 +331,7 @@ const MODELS = new Map<string, { name: string; screen: DeviceScreen }>(
   ),
 );
 
-/** Human-readable model for a lockdown ProductType ("iPhone16,2" → "iPhone 15
- *  Pro Max"); unknown or non-Apple identifiers pass through unchanged. */
+/** Unknown or non-Apple identifiers pass through unchanged. */
 export function modelDisplayName(productType?: string): string | undefined {
   return productType ? (MODELS.get(productType)?.name ?? productType) : undefined;
 }

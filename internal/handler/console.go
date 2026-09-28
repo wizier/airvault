@@ -11,14 +11,11 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// [GET] /api/devices/:udid/console
 func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	udid := c.Param("udid")
 	stream := startStream(c, "text/event-stream")
 
-	// The device can go quiet for long stretches, so pings keep the stream
-	// alive. Writes come from two goroutines (records + pings), so they
-	// serialize on a mutex.
+	// Records and pings write from two goroutines, so writes serialize.
 	var wmu sync.Mutex
 	write := func(payload string) error {
 		wmu.Lock()

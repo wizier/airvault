@@ -12,7 +12,6 @@ type listDevicesResponse struct {
 	Devices []service.DeviceOverview `json:"devices"`
 }
 
-// [GET] /api/devices
 func (h *Handler) listDevices(c *echo.Context) error {
 	overviews, err := h.svc.DeviceList(c.Request().Context())
 	if err != nil {
@@ -21,7 +20,6 @@ func (h *Handler) listDevices(c *echo.Context) error {
 	return c.JSON(http.StatusOK, listDevicesResponse{Devices: overviews})
 }
 
-// [GET] /api/devices/:udid/battery
 func (h *Handler) getDeviceBattery(c *echo.Context) error {
 	battery, err := h.svc.LiveBattery(c.Request().Context(), c.Param("udid"))
 	if err != nil {
@@ -30,7 +28,6 @@ func (h *Handler) getDeviceBattery(c *echo.Context) error {
 	return c.JSON(http.StatusOK, battery)
 }
 
-// [GET] /api/devices/:udid/wallpaper?screen=home|lock
 func (h *Handler) getWallpaper(c *echo.Context) error {
 	png, err := h.svc.Wallpaper(
 		c.Request().Context(), c.Param("udid"), c.QueryParam("screen") == "lock",

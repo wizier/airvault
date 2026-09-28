@@ -9,9 +9,8 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// ChangeBackupPassword sets, changes or removes iOS "Encrypt local backup".
-// It is serialized with discovery so a stale metadata pass cannot overwrite
-// the explicit outcome committed here.
+// Serialized with discovery so a stale metadata pass cannot overwrite the
+// outcome committed here.
 func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new string) error {
 	if old == "" && new == "" {
 		return &domain.ValidationError{Code: "backup_password_change_empty", Message: "provide the old and/or new password"}
@@ -41,7 +40,7 @@ func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new strin
 		}
 		if engineErr != nil {
 			slog.DebugContext(ctx, "backup password change rejected", "udid", udid, "error", engineErr)
-			return newEngineActionError("backup_password_change_failed", engineErr)
+			return newTransferActionError("backup_password_change_failed", engineErr)
 		}
 		return nil
 	}, deviceWriteResource(udid))

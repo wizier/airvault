@@ -1,8 +1,6 @@
 <script lang="ts">
-  // One AFC file manager for every source: app Documents (house_arrest) and the
-  // device media partition (com.apple.afc). The `source` decides capabilities —
-  // its optional remove lights up delete. Call sites mount a fresh instance per
-  // open (inside {#if}), so per-open state resets by remount.
+  // The `source` decides capabilities: its optional remove lights up delete. Call
+  // sites mount a fresh instance per open, so per-open state resets by remount.
   import { onMount } from 'svelte';
   import { errMsg } from '../api/client';
   import { downloadFile, type AFCEntry, type FileSource } from '../api/files';
@@ -38,8 +36,6 @@
   let confirmDelete = $state<string | null>(null);
   let deleting = $state<string | null>(null);
 
-  // Inline preview (one file at a time). Images — including HEIC via a
-  // server-side transcode — render inline; other types offer Save only.
   let preview = $state<AFCEntry | null>(null);
 
   // The file whose download is being prepared (its stat is in flight).

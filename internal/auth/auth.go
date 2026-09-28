@@ -1,4 +1,3 @@
-// Package auth owns the daemon's HTTP access credential.
 package auth
 
 import (
@@ -19,7 +18,6 @@ const (
 	Username      = "airvault"
 	tokenFileName = "auth-token"
 
-	// SessionCookie carries the signed proof-of-auth minted after a token login.
 	SessionCookie = "airvault_session"
 	sessionTTL    = 30 * 24 * time.Hour
 )
@@ -28,9 +26,8 @@ type Credentials struct {
 	token string
 }
 
-// Load uses the configured (already trimmed) token or persists a generated one
-// on first start. show is the token to surface in the log — empty only when it
-// came from env.
+// The second result is the token to surface in the log; it is empty only when
+// the token came from env.
 func Load(configDir, configured string) (*Credentials, string, error) {
 	if configured != "" {
 		if err := validateToken(configured); err != nil {
@@ -115,7 +112,6 @@ func secureEqual(left, right string) bool {
 	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
-// IssueSession mints a signed, self-verifying cookie value valid for sessionTTL.
 func (c *Credentials) IssueSession() (value string, expires time.Time) {
 	return c.issueSessionAt(time.Now())
 }
@@ -126,7 +122,6 @@ func (c *Credentials) issueSessionAt(now time.Time) (string, time.Time) {
 	return payload + "." + base64.RawURLEncoding.EncodeToString(c.sign(payload)), exp
 }
 
-// ValidSession reports whether value is an unexpired session this daemon signed.
 func (c *Credentials) ValidSession(value string) bool {
 	return c.validSessionAt(value, time.Now())
 }

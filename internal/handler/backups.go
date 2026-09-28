@@ -13,7 +13,6 @@ type restorePointsResponse struct {
 	RestorePoints []service.RestorePoint `json:"restorePoints"`
 }
 
-// [POST] /api/devices/:udid/backup
 func (h *Handler) startBackup(c *echo.Context) error {
 	runID, err := h.svc.StartBackup(c.Request().Context(), c.Param("udid"))
 	if err != nil {
@@ -22,7 +21,6 @@ func (h *Handler) startBackup(c *echo.Context) error {
 	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
 }
 
-// [GET] /api/devices/:udid/backups
 func (h *Handler) listBackups(c *echo.Context) error {
 	points, err := h.svc.RestorePoints(c.Request().Context(), c.Param("udid"))
 	if err != nil {
@@ -31,9 +29,8 @@ func (h *Handler) listBackups(c *echo.Context) error {
 	return c.JSON(http.StatusOK, restorePointsResponse{RestorePoints: points})
 }
 
-// [DELETE] /api/devices/:udid/backups?id=… — repeatable id selects specific
-// restore points; wiping the whole source requires an explicit all=true. An
-// empty selector is an error, so a dropped query can never widen a deletion.
+// Wiping the whole source requires an explicit all=true. An empty selector is
+// an error, so a dropped query can never widen a deletion.
 func (h *Handler) deleteBackups(c *echo.Context) error {
 	ids := c.QueryParams()["id"]
 	var err error
@@ -52,9 +49,7 @@ func (h *Handler) deleteBackups(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// [GET|HEAD] /api/backups/:snapshotId/download
-// Serves a restore point as a Finder-format backup (tar) read straight from the
-// object store; Range resumes a cut download, HEAD lets the UI check it first.
+// HEAD lets the UI check the download first; Range resumes a cut one.
 func (h *Handler) downloadBackup(c *echo.Context) error {
 	export, err := h.svc.OpenBackupExport(c.Request().Context(), c.Param("snapshotId"))
 	if err != nil {
@@ -63,7 +58,6 @@ func (h *Handler) downloadBackup(c *echo.Context) error {
 	return serveDownload(c, export, export.Name)
 }
 
-// [GET] /api/devices/:udid/backups/reclaimable?id=… (repeatable)
 func (h *Handler) snapshotsReclaimable(c *echo.Context) error {
 	bytes, err := h.svc.SnapshotsReclaimable(c.Request().Context(), c.Param("udid"), c.QueryParams()["id"])
 	if err != nil {

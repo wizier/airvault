@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Failed attempts are runtime events; this list contains only completed
-  // restore points that still exist. One dialog serves single and multi
-  // deletion; the freed-space estimate covers the whole selection.
+  // Failed attempts are runtime events; this list holds only completed restore
+  // points that still exist.
   import { untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { downloadBackup, snapshotsReclaimable, type RestorePoint } from '../api/backups';
@@ -46,7 +45,6 @@
   let downloading = $state<string | null>(null);
   let downloadError = $state<string | null>(null);
 
-  // Newest first, PAGE_SIZE per page.
   const PAGE_SIZE = 10;
   let page = $state(1);
   const pageCount = $derived(Math.max(1, Math.ceil(restorePoints.length / PAGE_SIZE)));

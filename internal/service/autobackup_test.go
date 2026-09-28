@@ -85,8 +85,7 @@ func TestClockWindow(t *testing.T) {
 	}
 }
 
-// A finished backup updates the trigger's history as hideRun retires it: only
-// automatic attempts count toward the limit, an unanswered manual prompt
+// Only automatic attempts count toward the limit, an unanswered manual prompt
 // pauses the trigger too, other manual failures leave it alone, and a success
 // clears everything.
 func TestRecordAutoBackup(t *testing.T) {

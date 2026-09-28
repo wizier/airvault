@@ -1,6 +1,5 @@
-// Reactive "now" for relative timestamps: one shared, ref-counted interval
-// (readable's start runs at the first subscriber, cleanup at the last). A tick
-// re-renders every $now label at once; a tab regaining focus catches up.
+// One shared, ref-counted interval: readable's start runs at the first
+// subscriber, cleanup at the last. A tab regaining focus catches up at once.
 
 import { readable } from 'svelte/store';
 

@@ -1,7 +1,4 @@
 <script lang="ts">
-  // Hardware & storage card: a live snapshot read from the phone — storage
-  // fill (with photo/media breakdown), battery detail, and device identity.
-  // Loads automatically once the device is reachable; Refresh re-reads.
   import { errMsg } from '../api/client';
   import { hardwareResources } from '../stores.svelte';
   import { formatBytes } from '../format';
@@ -64,8 +61,8 @@
 
   const sims = $derived(hw?.sims ?? []);
 
-  // Sensitive identifiers are masked until the user reveals them (still their
-  // own LAN, but shoulder-surfing / screenshots shouldn't leak IMEI/number).
+  // Masked until revealed so shoulder-surfing or screenshots don't leak the
+  // IMEI or phone number.
   let revealed = $state(false);
 </script>
 

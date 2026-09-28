@@ -7,13 +7,11 @@ import (
 	"github.com/wizier/airvault/internal/domain"
 )
 
-// DeviceDownload owns an open phone file and every lease held by its stream.
 type DeviceDownload struct {
 	*devicefs.File
 	cleanup func()
 }
 
-// Close closes the phone file and releases its lease; safe to call repeatedly.
 func (d *DeviceDownload) Close() {
 	d.cleanup()
 }
@@ -27,7 +25,7 @@ func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devi
 	if err != nil {
 		return nil, err
 	}
-	// OpenFile hands the native session over to the file, so release only frees
+	// OpenFile hands the AFC session over to the file, so release only frees
 	// the lease once the download closes.
 	file, err := session.OpenFile(devicePath)
 	if err != nil {
@@ -57,8 +55,6 @@ type DeviceFileStat struct {
 	Modified *int64 `json:"modified,omitempty"`
 }
 
-// deviceFileStat returns one file's size and modified time (a single device
-// stat): a photo's details, or the check before a download starts.
 func (s *Service) deviceFileStat(ctx context.Context, udid string, root devicefs.Root, rawPath string) (DeviceFileStat, error) {
 	devicePath, err := parseRequiredPath(rawPath)
 	if err != nil {

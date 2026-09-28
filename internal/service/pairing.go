@@ -21,9 +21,8 @@ func actionErrorCode(err error, fallback string) string {
 	return fallback
 }
 
-// ListPairableUSB lists USB devices that are candidates for pairing: already-paired
-// ones are filtered out (the wizard only offers new phones), but a registered
-// device whose pairing broke still shows so it can be re-paired.
+// Already-paired phones are filtered out, but a registered device whose pairing
+// broke still shows so it can be re-paired.
 func (s *Service) ListPairableUSB(ctx context.Context) ([]USBDevice, error) {
 	all, err := s.engine.ListUSBDevices(ctx)
 	if err != nil {
@@ -45,9 +44,9 @@ func (s *Service) ListPairableUSB(ctx context.Context) ([]USBDevice, error) {
 	return out, nil
 }
 
-// pairTrustOnce runs one pairing attempt. Success is not published until a
-// fresh lockdown discovery has validated the saved record and committed the
-// paired device row, so every event-triggered refetch observes the new state.
+// Success is published only after a fresh lockdown discovery has validated the
+// saved record and committed the paired row, so every event-triggered refetch
+// observes the new state.
 func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.PairingOutcome, error) {
 	res, err := s.engine.AdvancePairing(ctx, engine.DeviceID(udid))
 	if err != nil {
@@ -73,9 +72,8 @@ func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.Pairin
 	return res, nil
 }
 
-// StartTrustFlow reserves the device before returning 202, then supervises one
-// runtime pairing run: contention is refused at admission, not discovered later.
-// Admission runs on the request's ctx, the pairing run as long as the app.
+// Contention is refused at admission, not discovered later. Admission runs on
+// the request's ctx; the pairing run lives as long as the app.
 func (s *Service) StartTrustFlow(ctx context.Context, udid string) (string, error) {
 	if domain.ValidateSource(udid) != nil {
 		return "", &domain.ValidationError{Code: "invalid_udid", Message: "a valid udid is required"}

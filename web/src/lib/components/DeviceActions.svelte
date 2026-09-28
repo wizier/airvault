@@ -1,7 +1,4 @@
 <script lang="ts">
-  // Device management menu (kebab) + confirmation modals. Two destructive
-  // actions by design: Unpair (THE "remove device") and Delete backups (the
-  // device stays registered).
   import type { Device } from '../api/devices';
   import { deleteAllBackups, unpair } from '../stores.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';

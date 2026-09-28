@@ -566,10 +566,9 @@ func TestCorruptManifestIsDroppedAtAdmissionOrByScrub(t *testing.T) {
 	requireCleanupPathAbsent(t, admittedPath)
 }
 
-// Recovery reclaims its source through the same corrupt-tolerant pass as
-// startup: a bit-rotted sibling manifest is dropped instead of deferring the
-// collection, and the usage cache is refreshed. The runtime facts it records
-// survive a later catalog reconcile of the unchanged snapshot.
+// Recovery collects through the same corrupt-tolerant pass as startup: a
+// bit-rotted sibling is dropped instead of deferring collection. The runtime
+// facts it records survive a later reconcile of the unchanged snapshot.
 func TestPublishedRecoveryDropsCorruptSiblingAndKeepsRuntimeFacts(t *testing.T) {
 	svc, root := newSnapshotCleanupService(t)
 	const source = "testphoneudid0007"

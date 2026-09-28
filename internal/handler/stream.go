@@ -16,13 +16,11 @@ const (
 	streamPingInterval = 25 * time.Second
 )
 
-// responseStream is an unbuffered streaming response (SSE or NDJSON).
 type responseStream struct {
 	controller *http.ResponseController
 	writer     io.Writer
 }
 
-// startStream sets the headers of an unbuffered streaming response.
 func startStream(c *echo.Context, contentType string) *responseStream {
 	res := c.Response()
 	res.Header().Set(echo.HeaderContentType, contentType)
@@ -31,7 +29,6 @@ func startStream(c *echo.Context, contentType string) *responseStream {
 	return &responseStream{controller: http.NewResponseController(res), writer: res}
 }
 
-// write sends and flushes one frame within streamWriteTimeout.
 func (s *responseStream) write(frame string) (err error) {
 	if err := s.controller.SetWriteDeadline(time.Now().Add(streamWriteTimeout)); err != nil {
 		return err

@@ -1,7 +1,4 @@
 <script lang="ts">
-  // Automatic-backup settings. iOS asks for the passcode before every backup,
-  // so the server starts one shortly after an unlock at home; this modal only
-  // chooses whether, how often and, optionally, when.
   import { untrack } from 'svelte';
   import { errorCode, isAbortError } from '../api/client';
   import { AUTO_BACKUP_PRESETS, setAutoBackup, type AutoBackupDays, type AutoBackupState } from '../api/devices';

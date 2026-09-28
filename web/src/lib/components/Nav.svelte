@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Header: brand, ONE health indicator (the device bridge), and theme. SSE
-  // transport health is deliberately not shown — it reconnects on its own, and
-  // a dead backend already raises the App banner.
+  // SSE health is deliberately not shown: it reconnects on its own, and a dead
+  // backend already raises the App banner.
   import { link, push } from 'svelte-spa-router';
   import Logo from './Logo.svelte';
   import Icon from './Icon.svelte';

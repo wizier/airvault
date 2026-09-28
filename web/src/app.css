@@ -1,8 +1,7 @@
 @import "tailwindcss";
 @plugin "daisyui";
 
-/* AirVault light theme (default) — warm paper neutrals, landing orange as brand.
-   Palette shared with site/: accent #f45f3a family, green/amber/danger statuses. */
+/* Palette shared with site/: accent #f45f3a family, green/amber/danger statuses. */
 @plugin "daisyui/theme" {
   name: "airvault";
   default: true;
@@ -40,8 +39,8 @@
   --noise: 0;
 }
 
-/* AirVault dark theme — the landing palette, surfaces lifted a notch for an
-   app UI (the landing's near-black reads too dark in a working dashboard). */
+/* Surfaces lifted a notch: the landing's near-black reads too dark in a working
+   dashboard. */
 @plugin "daisyui/theme" {
   name: "airvaultdark";
   default: false;
@@ -86,12 +85,12 @@
     "Liberation Mono", monospace;
 }
 
-/* Device preview frame (see DeviceFrame.svelte). One height for every device so
-   tiles line up; the model's aspect gives the width, and everything else is a
-   fraction of it. Phone numbers are daisyUI's mockup-phone, which this replaces. */
+/* One height for every device so tiles line up; the model's aspect gives the
+   width, and everything else is a fraction of it. Phone proportions follow
+   daisyUI's mockup-phone. */
 @layer utilities {
   .device-frame {
-    --frame-height: 10.6rem; /* a 5rem-wide phone — the long-standing preview size */
+    --frame-height: 10.6rem; /* a 5rem-wide phone */
     --frame-ratio: 0.472; /* portrait screen aspect; every model overrides it */
     --frame-width: calc(var(--frame-height) * var(--frame-ratio));
     --frame-rim: calc(var(--frame-width) * 0.011);

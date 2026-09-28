@@ -8,12 +8,10 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// BackupRepo is the catalog of immutable backup snapshots plus the per-source
-// footprint cache in backup_sources: a row is that source's reachable bytes, no
-// row means the size is unknown until a collection measures it.
+// backup_sources caches each source's reachable bytes; no row means the size is
+// unknown until a collection measures it.
 type BackupRepo struct{ s *Store }
 
-// InsertSnapshot admits a manifest-derived projection after it was published.
 func (r *BackupRepo) InsertSnapshot(ctx context.Context, backup model.Backup) error {
 	_, err := sqlx.NamedExecContext(ctx, r.s.ext(), `
 		INSERT INTO backups
@@ -26,28 +24,23 @@ func (r *BackupRepo) InsertSnapshot(ctx context.Context, backup model.Backup) er
 	return wrap(err, "insert backup snapshot")
 }
 
-// DeleteSnapshot removes one restore point. A mismatched source deletes nothing.
 func (r *BackupRepo) DeleteSnapshot(ctx context.Context, source, id string) error {
 	_, err := r.s.ext().ExecContext(ctx,
 		`DELETE FROM backups WHERE id = ? AND source_udid = ?`, id, source)
 	return wrap(err, "delete backup snapshot")
 }
 
-// DeleteSourceSnapshots removes every restore point of one source.
 func (r *BackupRepo) DeleteSourceSnapshots(ctx context.Context, source string) error {
 	_, err := r.s.ext().ExecContext(ctx,
 		`DELETE FROM backups WHERE source_udid = ?`, source)
 	return wrap(err, "delete source snapshots")
 }
 
-// Get returns one backup by UUID, or domain.ErrNotFound.
 func (r *BackupRepo) Get(ctx context.Context, id string) (*model.Backup, error) {
 	return getOne[model.Backup](ctx, r.s.ext(),
 		`SELECT * FROM backups WHERE id = ?`, id)
 }
 
-// SourceHasSnapshots reports whether the catalog already holds a restore point
-// for the source.
 func (r *BackupRepo) SourceHasSnapshots(ctx context.Context, source string) (bool, error) {
 	var exists bool
 	if err := sqlx.GetContext(ctx, r.s.ext(), &exists,
@@ -57,8 +50,6 @@ func (r *BackupRepo) SourceHasSnapshots(ctx context.Context, source string) (boo
 	return exists, nil
 }
 
-// LatestCreated returns when the source's newest restore point was created;
-// nil when it has none.
 func (r *BackupRepo) LatestCreated(ctx context.Context, source string) (*int64, error) {
 	var latest *int64
 	if err := sqlx.GetContext(ctx, r.s.ext(), &latest,
@@ -68,7 +59,6 @@ func (r *BackupRepo) LatestCreated(ctx context.Context, source string) (*int64, 
 	return latest, nil
 }
 
-// SnapshotSources maps every catalogued snapshot id to its owning source.
 func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, error) {
 	rows, err := listOf[struct {
 		ID     string `db:"id"`
@@ -84,7 +74,6 @@ func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, er
 	return index, nil
 }
 
-// ListCompleteBySource returns every complete backup newest first.
 func (r *BackupRepo) ListCompleteBySource(ctx context.Context, source string) ([]model.Backup, error) {
 	return listOf[model.Backup](ctx, r.s.ext(), `
 		SELECT * FROM backups
@@ -92,12 +81,10 @@ func (r *BackupRepo) ListCompleteBySource(ctx context.Context, source string) ([
 		ORDER BY created_at DESC, id DESC`, source)
 }
 
-// listCompleteLimit bounds the global restore-source projection.
 const listCompleteLimit = 1000
 
-// ListComplete returns the newest complete backups across every source.
-// It intentionally does not join devices, so snapshots from forgotten phones
-// remain selectable as restore sources.
+// No join on devices, so snapshots from forgotten phones remain selectable as
+// restore sources.
 func (r *BackupRepo) ListComplete(ctx context.Context) ([]model.Backup, error) {
 	return listOf[model.Backup](ctx, r.s.ext(), `
 		SELECT * FROM backups
@@ -105,9 +92,8 @@ func (r *BackupRepo) ListComplete(ctx context.Context) ([]model.Backup, error) {
 		LIMIT ?`, listCompleteLimit)
 }
 
-// SourceSummary aggregates the persisted facts the device list needs. Backups
-// hold hundreds of thousands of files, so a request never walks manifests and
-// objects — that accounting belongs to the mutation and reconciliation paths.
+// Backups hold hundreds of thousands of files, so a request never walks
+// manifests; that accounting belongs to the mutation and reconciliation paths.
 type SourceSummary struct {
 	SourceUDID    string `db:"source_udid"`
 	RestorePoints int    `db:"restore_points"`
@@ -120,8 +106,7 @@ type SourceSummary struct {
 	IOSVersion  string `db:"ios_version"`
 }
 
-// SummaryBySource returns one row per source. Nil DiskBytes means the size is
-// unknown, never a fabricated zero.
+// Nil DiskBytes means the size is unknown, never a fabricated zero.
 func (r *BackupRepo) SummaryBySource(ctx context.Context) (map[string]SourceSummary, error) {
 	rows, err := listOf[SourceSummary](ctx, r.s.ext(), `
 		SELECT summary.source_udid, summary.restore_points,
@@ -148,7 +133,6 @@ func (r *BackupRepo) SummaryBySource(ctx context.Context) (map[string]SourceSumm
 	return out, nil
 }
 
-// SetSourceFootprint records a measured footprint, whatever the cache held.
 func (r *BackupRepo) SetSourceFootprint(ctx context.Context, source string, diskBytes int64) error {
 	_, err := r.s.ext().ExecContext(ctx, `
 		INSERT INTO backup_sources (source_udid, disk_bytes) VALUES (?, ?)
@@ -157,9 +141,8 @@ func (r *BackupRepo) SetSourceFootprint(ctx context.Context, source string, disk
 	return wrap(err, "set source footprint")
 }
 
-// AddSourceFootprint shifts a known footprint by a publication's delta. A delta
-// means nothing without a measured base, so an unknown size stays unknown here
-// instead of being seeded from one.
+// A delta means nothing without a measured base, so an unknown size stays
+// unknown instead of being seeded from one.
 func (r *BackupRepo) AddSourceFootprint(ctx context.Context, source string, delta int64) error {
 	_, err := r.s.ext().ExecContext(ctx, `
 		UPDATE backup_sources SET disk_bytes = disk_bytes + ?
@@ -167,16 +150,15 @@ func (r *BackupRepo) AddSourceFootprint(ctx context.Context, source string, delt
 	return wrap(err, "add source footprint")
 }
 
-// ForgetSourceFootprint drops the cached size, for a change whose effect on disk
-// the caller cannot price. The next collection measures it.
+// For a change whose effect on disk the caller cannot price; the next
+// collection measures it.
 func (r *BackupRepo) ForgetSourceFootprint(ctx context.Context, source string) error {
 	_, err := r.s.ext().ExecContext(ctx,
 		`DELETE FROM backup_sources WHERE source_udid = ?`, source)
 	return wrap(err, "forget source footprint")
 }
 
-// DropUnreferencedFootprints removes cache rows for sources with no restore
-// points left, so no size outlives the snapshots it was measured from.
+// No size may outlive the snapshots it was measured from.
 func (r *BackupRepo) DropUnreferencedFootprints(ctx context.Context) error {
 	_, err := r.s.ext().ExecContext(ctx, `
 		DELETE FROM backup_sources

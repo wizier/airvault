@@ -10,7 +10,6 @@ type powerRequest struct {
 	Action string `json:"action"`
 }
 
-// [POST] /api/devices/:udid/power
 func (h *Handler) controlPower(c *echo.Context) error {
 	var request powerRequest
 	if err := echo.BindBody(c, &request); err != nil {

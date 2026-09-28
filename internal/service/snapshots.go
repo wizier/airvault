@@ -8,8 +8,7 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
-// deleteBackupSource unpublishes every restore point of one device at once and
-// hands the lease to the background removal that reclaims the tree.
+// The lease passes to the background removal that reclaims the tree.
 func (s *Service) deleteBackupSource(ctx context.Context, release func(), source string) error {
 	finalCtx := context.WithoutCancel(ctx)
 	defer s.reclaimInBackground(finalCtx, release, source, func() error {
@@ -25,9 +24,6 @@ func (s *Service) deleteBackupSource(ctx context.Context, release func(), source
 	return nil
 }
 
-// requireSourceSnapshots confirms a non-empty selection whose every catalog
-// snapshot exists and belongs to udid; a foreign snapshot id surfaces as
-// ErrNotFound.
 func (s *Service) requireSourceSnapshots(ctx context.Context, udid string, snapshotIDs []string) error {
 	if len(snapshotIDs) == 0 {
 		return &domain.ValidationError{Code: "snapshot_required", Message: "select at least one restore point"}
@@ -44,9 +40,8 @@ func (s *Service) requireSourceSnapshots(ctx context.Context, udid string, snaps
 	return nil
 }
 
-// DeleteSnapshots removes restore points on user request. Manifests, catalog
-// rows and the footprint recount are synchronous; object collection runs in the
-// background and keeps every object a surviving manifest still points at.
+// Manifests, catalog rows and the footprint recount are synchronous; object
+// collection runs in the background.
 func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs []string) error {
 	release, err := s.acquireFor(ctx, "snapshot deletion", udid, snapshotWriteResource(udid))
 	if err != nil {
@@ -101,9 +96,7 @@ func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs 
 	return deleteErr
 }
 
-// SnapshotsReclaimable reports how much disk space deleting the restore points
-// together would free — objects no kept snapshot references. Distinct from
-// their summed sizes, which count shared, non-reclaimable data too.
+// Differs from the summed sizes, which also count shared, non-reclaimable data.
 func (s *Service) SnapshotsReclaimable(ctx context.Context, udid string, snapshotIDs []string) (int64, error) {
 	// Direct acquire: the estimate answers the user at once, so a refusal needs
 	// no operation event of its own.

@@ -12,7 +12,6 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// [POST] /api/devices/:udid/apps/install
 func (h *Handler) installApp(c *echo.Context) error {
 	udid := c.Param("udid")
 	form, err := c.Request().MultipartReader()

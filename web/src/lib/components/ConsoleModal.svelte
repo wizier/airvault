@@ -1,20 +1,18 @@
 <script lang="ts">
-  // Live device console: streams the phone's os_trace log over its own SSE
-  // endpoint while the modal is open. The level filter gates capture into the
-  // capped ring; the text filter shapes the view and shields matches from eviction.
+  // The level filter gates capture into the capped ring; the text filter shapes
+  // the view and shields matches from eviction.
   import { consoleUrl, type ConsoleLevel, type ConsoleLine } from '../api/console';
   import { errorText } from '../error-text';
   import Icon from './Icon.svelte';
 
   const MAX_LINES = 2000;
-  /** How often buffered records land in the reactive state — the os_trace
-   *  stream is a firehose (hundreds of records/sec); batching caps it at ≤5 renders/sec. */
+  /** The os_trace stream is a firehose (hundreds of records/sec); batching caps
+   *  it at ≤5 renders/sec. */
   const FLUSH_MS = 200;
 
   let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
 
-  /** A record with a stable identity, so the keyed {#each} only touches
-   *  appended/dropped rows instead of re-rendering the whole ring buffer. */
+  /** A stable identity, so the keyed {#each} only touches appended/dropped rows. */
   type Row = ConsoleLine & { seq: number };
 
   let lines = $state<Row[]>([]);
@@ -30,7 +28,6 @@
   /** Bumped by Reconnect: reopens the stream, deliberately keeping the
    *  buffered rows — what happened right before a drop is worth reading. */
   let streamNonce = $state(0);
-  /** Whether the view sits at (near) the tail. */
   let atBottom = $state(true);
 
   /** Monotonic row id — component-scoped so rows retained across a reconnect

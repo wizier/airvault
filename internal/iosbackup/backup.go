@@ -1,5 +1,3 @@
-// Package iosbackup reads the iOS backup format stored in an object-store
-// snapshot: the plists that describe a backup and the keybag behind its password.
 package iosbackup
 
 import (
@@ -23,7 +21,6 @@ type backupStatus struct {
 	SnapshotState string `plist:"SnapshotState"`
 }
 
-// Info is the manifest-derived metadata cached in SQLite for a snapshot.
 type Info struct {
 	Encrypted   bool
 	IOSVersion  string
@@ -31,8 +28,7 @@ type Info struct {
 	ProductType string
 }
 
-// Inspect validates the minimum iOS backup structure required for a restore
-// and returns only metadata that is actually cached in SQLite.
+// Inspect checks only the minimum structure a restore needs.
 func Inspect(view *objectstore.View) (Info, error) {
 	var manifest backupManifest
 	if err := readPlist(view, "Manifest.plist", &manifest); err != nil {
@@ -82,8 +78,8 @@ func readPlist(view *objectstore.View, logicalPath string, value any) error {
 		return err
 	}
 	defer file.Close()
-	// OOM guard only — Info.plist grows with the app census and can pass
-	// 64 MiB on large libraries, so the ceiling stays far above the real world.
+	// OOM guard only: Info.plist grows with the app census and can pass 64 MiB
+	// on large libraries.
 	const maxBackupPlistBytes = 256 << 20
 	data, err := io.ReadAll(io.LimitReader(file, maxBackupPlistBytes+1))
 	if err != nil {

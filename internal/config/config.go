@@ -1,6 +1,3 @@
-// Package config loads AirVault's runtime configuration from the environment.
-// Everything has a sane default so a bare run works; unRAID template fields and
-// compose env_file both flow in through these same variables.
 package config
 
 import (
@@ -11,25 +8,20 @@ import (
 	"strings"
 )
 
-// Config is the fully-resolved runtime configuration. Only genuinely GLOBAL
-// settings live here.
 type Config struct {
-	ListenAddr string // host:port for the HTTP server
-	LogLevel   string // debug | info | warn | error
+	ListenAddr string
+	LogLevel   string
 
 	BackupDir   string
 	ConfigDir   string
 	LockdownDir string
-	MuxAddress  string // loaded from USBMUXD_SOCKET_ADDRESS; immutable per engine
+	MuxAddress  string
 
 	DatabaseURL string
 
 	AuthToken string // optional fixed HTTP Basic password; generated when empty
 }
 
-// Load reads the environment and applies defaults. Paths default to a local
-// `data/` tree so a bare run works anywhere; containers override them via
-// AIRVAULT_*_DIR env — one code path, no dev/prod fork.
 func Load() *Config {
 	port := env("AIRVAULT_PORT", "8080")
 	host := env("AIRVAULT_BIND_HOST", "127.0.0.1")

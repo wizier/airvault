@@ -12,12 +12,10 @@ import (
 	"github.com/wizier/airvault/internal/model"
 )
 
-// How long a launched backup waits for the phone to appear in the muxer.
 const deviceAppearWindow = 2 * time.Minute
 
-// awaitReachable waits for a standby Wi-Fi phone's next muxer visibility
-// window, woken by the runtime store's presence-change signal rather than
-// polling. netmuxd remains the sole owner of heartbeat/liveness throughout.
+// Woken by presence-change signals rather than polling: netmuxd stays the sole
+// owner of heartbeat and liveness.
 func (s *Service) awaitReachable(ctx context.Context, udid string) bool {
 	reachable, changed := s.live.connectionWait(udid)
 	if reachable {
@@ -42,13 +40,11 @@ func (s *Service) awaitReachable(ctx context.Context, udid string) bool {
 	}
 }
 
-// StartBackup is the single launch API. HTTP returns the run id immediately;
-// admission runs on the request's ctx, the run itself as long as the app.
+// Admission runs on the request's ctx; the run itself lives as long as the app.
 func (s *Service) StartBackup(ctx context.Context, udid string) (string, error) {
 	return s.startBackup(ctx, udid, false)
 }
 
-// startBackup launches a backup; auto marks one the automatic trigger started.
 func (s *Service) startBackup(ctx context.Context, udid string, auto bool) (string, error) {
 	// Both leases key on the request's udid, so admission needs no lookup: the
 	// device row is read once, under the lease that protects it.
@@ -178,8 +174,6 @@ func incrementalStage(baseSnapshotID string) RunStage {
 	return StageCalculating
 }
 
-// discardCancelledSnapshot drops the staging a cancelled run left behind;
-// completeRun classifies the returned error.
 func (s *Service) discardCancelledSnapshot(ctx context.Context, snapshot *model.Backup, cause error) (runOutcome, error) {
 	if cause == nil {
 		cause = ctx.Err()

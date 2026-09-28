@@ -1,5 +1,3 @@
-// Command airvault is the AirVault daemon: it discovers paired iPhones, backs
-// them up over Wi-Fi to the NAS, and serves the web UI + JSON API.
 package main
 
 import (
@@ -55,11 +53,6 @@ func run() error {
 		return fmt.Errorf("AIRVAULT_LOG_LEVEL must be debug, info, warn, or error: %w", err)
 	}
 	airlog.Setup(level)
-	if !engine.InitLogging(cfg.LogLevel) {
-		slog.Warn("engine: Rust tracing bridge could not be installed")
-	}
-	// Paths are logged every start: the container resolves them, so support
-	// questions start from the log rather than from guessing the layout.
 	slog.Info("AirVault starting", "version", version.AppVersion, "listen", cfg.ListenAddr,
 		"log_level", cfg.LogLevel, "config", cfg.ConfigDir,
 		"backups", cfg.BackupDir, "lockdown", cfg.LockdownDir)
@@ -98,7 +91,6 @@ func run() error {
 			_ = db.Close()
 		}
 	}()
-	// A handful of connections is plenty for a single-file SQLite DB.
 	const dbMaxConns = 4
 	db.SetMaxOpenConns(dbMaxConns)
 	db.SetMaxIdleConns(dbMaxConns)
@@ -140,7 +132,7 @@ func run() error {
 	}
 
 	eng, err := engine.New(engine.Config{
-		BackupRoot:  cfg.BackupDir,
+		Objects:     objects,
 		PairingRoot: cfg.LockdownDir,
 		MuxAddress:  cfg.MuxAddress,
 	})
@@ -213,7 +205,7 @@ func run() error {
 // unblocks in-flight requests and shutdown doesn't burn GracefulTimeout.
 func configureHTTPServer(base context.Context, server *http.Server) {
 	// Clear Echo's 30s whole-request deadlines: IPA uploads, SSE and device
-	// operations legitimately take minutes. Body limits and native operation
+	// operations legitimately take minutes. Body limits and device operation
 	// deadlines bound them instead.
 	server.ReadTimeout = 0
 	server.WriteTimeout = 0

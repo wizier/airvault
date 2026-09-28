@@ -1,6 +1,5 @@
-// User-facing error catalogue. Transport and service layers exchange stable
-// codes only; keeping copy here makes another locale a catalogue swap instead
-// of a backend/API change.
+// Layers exchange stable codes only; keeping copy here makes another locale a
+// catalogue swap instead of an API change.
 const english = {
   unknown_error: 'Something went wrong',
   network_error: 'Cannot reach the AirVault backend',
@@ -52,6 +51,7 @@ const english = {
   activation_lock: 'Activation Lock is on — sign out of the linked Apple Account on this phone, then restore again',
   activation_failed: 'Could not activate the phone with Apple — check the server internet access and try again',
   device_timeout: 'The iPhone did not respond in time',
+  device_storage_full: 'The iPhone is out of storage; free up space on it and try again',
   device_connection_interrupted: 'The connection to the iPhone was interrupted; reconnect it and try again',
   device_action_failed: 'The device action failed',
   power_request_failed: 'The power request failed',

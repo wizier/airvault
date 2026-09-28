@@ -18,11 +18,9 @@ import (
 
 const tarBlockSize = 512
 
-// Tar is a snapshot packed as an uncompressed tar archive under one root
-// folder and read straight from the objects: nothing is staged on disk. Its
-// layout is fixed up front, so any byte range can be read — a cut download
-// resumes by Range. Tar implements ReadAt; the embedded SectionReader over it
-// supplies Read, Seek and Size.
+// Tar is read straight from the objects, nothing staged on disk. Its layout is
+// fixed up front, so any byte range can be read and a cut download resumes by
+// Range.
 type Tar struct {
 	*io.SectionReader
 	view  *View
@@ -33,11 +31,11 @@ type Tar struct {
 	offsets []int64
 
 	mu   sync.Mutex // Close may race a read when the client disconnects
-	file *tarFile   // the file whose content was read last
+	file *tarFile
 }
 
-// tarFile is one open object. Content read in order from its start is hashed,
-// so a damaged object fails the read instead of passing as a complete copy.
+// Content read in order from its start is hashed, so a damaged object fails the
+// read instead of passing as a complete copy.
 type tarFile struct {
 	index  int
 	file   *os.File
@@ -45,7 +43,6 @@ type tarFile struct {
 	hashed int64
 }
 
-// Tar lays out the archive of this snapshot with every entry under root.
 func (v *View) Tar(root string) (*Tar, error) {
 	t := &Tar{view: v, root: root,
 		paths: append([]string{""}, slices.Sorted(maps.Keys(v.manifest.Entries))...)}
@@ -66,10 +63,8 @@ func (v *View) Tar(root string) (*Tar, error) {
 	return t, nil
 }
 
-// ModTime is the snapshot's creation time; a snapshot never changes after it.
 func (t *Tar) ModTime() time.Time { return time.Unix(t.view.CreatedUnix(), 0) }
 
-// ReadAt fills buffer from the archive at off, entry by entry.
 func (t *Tar) ReadAt(buffer []byte, off int64) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -96,8 +91,6 @@ func (t *Tar) ReadAt(buffer []byte, off int64) (int, error) {
 	return read, nil
 }
 
-// readEntry reads from offset within entry index: its header, then its
-// content, then the zero padding up to the next block.
 func (t *Tar) readEntry(index int, offset int64, buffer []byte) (int, error) {
 	size := t.view.manifest.Entries[t.paths[index]].Size // 0 for the root and directories
 	headerLen := t.offsets[index+1] - t.offsets[index] - size - tarPadding(size)
@@ -142,8 +135,8 @@ func (t *Tar) readContent(index int, offset int64, buffer []byte) (int, error) {
 	return read, nil
 }
 
-// Close releases the open object; safe to call repeatedly and during a read.
-// The download's final Close follows its last Read, so nothing stays open.
+// Safe to call repeatedly and during a read. The download's final Close follows
+// its last Read, so nothing stays open.
 func (t *Tar) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -157,7 +150,7 @@ func (t *Tar) closeFile() {
 	}
 }
 
-// header describes one entry; "" is the root folder itself.
+// "" is the root folder itself.
 func (t *Tar) header(logicalPath string) *tar.Header {
 	header := &tar.Header{Typeflag: tar.TypeDir, Name: t.root + "/", Mode: 0o755, ModTime: t.ModTime()}
 	if logicalPath == "" {
@@ -173,7 +166,6 @@ func (t *Tar) header(logicalPath string) *tar.Header {
 	return header
 }
 
-// zeros fills up to remaining bytes of buffer with zeros: padding or trailer.
 func zeros(buffer []byte, remaining int64) int {
 	n := int(min(int64(len(buffer)), remaining))
 	clear(buffer[:n])

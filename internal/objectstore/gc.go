@@ -12,8 +12,6 @@ import (
 	"syscall"
 )
 
-// LiveSet is a source's reachable objects plus the byte totals accumulated while
-// reading the manifests that reach them.
 type LiveSet struct {
 	objects       map[string]int64
 	objectBytes   int64
@@ -66,7 +64,6 @@ func (s *Store) CollectLive(source string, live *LiveSet) error {
 	return nil
 }
 
-// sweepObjects unlinks the garbage, then the prefixes it emptied.
 func (s *Store) sweepObjects(paths []string) error {
 	if len(paths) == 0 {
 		return nil
@@ -87,8 +84,7 @@ func (s *Store) sweepObjects(paths []string) error {
 	return nil
 }
 
-// removeEmptySource drops the directories of a source with nothing left to
-// reach. Leftover content keeps the tree: nothing unrecognised is removed here.
+// Leftover content keeps the tree: nothing unrecognised is removed here.
 func (s *Store) removeEmptySource(source string) error {
 	sourceRoot, err := s.sourcePath(source)
 	if err != nil {
@@ -105,18 +101,14 @@ func (s *Store) removeEmptySource(source string) error {
 	return syncExistingDirectory(s.root)
 }
 
-// empty reports a source that reaches nothing: no valid manifest, no object.
 func (live *LiveSet) empty() bool {
 	return live.manifestBytes == 0 && len(live.objects) == 0
 }
 
-// Footprint is the reachable object payload plus the manifests that reach it.
-// Both totals are already accumulated, so this traverses nothing.
 func (live *LiveSet) Footprint() int64 {
 	return live.objectBytes + live.manifestBytes
 }
 
-// addChecked keeps the store's byte arithmetic from wrapping.
 func addChecked(total, size int64) (int64, error) {
 	if size > math.MaxInt64-total {
 		return 0, errors.New("object store byte total overflows int64")
@@ -124,7 +116,6 @@ func addChecked(total, size int64) (int64, error) {
 	return total + size, nil
 }
 
-// SnapshotManifestBytes is the on-disk size of one published manifest.
 func (s *Store) SnapshotManifestBytes(source, snapshotID string) (int64, error) {
 	if err := validateSnapshotIdentity(source, snapshotID); err != nil {
 		return 0, err
@@ -192,8 +183,6 @@ func removeDirIfEmpty(directory string) error {
 	return err
 }
 
-// ReclaimableBytes reports how many bytes deleting the given snapshots
-// together would free: objects they reference that no kept snapshot references.
 func (s *Store) ReclaimableBytes(ctx context.Context, source string, snapshotIDs []string) (int64, error) {
 	skip := make(map[string]struct{}, len(snapshotIDs))
 	targetObjects := &LiveSet{}
@@ -225,8 +214,8 @@ func (s *Store) ReclaimableBytes(ctx context.Context, source string, snapshotIDs
 	return total, nil
 }
 
-// LiveObjects collects every object a published manifest still references and
-// fails on a corrupt manifest. Snapshots in skip count as already deleted.
+// Unlike ScanLive, LiveObjects fails on a corrupt manifest. Snapshots in skip
+// count as already deleted.
 func (s *Store) LiveObjects(ctx context.Context, source string, skip map[string]struct{}) (*LiveSet, error) {
 	live, corrupt, err := s.ScanLive(ctx, source, skip)
 	if err != nil {
@@ -238,8 +227,7 @@ func (s *Store) LiveObjects(ctx context.Context, source string, skip map[string]
 	return live, nil
 }
 
-// ScanLive builds the live set from every manifest not in skip whose seal
-// verifies and returns the ids of provably corrupt ones instead of failing on
+// ScanLive returns the ids of provably corrupt manifests instead of failing on
 // them, so one bad manifest cannot hide the rest.
 func (s *Store) ScanLive(ctx context.Context, source string, skip map[string]struct{}) (*LiveSet, []string, error) {
 	manifests, err := s.listSnapshotManifests(source)

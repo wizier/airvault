@@ -1,5 +1,4 @@
 <script lang="ts">
-  // Backup-encryption password management (iOS "Encrypt local backup"):
   // enable = new password, change = old + new, disable = old only. The request
   // stays in the modal so device verdicts can be corrected and retried in place.
   import { errorCode, isAbortError } from '../api/client';

@@ -1,9 +1,7 @@
-// Package model holds the plain data structures persisted in SQLite. Times are
-// int64 unix seconds; nullable columns are *int64. These rows never define an
-// HTTP contract; the service maps them into application read models.
+// Package model holds SQLite rows. Times are unix seconds. Rows never define an
+// HTTP contract; the service maps them into read models.
 package model
 
-// Device is a known iPhone (row of the devices table, keyed by UDID).
 type Device struct {
 	UDID        string `db:"udid"`
 	Name        string `db:"name"`
@@ -15,8 +13,8 @@ type Device struct {
 	AutoBackup
 }
 
-// AutoBackup is a device's automatic-backup settings. The window is minutes
-// after local midnight in TimeZone and may cross midnight; nil means any time.
+// The window is minutes after local midnight in TimeZone and may cross
+// midnight; nil means any time.
 type AutoBackup struct {
 	Enabled     bool   `db:"auto_backup"`
 	Days        int    `db:"auto_backup_days"`
@@ -25,9 +23,8 @@ type AutoBackup struct {
 	TimeZone    string `db:"auto_backup_tz"`
 }
 
-// Backup is one independently restorable snapshot; SourceUDID survives device
-// deletion and CreatedAt is the authoritative creation time. StartedAt and
-// TransferredBytes are nil for rows rebuilt from the portable manifest.
+// SourceUDID survives device deletion; CreatedAt is the authoritative time.
+// StartedAt and TransferredBytes are nil for rows rebuilt from the manifest.
 type Backup struct {
 	ID               string `db:"id"`
 	SourceUDID       string `db:"source_udid"`

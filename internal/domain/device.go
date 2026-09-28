@@ -2,8 +2,8 @@ package domain
 
 import "fmt"
 
-// ValidateSource checks a device UDID wherever it is used — HTTP parameter,
-// object-store namespace, catalog key: 1..64 ASCII alphanumerics plus dashes.
+// A UDID is also an object-store namespace and catalog key, so it is checked
+// the same way wherever it enters.
 func ValidateSource(source string) error {
 	if len(source) == 0 || len(source) > 64 {
 		return fmt.Errorf("source must be 1..64 ASCII characters")

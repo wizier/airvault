@@ -2,29 +2,28 @@ package engine
 
 import "sync"
 
-// backupCallback is owned by one native call. The small mutex merges partial
-// native updates; application code runs later on the dispatcher's Go goroutine.
-type backupCallback struct {
+// transferProgress merges partial updates into the Progress the service
+// sees: a negative percent keeps the last one, and bytes never go back.
+type transferProgress struct {
 	mu   sync.Mutex
 	last Progress
 	sink *latestDispatcher[Progress]
 }
 
-func newBackupCallback(fn func(Progress)) *backupCallback {
-	return &backupCallback{sink: newLatestDispatcher("backup progress", fn)}
+func newTransferProgress(fn func(Progress)) *transferProgress {
+	return &transferProgress{sink: newLatestDispatcher("backup progress", fn)}
 }
 
-// Native frames carry the session's cumulative byte total (0 = not reported),
-// so the dispatcher may coalesce to the latest frame without losing bytes.
-func (c *backupCallback) submit(phase ProgressPhase, percent float64, bytes uint64) {
-	c.mu.Lock()
-	p := c.last
-	p.Phase = phase
+func (p *transferProgress) submit(phase ProgressPhase, percent float64, bytes uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.last.Phase = phase
 	if percent >= 0 {
-		p.Percent = int(percent)
+		p.last.Percent = int(percent)
 	}
-	p.BytesDone = max(p.BytesDone, int64(bytes))
-	c.last = p
-	c.sink.submit(p)
-	c.mu.Unlock()
+	p.last.BytesDone = max(p.last.BytesDone, int64(bytes))
+	p.sink.submit(p.last)
 }
+
+// close delivers the last update before returning.
+func (p *transferProgress) close() { p.sink.close() }

@@ -1,6 +1,4 @@
 <script lang="ts">
-  // One device tile in the home grid. The whole tile links into the device
-  // page — every action (backup, settings, management) lives there.
   import { link } from 'svelte-spa-router';
   import type { Device } from '../api/devices';
   import { now } from '../clock';

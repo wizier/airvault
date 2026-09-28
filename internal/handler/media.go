@@ -19,7 +19,6 @@ type deviceFilesResponse struct {
 	Entries []service.FileEntry `json:"entries"`
 }
 
-// [GET] /api/devices/:udid/media?path=
 func (h *Handler) listMedia(c *echo.Context) error {
 	entries, err := h.svc.MediaList(c.Request().Context(), c.Param("udid"), c.QueryParam("path"))
 	if err != nil {
@@ -28,8 +27,6 @@ func (h *Handler) listMedia(c *echo.Context) error {
 	return c.JSON(http.StatusOK, deviceFilesResponse{Entries: entries})
 }
 
-// [GET] /api/devices/:udid/media/download?path=
-// Serves one file from the device media partition to the browser as an attachment.
 func (h *Handler) downloadMedia(c *echo.Context) error {
 	devPath := c.QueryParam("path")
 	download, err := h.svc.OpenMediaDownload(c.Request().Context(), c.Param("udid"), devPath)
@@ -39,8 +36,6 @@ func (h *Handler) downloadMedia(c *echo.Context) error {
 	return serveDownload(c, download, path.Base(devPath))
 }
 
-// [GET] /api/devices/:udid/media/preview?path=
-// Renders a native image or a pure-Go HEIC conversion inline.
 func (h *Handler) previewMedia(c *echo.Context) error {
 	devPath := c.QueryParam("path")
 	download, err := h.svc.OpenMediaDownload(c.Request().Context(), c.Param("udid"), devPath)
@@ -50,7 +45,6 @@ func (h *Handler) previewMedia(c *echo.Context) error {
 	return streamImagePreview(c, download, path.Base(devPath))
 }
 
-// deviceDownload is one open device file; Close releases its phone transport.
 type deviceDownload interface {
 	io.ReadSeeker
 	Size() int64
@@ -58,9 +52,8 @@ type deviceDownload interface {
 	Close()
 }
 
-// serveDownload sends an open device file as an attachment and closes it. A
-// client disconnect closes it at once, which unblocks an in-flight phone read
-// and releases the lease.
+// A client disconnect closes the download at once, which unblocks an in-flight
+// phone read and releases the lease.
 func serveDownload(c *echo.Context, download deviceDownload, name string) error {
 	context.AfterFunc(c.Request().Context(), download.Close)
 	defer download.Close()
@@ -68,7 +61,6 @@ func serveDownload(c *echo.Context, download deviceDownload, name string) error 
 	return serveDeviceFile(c, download, name, "application/octet-stream", disposition)
 }
 
-// serveDeviceFile answers a whole-file or Range request, with Last-Modified.
 func serveDeviceFile(c *echo.Context, download deviceDownload, name, contentType, disposition string) error {
 	header := c.Response().Header()
 	header.Set(echo.HeaderContentType, contentType)
@@ -93,9 +85,6 @@ func (r *readFailure) Read(buffer []byte) (int, error) {
 	return read, err
 }
 
-// streamImagePreview renders an open device download inline and closes it, like
-// serveDownload: a browser-native image as-is, or a pure-Go HEIC→JPEG conversion.
-// Shared by the media and app-Documents file browsers.
 func streamImagePreview(c *echo.Context, download deviceDownload, name string) error {
 	context.AfterFunc(c.Request().Context(), download.Close)
 	defer download.Close()

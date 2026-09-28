@@ -1,5 +1,3 @@
-// Package service orchestrates device discovery and backups on top of the
-// engine and storage layers, and holds the live in-flight backup progress.
 package service
 
 import (
@@ -24,7 +22,6 @@ const (
 	runPhaseCancelling
 )
 
-// activeRun is the live projection of one reserved backup or restore.
 type activeRun struct {
 	run      *runReservation
 	phase    runPhase
@@ -43,7 +40,6 @@ type RunProgress struct {
 	Speed       int64    `json:"speed"`
 }
 
-// Service is the backup/device orchestrator.
 type Service struct {
 	app     context.Context
 	store   *storage.Store
@@ -56,19 +52,17 @@ type Service struct {
 	uploads string // staging directory for uploaded .ipa files
 
 	// wg tracks every supervised operation so shutdown does not close shared
-	// storage while native work is still returning.
+	// storage while device work is still returning.
 	wg sync.WaitGroup
 
 	// runMu protects backup/restore business state only. Mux presence and
 	// SpringBoard evidence live behind live's separate lock.
 	runMu sync.RWMutex
 	runs  map[string]*activeRun // by UDID — the in-flight backup/restore, if any
-	// lastRunError holds the error code of a device's most recent finished run,
-	// per kind; success or cancel clears that kind. Volatile like runs:
-	// attempts are not durable.
+	// The error code of each device's last finished run per kind; success or
+	// cancel clears it. Volatile like runs: attempts are not durable.
 	lastRunError map[runIdentity]string
-	// autoHistory holds each device's recent automatic-backup setbacks; like
-	// lastRunError it is written as a run ends (see recordAutoBackup).
+	// Written as a run ends, like lastRunError (see recordAutoBackup).
 	autoHistory map[string]autoHistory
 	live        *deviceRuntimeStore
 
@@ -85,12 +79,10 @@ type Service struct {
 	// side effects, so startup, Watch and lock-observer callbacks cannot reorder.
 	deviceTransitionMu sync.Mutex
 
-	// lockObs is set in New; its workers live on the app context.
 	lockObs *lockObserverMgr
 }
 
-// New builds a Service over resources the caller opened and closes. uploads is
-// an existing directory for staging uploaded .ipa files.
+// The caller opens and closes the resources; uploads must already exist.
 func New(app context.Context, store *storage.Store, eng *engine.Engine,
 	objects *objectstore.Store, uploads string, bus *events.Bus) *Service {
 	s := &Service{
@@ -114,16 +106,13 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine,
 	return s
 }
 
-// MuxerReady reports whether the device muxer is reachable.
 func (s *Service) MuxerReady(ctx context.Context) bool {
 	up, err := s.engine.ProbeMux(ctx)
 	return err == nil && up
 }
 
-// Ping reports storage reachability (for /healthz).
 func (s *Service) Ping(ctx context.Context) error { return s.store.Ping(ctx) }
 
-// Running returns snapshots of all in-flight backups.
 func (s *Service) Running() []RunProgress {
 	s.runMu.RLock()
 	defer s.runMu.RUnlock()
@@ -134,7 +123,6 @@ func (s *Service) Running() []RunProgress {
 	return out
 }
 
-// lastRunErrors returns the device's per-kind last failure codes; nil when clean.
 func (s *Service) lastRunErrors(udid string) map[string]string {
 	s.runMu.RLock()
 	defer s.runMu.RUnlock()
@@ -150,7 +138,6 @@ func (s *Service) lastRunErrors(udid string) map[string]string {
 	return out
 }
 
-// clearRunOutcomes forgets a device's recorded run outcomes.
 func (s *Service) clearRunOutcomes(udid string) {
 	s.runMu.Lock()
 	delete(s.lastRunError, runIdentity{udid, runKindBackup})
@@ -159,9 +146,8 @@ func (s *Service) clearRunOutcomes(udid string) {
 	s.runMu.Unlock()
 }
 
-// Wait blocks until supervised work finalizes (bounded by timeout) and reports
-// whether it is safe to close shared storage — a false result means native work
-// is still running, so the DB must not be explicitly closed.
+// Wait reports whether it is safe to close shared storage: false means device
+// work is still running, so the DB must not be explicitly closed.
 func (s *Service) Wait(timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
@@ -177,8 +163,7 @@ func (s *Service) Wait(timeout time.Duration) bool {
 	}
 }
 
-// CancelRun aborts the exact in-flight backup or restore. Runtime IDs are
-// unique, so a delayed browser action cannot cancel a newer run.
+// Run IDs are unique, so a delayed browser action cannot cancel a newer run.
 func (s *Service) CancelRun(runID string) error {
 	if runID == "" {
 		return domain.ErrNotFound

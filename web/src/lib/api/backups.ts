@@ -2,8 +2,7 @@ import { ApiError, apiUrl, devicePath, request } from './client';
 import { saveUrl } from './files';
 import type { AcceptedRun } from './runs';
 
-/** Phase of a run, as the server names it (see Go service.Stage*). Labels for
- *  these live in the UI layer; the wire never carries display text. */
+/** Server stage names (see Go service.Stage*); labels live in the UI layer. */
 export type RunStage =
   | 'waiting_for_device'
   | 'preparing'
@@ -20,7 +19,6 @@ export interface RunningProgress {
   udid: string;
   progress: number;
   stage: RunStage;
-  /** The run applies a snapshot onto the device instead of backing it up. */
   restore?: boolean;
   /** Started by the automatic-backup trigger, not from the UI. */
   auto?: boolean;
@@ -30,8 +28,7 @@ export interface RunningProgress {
   speed: number;
 }
 
-/** One stored backup snapshot; udid/deviceName only in the cross-device
- *  restore-sources list. */
+/** udid/deviceName only in the cross-device restore-sources list. */
 export interface RestorePoint {
   udid?: string;
   snapshotId: string;
@@ -46,7 +43,6 @@ export interface RestorePoint {
   deviceName?: string;
 }
 
-/** The cross-device list always names each point's source phone. */
 export type RestoreSource = RestorePoint & { udid: string };
 
 interface RestorePointsResponse {
@@ -84,8 +80,8 @@ export async function deleteSnapshots(udid: string, snapshotIds: string[]): Prom
   });
 }
 
-/** Bytes freed by deleting these snapshots together — smaller than their summed
- *  sizes, which count data shared with (and kept by) other restore points. */
+/** Smaller than the summed sizes, which count data other restore points share
+ *  and keep. */
 export async function snapshotsReclaimable(
   udid: string,
   snapshotIds: string[],
@@ -99,9 +95,8 @@ export async function snapshotsReclaimable(
   return response.reclaimableBytes;
 }
 
-/** Downloads the snapshot as a Finder-format backup (tar). A HEAD check first
- *  reports a vanished snapshot or an expired session in the UI; the browser then
- *  streams the archive to disk and can resume it if the connection drops. */
+/** A HEAD check first reports a vanished snapshot or an expired session in the
+ *  UI; the browser then streams the archive and can resume it. */
 export async function downloadBackup(snapshotId: string): Promise<void> {
   const path = `/backups/${encodeURIComponent(snapshotId)}/download`;
   try {

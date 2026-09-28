@@ -88,8 +88,6 @@ func openTestStaging(t *testing.T, store *Store, source, snapshotID string) *Sta
 	return staging
 }
 
-// Publication references pooled content-addressed objects, clears the staging
-// envelope and returns a view identical to the final manifest read back.
 func TestPublishCommitsStagedManifestOverSharedPool(t *testing.T) {
 	store, source := newTestStore(t)
 	entries := map[string]manifestEntry{

@@ -1,6 +1,6 @@
 <script module lang="ts">
-  // Extensions the server can render inline as an <img>; HEIC/HEIF go through a
-  // server-side transcode. Mirrors internal/handler/media_preview.go (nativeImageType + transcodeImageExt).
+  // Mirrors nativeImageType + transcodeImageExt in internal/handler/media_preview.go;
+  // HEIC/HEIF are transcoded server-side.
   const PREVIEW_IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif']);
 
   export function isPreviewableImage(name: string): boolean {
@@ -10,9 +10,8 @@
 </script>
 
 <script lang="ts">
-  // One inline full-size preview, shared by the file browser and the gallery
-  // lightbox. Mount one per image (the lightbox keys it by path), so an image
-  // never inherits another's load state.
+  // Mount one per image (the lightbox keys it by path), so an image never
+  // inherits another's load state.
   import type { Snippet } from 'svelte';
 
   let { src, alt, fallback }: { src: string; alt: string; fallback: Snippet } = $props();

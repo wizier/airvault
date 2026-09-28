@@ -14,8 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Store owns object manifests and immutable file objects below BackupDir,
-// and owns that root exclusively.
+// A Store owns its root exclusively; the lock file keeps other processes out.
 type Store struct {
 	root     string
 	lockFile *os.File
@@ -43,7 +42,6 @@ func New(root string) (*Store, error) {
 	return store, nil
 }
 
-// Close releases this process's exclusive ownership of the object-store root.
 func (s *Store) Close() error {
 	if s.lockFile == nil {
 		return nil
@@ -53,8 +51,7 @@ func (s *Store) Close() error {
 	return releaseStoreLock(file)
 }
 
-// sourcePath resolves a source's subtree, refusing an invalid name and any path
-// that reaches it through a symlink. Parts are the store's own literals or
+// Parts are not validated here: they are the store's own literals or
 // already-validated ids.
 func (s *Store) sourcePath(source string, parts ...string) (string, error) {
 	if err := domain.ValidateSource(source); err != nil {
@@ -120,8 +117,6 @@ func (s *Store) Publish(staging *StagingView) (*View, error) {
 	return published, nil
 }
 
-// RemoveSnapshot atomically removes one manifest from the live reachability
-// roots.
 func (s *Store) RemoveSnapshot(source, snapshotID string) error {
 	if err := validateSnapshotIdentity(source, snapshotID); err != nil {
 		return err
@@ -148,8 +143,7 @@ func (s *Store) RemoveSnapshot(source, snapshotID string) error {
 	return nil
 }
 
-// UnpublishSource drops every restore point of one source together with any
-// interrupted run's envelope. Nothing in the tree is reachable once it returns.
+// Nothing in the source's tree is reachable once UnpublishSource returns.
 func (s *Store) UnpublishSource(source string) error {
 	sourceRoot, err := s.sourcePath(source)
 	if err != nil {
@@ -163,8 +157,7 @@ func (s *Store) UnpublishSource(source string) error {
 	return syncExistingDirectory(sourceRoot)
 }
 
-// RemoveSourceTree removes a source's whole subtree, whatever shape its pool is
-// in. It reclaims what UnpublishSource left unreachable.
+// RemoveSourceTree reclaims what UnpublishSource left unreachable.
 func (s *Store) RemoveSourceTree(source string) error {
 	sourceRoot, err := s.sourcePath(source)
 	if err != nil {
@@ -197,8 +190,7 @@ func (s *Store) FinishPublication(published *View) error {
 	return nil
 }
 
-// DiscardStaging unconditionally drops one snapshot's mutable envelope — a
-// stranded one blocks every later collection for the source.
+// A stranded staging envelope blocks every later collection for the source.
 func (s *Store) DiscardStaging(source, snapshotID string) error {
 	if err := validateSnapshotID(snapshotID); err != nil {
 		return err
@@ -245,7 +237,6 @@ func (s *Store) ReconcileSourceStaging(source string) error {
 	return syncExistingDirectory(filepath.Dir(stagingRoot))
 }
 
-// ListSources returns every source (UDID) subtree present in the store, sorted.
 func (s *Store) ListSources() ([]string, error) {
 	entries, err := readDirIfExists(s.root)
 	if err != nil {
@@ -260,8 +251,6 @@ func (s *Store) ListSources() ([]string, error) {
 	return sources, nil
 }
 
-// readDirIfExists is os.ReadDir (sorted by name) reading a missing directory as
-// empty.
 func readDirIfExists(directory string) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(directory)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -275,10 +264,9 @@ type snapshotManifestFile struct {
 	size int64
 }
 
-// listSnapshotManifests is the single definition of what belongs in a source's
-// snapshots directory: catalog rebuild, object liveness and the footprint all
-// read it and must agree. Like every store listing it only sees names the store
-// writes; Finder, SMB or NAS droppings are skipped and never removed.
+// The single definition of a source's snapshots: catalog rebuild, object
+// liveness and the footprint must agree. Only names the store writes count;
+// Finder, SMB or NAS droppings are skipped and never removed.
 func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, error) {
 	dir, err := s.sourcePath(source, "snapshots")
 	if err != nil {
@@ -306,8 +294,6 @@ func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, er
 	return manifests, nil
 }
 
-// ListSnapshotIDs returns the ids of a source's published (complete)
-// manifests on disk. It underpins catalog rebuild and object liveness.
 func (s *Store) ListSnapshotIDs(source string) ([]string, error) {
 	manifests, err := s.listSnapshotManifests(source)
 	if err != nil {
@@ -320,8 +306,6 @@ func (s *Store) ListSnapshotIDs(source string) ([]string, error) {
 	return ids, nil
 }
 
-// resolveManifest resolves a stored manifest-relative path; the containment
-// check lives in rejectSymlinkTraversal.
 func (s *Store) resolveManifest(relative string) (string, error) {
 	target := filepath.Join(s.root, filepath.FromSlash(relative))
 	if err := rejectSymlinkTraversal(s.root, target); err != nil {

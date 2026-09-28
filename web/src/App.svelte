@@ -7,8 +7,6 @@
   import DeviceDetail from './routes/DeviceDetail.svelte';
   import Login from './routes/Login.svelte';
 
-  // Drill-in IA: the root is the device list; everything about one device
-  // lives on its page. Pairing and global settings are modals.
   const routes = {
     '/': Devices,
     '/login': Login,
@@ -22,7 +20,6 @@
   // Login owns the whole viewport — no Nav/SSE (which is what would 401 here).
   const onLogin = $derived(router.location === '/login');
 
-  // Build stamp for the footer, baked in by the SPA build (see Makefile).
   const appVersion = import.meta.env.VITE_APP_VERSION ?? 'dev';
 </script>
 

@@ -1,9 +1,7 @@
 <script lang="ts">
-  // The guided pairing wizard: 1 Connect (USB) → 2 Pair → 3 Done. Pairing
-  // ONLY — backups/encryption live on the device page. Trust also authorizes
-  // Wi-Fi sync (mandatory). A phone leaves usbDevices the moment it pairs;
-  // devicesStore then owns its state. Its host mounts it only while open, so the
-  // one-shot pair-state fetch and SSE reactions are scoped to the visible flow.
+  // A phone leaves usbDevices the moment it pairs; devicesStore then owns its
+  // state. The host mounts this only while open, so the pair-state fetch and SSE
+  // reactions are scoped to the visible flow.
   import { push } from 'svelte-spa-router';
   import { pairStateStore, devicesStore } from '../stores.svelte';
   import { onPairTrust } from '../events.svelte';
@@ -25,7 +23,6 @@
   $effect(() => pairStateStore.start());
   $effect(() => devicesStore.start());
 
-  // ---- live state -----------------------------------------------------------
   const ps = $derived(pairStateStore.data);
   const usbDevices = $derived(ps?.usbDevices ?? []);
   const muxerOffline = $derived(pairStateStore.ready && ps?.muxerReady === false);
@@ -58,7 +55,6 @@
     (devicesStore.data ?? []).filter((d) => d.connection === 'usb' && d.paired),
   );
 
-  // ---- Step 2: trust ----------------------------------------------------------
   // The trust flow runs SERVER-side: one POST starts it, and every status
   // transition arrives as a pair.trust SSE event (see events.svelte.ts).
   type TrustState =
@@ -86,7 +82,6 @@
     void startTrust(selectedUdid);
   }
 
-  // Map incoming pair.trust events for the selected device onto the UI state.
   $effect(() =>
     onPairTrust((event) => {
       if (step !== 2 || event.udid !== selectedUdid) return;
@@ -126,7 +121,6 @@
     }
   });
 
-  // ---- stepper metadata -------------------------------------------------------
   const stepMeta = [
     { n: 1, label: 'Connect' },
     { n: 2, label: 'Pair' },
@@ -179,7 +173,6 @@
           </div>
         </div>
       {:else}
-        <!-- ================= stepper ================= -->
         <ul class="steps w-full">
           {#each stepMeta as m (m.n)}
             <li class={`step ${m.n <= step ? 'step-primary' : ''}`} data-content={m.n < step ? '✓' : undefined}>
@@ -190,7 +183,6 @@
 
         <div class="min-h-52">
           {#if step === 1}
-            <!-- ============ Step 1: Connect ============ -->
             <div class="flex flex-col gap-4">
               <div>
                 <h4 class="text-lg font-semibold">Plug the iPhone into this server</h4>
@@ -255,7 +247,6 @@
             </div>
 
           {:else if step === 2}
-            <!-- ============ Step 2: Pair ============ -->
             <div class="flex flex-col gap-4">
               <div>
                 {#if wifiAuthorizationFailed}
@@ -322,7 +313,6 @@
             </div>
 
           {:else}
-            <!-- ============ Step 3: Done ============ -->
             <div class="flex flex-col items-center gap-4 py-4 text-center">
               <span class="flex h-14 w-14 items-center justify-center rounded-box bg-success/10 text-success">
                 <Icon name="check" size={30} stroke={2.2} />
@@ -344,7 +334,6 @@
           {/if}
         </div>
 
-        <!-- ================= footer ================= -->
         {#if step === 2}
           <div class="flex items-center justify-between border-t border-base-300 pt-3">
             <button type="button" class="btn btn-ghost btn-sm" onclick={() => (step -= 1)}>Back</button>

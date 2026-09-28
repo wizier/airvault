@@ -11,14 +11,12 @@ interface RequestOptions {
   skipAuthRedirect?: boolean;
 }
 
-/** A 401 means the session is gone; send the user to the hash-routed login. */
 function redirectToLogin(): void {
   const current = window.location.hash.replace(/^#/, '');
   if (current.startsWith('/login')) return;
   window.location.hash = '#/login';
 }
 
-/** Error returned for an HTTP failure or when the backend cannot be reached. */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -54,7 +52,6 @@ function reportUnexpectedError(error: unknown): void {
   console.error('Unexpected client error', error);
 }
 
-/** The stable code of an API error; anything else is reported and mapped to the fallback. */
 export function errorCode(error: unknown, fallbackCode: ErrorTextKey): string {
   if (error instanceof ApiError) return error.code;
   reportUnexpectedError(error);
@@ -65,8 +62,7 @@ export function errMsg(error: unknown, fallbackCode: ErrorTextKey = 'unknown_err
   return errorText(errorCode(error, fallbackCode), fallbackCode);
 }
 
-/** Fallback for responses without a backend error envelope (proxies, gateways);
- *  backend JSON bodies always carry the precise error.code. */
+/** For responses without a backend error envelope (proxies, gateways). */
 function statusErrorCode(status: number): string {
   switch (status) {
     case 502:
@@ -78,7 +74,6 @@ function statusErrorCode(status: number): string {
   }
 }
 
-/** Build the same safe ApiError for fetch and XHR responses. */
 function apiErrorFromBody(
   status: number,
   body: unknown,
@@ -100,7 +95,6 @@ export function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
-/** API path of one device; endpoints append to it. */
 export function devicePath(udid: string): string {
   return `/devices/${encodeURIComponent(udid)}`;
 }
@@ -114,8 +108,7 @@ function cookieValue(name: string): string | undefined {
   return entry ? decodeURIComponent(entry.slice(prefix.length)) : undefined;
 }
 
-/** Parse a response body: JSON when possible; plain-text and empty bodies are
- * kept raw as valid diagnostics. */
+/** Plain-text and empty bodies are kept raw as valid diagnostics. */
 function parseBody(text: string): { data: unknown; json: boolean } {
   try {
     return { data: JSON.parse(text), json: true };
@@ -124,11 +117,9 @@ function parseBody(text: string): { data: unknown; json: boolean } {
   }
 }
 
-/** POST multipart data with browser-to-server progress, then read the server's
- * NDJSON progress stream: each line goes to onServerProgress until a
- * {"done":true} line resolves or an {"error":…} line rejects. A non-200 answer
- * is an ordinary JSON error. Fetch does not expose upload progress, so this
- * deliberately uses the browser's native XHR channel. */
+/** XHR because fetch does not expose upload progress. Each NDJSON line goes to
+ * onServerProgress until {"done":true} resolves or {"error":…} rejects; a
+ * non-200 answer is an ordinary JSON error. */
 export function uploadForm<P>(
   path: string,
   body: FormData,

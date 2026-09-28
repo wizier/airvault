@@ -1,5 +1,4 @@
-// Icon registry: one Lucide component per app icon name; the union type
-// derives from the keys. One barrel import — Vite tree-shakes it down to these.
+// One barrel import: Vite tree-shakes it down to these icons.
 import {
   ArrowLeft,
   ArrowRight,

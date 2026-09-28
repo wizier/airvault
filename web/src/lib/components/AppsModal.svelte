@@ -1,8 +1,4 @@
 <script lang="ts">
-  // Installed applications: fetched fresh per open, client-side search, USER
-  // apps only. Icons load in batches for rows near the viewport.
-  // Per row: browse Documents (file-sharing apps) and uninstall; the toolbar
-  // installs an .ipa with live percent streamed in the install response.
   import { onMount, untrack } from 'svelte';
   import { appIcons, cachedAppIcons, installApp, uninstallApp, type DeviceApp, type InstallProgress } from '../api/apps';
   import { errMsg } from '../api/client';
@@ -31,14 +27,12 @@
   let installState = $state<InstallProgress | null>(null);
   let note = $state<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
-  // Uninstall: an inline two-step confirm on the row.
   let confirmUninstall = $state<string | null>(null);
   let uninstalling = $state<string | null>(null);
   const appMutationActive = $derived(installing || uninstalling !== null);
   const writeBusy = $derived(runActive || appMutationActive);
   const readBusy = $derived(restoreRunning || appMutationActive);
 
-  // Documents browser (opens over this modal for a file-sharing app).
   let filesApp = $state<DeviceApp | null>(null);
   const filesSource = $derived(
     filesApp ? appFileSource(udid, filesApp.bundleId, !writeBusy) : null,
@@ -120,7 +114,6 @@
     },
   });
 
-  // Rows coming near the viewport queue their icon.
   const rows = nearViewport('600px 0px', (bundleId, near) => {
     if (near && icons[bundleId] === undefined) iconLoader.queue(bundleId);
   });

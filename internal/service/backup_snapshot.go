@@ -68,9 +68,8 @@ func (s *Service) discardSnapshot(ctx context.Context, snapshot *model.Backup) e
 	return nil
 }
 
-// reconcileStagingSnapshot resolves an interrupted publication: a final
-// manifest is the durable commit point and is recovered, otherwise all
-// snapshot-owned staging is discarded. True only on a complete recovery.
+// A final manifest is the durable commit point and is recovered; otherwise the
+// snapshot's staging is discarded. True only on a complete recovery.
 func (s *Service) reconcileStagingSnapshot(ctx context.Context, snapshot *model.Backup, transferredBytes *int64) (bool, error) {
 	published, openErr := s.objects.OpenSnapshot(snapshot.SourceUDID, snapshot.ID)
 	if openErr == nil {

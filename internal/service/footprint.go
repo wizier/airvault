@@ -15,9 +15,8 @@ func (s *Service) cacheSourceFootprint(ctx context.Context, source string, diskB
 	}
 }
 
-// recountSourceFootprint publishes the size of the surviving manifests and hands
-// back the live set it read, so the sweep that follows needs no second traversal.
-// Nil means the read failed and the sweep has to do its own.
+// The live set is handed back so the sweep needs no second traversal; nil means
+// the read failed and the sweep has to do its own.
 func (s *Service) recountSourceFootprint(ctx context.Context, source string) *objectstore.LiveSet {
 	live, err := s.objects.LiveObjects(ctx, source, nil)
 	if err == nil {
@@ -29,9 +28,8 @@ func (s *Service) recountSourceFootprint(ctx context.Context, source string) *ob
 	return nil
 }
 
-// reclaimInBackground frees a deletion's space off the request path, then
-// releases the write lease it took ownership of. A failure leaves unreachable
-// bytes for the next startup pass, never a restore point.
+// Takes ownership of the write lease. A failure leaves unreachable bytes for the
+// next startup pass, never a restore point.
 func (s *Service) reclaimInBackground(
 	ctx context.Context, release func(), source string, reclaim func() error,
 ) {

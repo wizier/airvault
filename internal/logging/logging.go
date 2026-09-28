@@ -1,5 +1,3 @@
-// Package logging owns AirVault's process-wide text logger and the small
-// operation context shared by the Go service and the embedded Rust engine.
 package logging
 
 import (
@@ -15,8 +13,7 @@ const timeFormat = "2006-01-02 15:04:05"
 
 type jobIDKey struct{}
 
-// WithJobID attaches a runtime correlation id to ctx. The handler below adds it
-// to context-aware records; the cgo bridge also reads it before entering Rust.
+// The job id is added to context-aware records.
 func WithJobID(ctx context.Context, id string) context.Context {
 	if id == "" {
 		return ctx
@@ -24,7 +21,6 @@ func WithJobID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, jobIDKey{}, id)
 }
 
-// JobID returns the runtime correlation id carried by ctx, if any.
 func JobID(ctx context.Context) string {
 	id, _ := ctx.Value(jobIDKey{}).(string)
 	return id
@@ -32,7 +28,6 @@ func JobID(ctx context.Context) string {
 
 var root = slog.Default()
 
-// Setup installs the one text renderer used by Go and bridged Rust events.
 func Setup(level slog.Level) {
 	info, err := os.Stdout.Stat()
 	noColor := err != nil || info.Mode()&os.ModeCharDevice == 0
@@ -49,14 +44,10 @@ func newRoot(out io.Writer, level slog.Level, noColor bool) *slog.Logger {
 	return slog.New(handler).With("service", "airvault")
 }
 
-// Component returns a logger sharing the process renderer and carrying a
-// stable source label. Rust's tracing bridge uses component=engine.rust.
 func Component(name string) *slog.Logger {
 	return root.With("component", name)
 }
 
-// contextHandler enriches only records that were intentionally logged with a
-// context; ordinary background logs do not grow synthetic identifiers.
 type contextHandler struct {
 	slog.Handler
 }

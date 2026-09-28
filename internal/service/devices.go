@@ -14,8 +14,6 @@ import (
 	"github.com/wizier/airvault/internal/model"
 )
 
-// DeviceOverview is the device read model served to transports, JSON shape
-// included — SQLite rows and runtime evidence fold into it here.
 type DeviceOverview struct {
 	UDID        string `json:"udid"`
 	Name        string `json:"name"`
@@ -30,12 +28,10 @@ type DeviceOverview struct {
 	ActivationState string     `json:"activationState,omitempty"`
 	LastSeen        *time.Time `json:"lastSeen,omitempty"`
 	LastBackup      *time.Time `json:"lastBackup,omitempty"`
-	// LastRunErrors maps run kind ("backup"/"restore") to the stable error code
-	// of that kind's most recent failed run; the client localizes it and
-	// derives the displayed status from raw facts.
+	// Run kind ("backup"/"restore") to the stable error code of its most recent
+	// failed run; the client localizes it.
 	LastRunErrors map[string]string `json:"lastRunErrors,omitempty"`
-	// DiskBytes is the cached on-disk footprint (live objects plus published
-	// manifests). Nil means the cache is currently unknown.
+	// Live objects plus published manifests; nil means unknown.
 	DiskBytes     *int64 `json:"diskBytes,omitempty"`
 	RestorePoints int    `json:"restorePoints,omitempty"`
 	// AutoBackup is absent for orphaned sources, which have no settings.
@@ -55,8 +51,8 @@ func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOv
 	}
 }
 
-// RestorePoint is the single restore-point read model: the per-device list
-// omits the empty device-identity fields the global restore-source list fills.
+// Shared by the per-device list and the global restore-source list, which also
+// fills UDID.
 type RestorePoint struct {
 	UDID             string     `json:"udid,omitempty"`
 	SnapshotID       string     `json:"snapshotId"`
@@ -86,7 +82,6 @@ func optionalTime(unix *int64) *time.Time {
 	return &value
 }
 
-// DeviceList returns every registered device with its runtime state.
 func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 	devices, err := s.store.Device.List(ctx)
 	if err != nil {
@@ -140,7 +135,6 @@ func (s *Service) pairedDevice(ctx context.Context, udid string) (*model.Device,
 	return device, nil
 }
 
-// RestorePoints returns the device's live restore points, newest first.
 func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoint, error) {
 	rows, err := s.store.Backup.ListCompleteBySource(ctx, udid)
 	if err != nil {
@@ -153,9 +147,8 @@ func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoin
 	return points, nil
 }
 
-// forgetDevice removes a device from the registry. Only Unpair calls it, holding
-// the device write lease — discovery would re-register a reachable device
-// seconds later.
+// Only Unpair calls this, holding the device write lease; otherwise discovery
+// would re-register a reachable device seconds later.
 func (s *Service) forgetDevice(ctx context.Context, udid string) error {
 	// removeLocal emits no offline transition, so stop the observer directly.
 	s.lockObs.setOffline(udid)
@@ -169,9 +162,8 @@ func (s *Service) forgetDevice(ctx context.Context, udid string) error {
 	return nil
 }
 
-// Unpair asks the phone to forget this host, then removes the host record and
-// the registry row (backup files optionally). An unreachable phone never blocks
-// the removal; only a failed host-side cleanup is an error.
+// An unreachable phone never blocks the removal; only a failed host-side
+// cleanup is an error.
 func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) error {
 	if _, err := s.store.Device.GetByUDID(ctx, udid); err != nil {
 		return err
@@ -216,13 +208,12 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	if err := s.forgetDevice(finalCtx, udid); err != nil {
 		return err
 	}
-	// Emit only after the registry write committed (write-before-emit, like
-	// every other event here), so a refetch it triggers can't see stale rows.
+	// Emit only after the registry write committed, so a refetch it triggers
+	// can't see stale rows.
 	s.bus.Emit(events.PairChanged, map[string]any{"udid": udid, "paired": false})
 	return nil
 }
 
-// reachableDevice requires a paired device currently listed by the muxer.
 func (s *Service) reachableDevice(ctx context.Context, udid string) error {
 	if _, err := s.pairedDevice(ctx, udid); err != nil {
 		return err
@@ -233,9 +224,8 @@ func (s *Service) reachableDevice(ctx context.Context, udid string) error {
 	return nil
 }
 
-// DeleteBackups removes a source's restore points. The device registry may be
-// absent because it is rebuilt independently from the on-disk backup catalog.
-// No device lease: nothing here touches the phone, source write covers the rest.
+// The device row may be absent: the catalog is rebuilt from disk independently.
+// No device lease: nothing here touches the phone.
 func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
 	release, err := s.acquireFor(ctx, "backup deletion", udid, snapshotWriteResource(udid))
 	if err != nil {

@@ -78,8 +78,8 @@ func TestPickThumbIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// thumbSession serves V2 thumbnail reads and then fails like a closed native
-// slot (io.ErrClosedPipe) once okReads is exhausted.
+// thumbSession serves V2 thumbnail reads and then fails like a closed AFC
+// session (io.ErrClosedPipe) once okReads is exhausted.
 type thumbSession struct {
 	okReads int
 	reads   int

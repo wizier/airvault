@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"maps"
 	"testing"
 
@@ -36,7 +37,7 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 	_, eventsCh, _, _ := s.bus.Subscribe(0)
 	run := registerRun(s)
 
-	s.completeRun(run, runOutcome{}, errors.New("unclassified native failure"))
+	s.completeRun(run, runOutcome{}, errors.New("unclassified failure"))
 	event := <-eventsCh
 	if event.Type != events.BackupFailed {
 		t.Fatalf("event type = %q, want %q", event.Type, events.BackupFailed)
@@ -50,17 +51,15 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 	}
 }
 
-// TestLastRunErrorLifecycle pins the runtime last-outcome record: a failed
-// run stores its code per kind for the device overview, the next success of
-// that kind clears it without touching the other kind's record, and neither a
-// cancel from the phone (the engine's cancelled kind) nor an unanswered
-// automatic prompt is a failure.
+// A failed run stores its code per kind; the next success of that kind clears
+// only that kind's record. Neither a cancel from the phone nor an unanswered
+// automatic prompt counts as a failure.
 func TestLastRunErrorLifecycle(t *testing.T) {
 	s := newTestService()
 	s.lastRunError[runIdentity{"udid-1", runKindRestore}] = "restore_failed"
 
 	run := registerRun(s)
-	s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("native failure"))
+	s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("device failure"))
 	want := map[string]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
 	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after failure lastRunErrors = %v, want %v", got, want)
@@ -217,11 +216,40 @@ func TestEngineErrorCodes(t *testing.T) {
 		{engine.ErrorInvalidBackupPassword, "invalid_backup_password"},
 		{engine.ErrorOutcomeUnknown, "operation_outcome_unknown"},
 		{engine.ErrorBackupNotConfirmed, "backup_not_confirmed"},
+		{engine.ErrorConnectionLost, "device_connection_interrupted"},
+		{engine.ErrorDeviceStorageFull, "device_storage_full"},
+		{engine.ErrorNotFound, ""},
 	}
 	for _, test := range tests {
-		err := &engine.Error{Kind: test.kind, Detail: "native diagnostic"}
+		err := &engine.Error{Kind: test.kind, Detail: "device diagnostic"}
 		if got := engineErrorCode(err); got != test.want {
 			t.Errorf("engineErrorCode(kind=%d) = %q, want %q", test.kind, got, test.want)
+		}
+	}
+}
+
+// A device request has no transfer to name: a missing item is a plain 404 and
+// protocol or integrity failures keep the operation's own code.
+func TestEngineRequestErrors(t *testing.T) {
+	missing := newEngineActionError("download_failed", &engine.Error{Kind: engine.ErrorNotFound})
+	if !errors.Is(missing, domain.ErrNotFound) || !errors.Is(missing, fs.ErrNotExist) {
+		t.Fatalf("missing item: %v, want domain.ErrNotFound wrapping fs.ErrNotExist", missing)
+	}
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{&engine.Error{Kind: engine.ErrorProtocol}, "download_failed"},
+		{&engine.Error{Kind: engine.ErrorIntegrity}, "download_failed"},
+		{&engine.Error{Kind: engine.ErrorConnectionLost}, "device_connection_interrupted"},
+		{&engine.Error{Kind: engine.ErrorDeviceStorageFull}, "device_storage_full"},
+		{&engine.Error{Kind: engine.ErrorInternal}, "download_failed"},
+		{errors.New("not an engine error"), "download_failed"},
+	}
+	for _, test := range tests {
+		var action *domain.ActionError
+		if err := newEngineActionError("download_failed", test.err); !errors.As(err, &action) || action.Code != test.want {
+			t.Errorf("newEngineActionError(%v) = %v, want code %q", test.err, err, test.want)
 		}
 	}
 }

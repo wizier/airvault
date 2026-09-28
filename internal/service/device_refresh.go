@@ -13,8 +13,6 @@ import (
 	"github.com/wizier/airvault/internal/model"
 )
 
-// requestDeviceRefresh coalesces metadata refresh requests into the single
-// worker owned by StartWatch.
 func (s *Service) requestDeviceRefresh() {
 	select {
 	case s.deviceRefreshKick <- struct{}{}:
@@ -31,8 +29,7 @@ func (s *Service) refreshPresence(ctx context.Context) (bool, error) {
 	return s.applySnapshot(ctx, items), nil
 }
 
-// refreshRegisteredDevices is the expensive lockdown metadata synchronization.
-// It owns registry persistence; raw presence remains in deviceRuntimeStore.
+// The expensive pass: it reads lockdown metadata from every device.
 func (s *Service) refreshRegisteredDevices(ctx context.Context) error {
 	s.deviceRefreshMu.Lock()
 	defer s.deviceRefreshMu.Unlock()
@@ -77,10 +74,9 @@ func (s *Service) refreshRegisteredDevices(ctx context.Context) error {
 	return nil
 }
 
-// mergeDiscovered applies only fields proven by this lockdown pass. Transient
-// probe failures preserve prior identity/pairing; a definitive unpaired verdict
-// clears trust-dependent flags. Nil means an unregistered device that is not
-// paired.
+// Only fields proven by this lockdown pass apply: transient probe failures keep
+// prior identity and pairing; a definitive unpaired verdict clears trust flags.
+// Nil means an unregistered device that is not paired.
 func mergeDiscovered(existing *model.Device, discovered engine.DeviceInfo, now int64) *model.Device {
 	if existing == nil && discovered.PairingState != engine.PairingStatePaired {
 		return nil

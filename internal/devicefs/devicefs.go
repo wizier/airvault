@@ -17,11 +17,10 @@ import (
 )
 
 const (
-	// AFC reads are ordinary shared transfers, not backup-style exclusive
-	// sessions. Keep a small per-phone cap so a thumbnail grid cannot open an
-	// unbounded number of lockdown services.
+	// A small per-phone cap so a thumbnail grid cannot open an unbounded number
+	// of lockdown services.
 	maxConcurrentSessions = 3
-	// Every native read is one device round trip of at most 1 MiB, so a file
+	// Every AFC read is one device round trip of at most 1 MiB, so a file
 	// reads ahead that much whatever chunk size its caller asks for.
 	readAheadSize = 1 << 20
 )
@@ -44,7 +43,6 @@ type opener interface {
 	OpenAFC(context.Context, engine.DeviceID, engine.AFCSource, string) (engine.AFCSession, error)
 }
 
-// Manager owns request-scoped AFC sessions and their per-device concurrency.
 type Manager struct {
 	opener opener
 
@@ -56,8 +54,7 @@ func New(opener opener) *Manager {
 	return &Manager{opener: opener, gates: make(map[string]*semaphore.Weighted)}
 }
 
-// acquire caps concurrent AFC sessions per phone. The semaphore per UDID is
-// created once and kept: the key space is the few devices ever paired.
+// Gates are never removed: the key space is the few devices ever paired.
 func (m *Manager) acquire(ctx context.Context, udid string) (func(), error) {
 	m.mu.Lock()
 	gate := m.gates[udid]
@@ -73,7 +70,7 @@ func (m *Manager) acquire(ctx context.Context, udid string) (func(), error) {
 }
 
 type Session struct {
-	native  engine.AFCSession
+	afc     engine.AFCSession
 	root    Root
 	release func()
 
@@ -85,20 +82,20 @@ func (m *Manager) Open(ctx context.Context, udid string, root Root) (*Session, e
 	if err != nil {
 		return nil, err
 	}
-	native, err := m.opener.OpenAFC(ctx, engine.DeviceID(udid), root.source, root.bundleID)
+	afc, err := m.opener.OpenAFC(ctx, engine.DeviceID(udid), root.source, root.bundleID)
 	if err != nil {
 		release()
 		return nil, err
 	}
-	return &Session{native: native, root: root, release: release}, nil
+	return &Session{afc: afc, root: root, release: release}, nil
 }
 
 func (s *Session) Close() error {
-	native, release := s.take()
-	if native == nil {
+	afc, release := s.take()
+	if afc == nil {
 		return nil
 	}
-	err := native.Close()
+	err := afc.Close()
 	release()
 	return err
 }
@@ -106,12 +103,11 @@ func (s *Session) Close() error {
 func (s *Session) take() (engine.AFCSession, func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	native, release := s.native, s.release
-	s.native, s.release = nil, nil
-	return native, release
+	afc, release := s.afc, s.release
+	s.afc, s.release = nil, nil
+	return afc, release
 }
 
-// resolve maps path onto this session's open native service.
 func (s *Session) resolve(path Path) (engine.AFCSession, string, error) {
 	physical, err := s.root.physical(path)
 	if err != nil {
@@ -119,20 +115,19 @@ func (s *Session) resolve(path Path) (engine.AFCSession, string, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.native == nil {
+	if s.afc == nil {
 		return nil, "", io.ErrClosedPipe
 	}
-	return s.native, physical, nil
+	return s.afc, physical, nil
 }
 
-// Children lists a directory names-only, validated and sorted by name, case
-// folded. Gallery scans use it to avoid one AFC stat request per asset.
+// Children lists names only, so gallery scans avoid one AFC stat per asset.
 func (s *Session) Children(dir Path) ([]Path, error) {
-	native, physical, err := s.resolve(dir)
+	afc, physical, err := s.resolve(dir)
 	if err != nil {
 		return nil, err
 	}
-	names, err := native.List(physical)
+	names, err := afc.List(physical)
 	if err != nil {
 		return nil, err
 	}
@@ -156,9 +151,8 @@ func (s *Session) Children(dir Path) ([]Path, error) {
 	return children, nil
 }
 
-// List returns one whole directory, every entry statted, directories first then
-// case-insensitively by name. Browsed directories are bounded, so one pass
-// beats server-side paging state.
+// Browsed directories are bounded, so one whole pass beats server-side paging
+// state.
 func (s *Session) List(dir Path) ([]Entry, error) {
 	children, err := s.Children(dir)
 	if err != nil {
@@ -181,11 +175,11 @@ func (s *Session) List(dir Path) ([]Entry, error) {
 }
 
 func (s *Session) Stat(path Path) (Entry, error) {
-	native, physical, err := s.resolve(path)
+	afc, physical, err := s.resolve(path)
 	if err != nil {
 		return Entry{}, err
 	}
-	info, err := native.Stat(physical)
+	info, err := afc.Stat(physical)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -209,32 +203,31 @@ func (s *Session) Remove(path Path) error {
 	if path.String() == "" {
 		return fmt.Errorf("cannot remove the device root")
 	}
-	native, physical, err := s.resolve(path)
+	afc, physical, err := s.resolve(path)
 	if err != nil {
 		return err
 	}
-	return native.Remove(physical)
+	return afc.Remove(physical)
 }
 
-// ReadFile reads one whole small file, reusing the session (unlike OpenFile,
-// which consumes it for streaming). The bulk path for thumbnails.
+// ReadFile keeps the session open, unlike OpenFile, which consumes it for
+// streaming.
 func (s *Session) ReadFile(path Path) ([]byte, error) {
 	if path.String() == "" {
 		return nil, fmt.Errorf("cannot read the device root as a file")
 	}
-	native, physical, err := s.resolve(path)
+	afc, physical, err := s.resolve(path)
 	if err != nil {
 		return nil, err
 	}
-	return native.ReadSmall(physical)
+	return afc.ReadSmall(physical)
 }
 
-// File is one device file as sized when it was opened; bytes appended later
-// are not part of it. It is an io.ReadSeeker for http.ServeContent.
+// A File is sized when opened; bytes appended later are not part of it.
 type File struct {
-	native engine.AFCFile
-	size   int64
-	close  func() error // closes the file and frees its session once; repeats return that result
+	afc   engine.AFCFile
+	size  int64
+	close func() error
 
 	readAhead *bufio.Reader
 	offset    int64 // logical position, moved by Seek and Read
@@ -249,23 +242,23 @@ func (s *Session) OpenFile(path Path) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	native, release := s.take()
-	if native == nil {
+	afc, release := s.take()
+	if afc == nil {
 		return nil, io.ErrClosedPipe
 	}
-	nativeFile, err := native.Open(physical)
+	afcFile, err := afc.Open(physical)
 	if err != nil {
 		release()
 		return nil, err
 	}
 	return &File{
-		native: nativeFile,
-		size:   nativeFile.Size(),
+		afc:  afcFile,
+		size: afcFile.Size(),
 		close: sync.OnceValue(func() error {
 			defer release()
-			return nativeFile.Close()
+			return afcFile.Close()
 		}),
-		readAhead: bufio.NewReaderSize(nativeFile, readAheadSize),
+		readAhead: bufio.NewReaderSize(afcFile, readAheadSize),
 	}, nil
 }
 
@@ -276,10 +269,10 @@ func (f *File) Read(buffer []byte) (int, error) {
 	// Seek only moves the logical offset, so sizing the content (Seek End, then
 	// Start) costs no round trip; the device seeks once a read needs it.
 	if f.offset != f.nativeAt {
-		if err := f.native.SeekTo(f.offset); err != nil {
+		if err := f.afc.SeekTo(f.offset); err != nil {
 			return 0, err
 		}
-		f.readAhead.Reset(f.native)
+		f.readAhead.Reset(f.afc)
 		f.nativeAt = f.offset
 	}
 	read, err := f.readAhead.Read(buffer[:min(int64(len(buffer)), f.size-f.offset)])
@@ -310,6 +303,6 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 
 func (f *File) Size() int64 { return f.size }
 
-func (f *File) ModTime() time.Time { return f.native.ModTime() }
+func (f *File) ModTime() time.Time { return f.afc.ModTime() }
 
 func (f *File) Close() error { return f.close() }

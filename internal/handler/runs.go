@@ -10,7 +10,6 @@ type acceptedRunResponse struct {
 	RunID string `json:"runId"`
 }
 
-// [POST] /api/runs/:id/cancel
 func (h *Handler) cancelRun(c *echo.Context) error {
 	if err := h.svc.CancelRun(c.Param("id")); err != nil {
 		return err

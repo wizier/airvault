@@ -1,5 +1,4 @@
 <script lang="ts">
-  // Fixed vector brand artwork in both themes, emitted from web/public.
   let { size = 30 }: { size?: number } = $props();
 </script>
 

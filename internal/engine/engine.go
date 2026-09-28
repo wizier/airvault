@@ -1,41 +1,45 @@
-// Package engine is the boundary to the iOS-device implementation: the Rust
-// `idevice` shim linked via cgo. Bounded operations time out in Rust; owned
-// streams bind their Open context to Close so cancellation interrupts native
-// transport without freeing an in-flight handle.
+// Package engine talks to iOS devices over usbmuxd or netmuxd: discovery,
+// pairing, device services, file access and backup transfers.
 package engine
 
-// #include "airvault.h"
-import "C"
-
 import (
-	"context"
-	"errors"
+	"fmt"
 	"io"
+	"path/filepath"
 	"time"
+
+	"github.com/wizier/airvault/internal/ios"
+	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// Config is immutable process-boundary configuration. Transfer requests never
-// repeat storage/provider settings.
 type Config struct {
-	BackupRoot  string
+	Objects     *objectstore.Store
 	PairingRoot string
 	MuxAddress  string
 }
 
-type ErrorKind uint8
-
-// Error is the stable device-engine failure contract. Detail is diagnostic;
-// callers branch on Kind and never parse Error().
-type Error struct {
-	Kind   ErrorKind
-	Detail string
+type Engine struct {
+	mux     ios.Mux
+	pairs   *pairStore
+	afc     *afcPool
+	objects *objectstore.Store
 }
 
-func (e *Error) Error() string {
-	if e.Detail != "" {
-		return e.Detail
+func New(config Config) (*Engine, error) {
+	mux, err := ios.ParseMux(config.MuxAddress)
+	if err != nil {
+		return nil, err
 	}
-	return "device engine operation failed"
+	pairingRoot, err := filepath.Abs(config.PairingRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve engine pairing root: %w", err)
+	}
+	return &Engine{mux: mux, pairs: &pairStore{root: pairingRoot}, afc: newAFCPool(), objects: config.Objects}, nil
+}
+
+func (e *Engine) Close() error {
+	e.afc.close()
+	return nil
 }
 
 type ProgressPhase uint8
@@ -76,7 +80,7 @@ type BackupPasswordResult struct {
 }
 
 // PairingState separates a confirmed lockdown result from a probe that failed
-// for an unrelated reason (transport, timeout, corrupt local record, etc.).
+// for an unrelated reason (transport, timeout, unreadable local record, etc.).
 type PairingState string
 
 const (
@@ -89,24 +93,24 @@ const (
 // FlagsKnown are false when the lockdown identity / encryption reads failed.
 // Presence and transport come from PresenceState instead.
 type DeviceInfo struct {
-	DeviceID      DeviceID     `json:"udid"`
-	Name          string       `json:"name"`
-	ProductType   string       `json:"productType"`
-	IOSVersion    string       `json:"iosVersion"`
-	PairingState  PairingState `json:"pairingState"`
-	MetadataKnown bool         `json:"metadataKnown"`
-	FlagsKnown    bool         `json:"flagsKnown"`
-	Encrypted     bool         `json:"encrypted"`
+	DeviceID      DeviceID
+	Name          string
+	ProductType   string
+	IOSVersion    string
+	PairingState  PairingState
+	MetadataKnown bool
+	FlagsKnown    bool
+	Encrypted     bool
 	// ActivationState is the lockdown value ("Activated", "Unactivated",
 	// "FactoryActivated", ...); empty when the read failed.
-	ActivationState string `json:"activationState"`
+	ActivationState string
 }
 
 // DevicePresence is a cheap mux-local entry (no lockdown metadata).
 // Connection is the transport the muxer prefers for it: "usb" or "wifi".
 type DevicePresence struct {
-	DeviceID   DeviceID `json:"udid"`
-	Connection string   `json:"connection"`
+	DeviceID   DeviceID
+	Connection string
 }
 
 // USBDevice is a device reachable over USB (for the pairing wizard).
@@ -147,13 +151,12 @@ type RestoreSnapshotRequest struct {
 	RemoveItemsNotRestored bool
 }
 
-// PowerAction values are the av_device_power ABI codes.
 type PowerAction uint8
 
 const (
-	PowerRestart  PowerAction = C.AV_POWER_RESTART
-	PowerShutdown PowerAction = C.AV_POWER_SHUTDOWN
-	PowerSleep    PowerAction = C.AV_POWER_SLEEP
+	PowerRestart PowerAction = iota
+	PowerShutdown
+	PowerSleep
 )
 
 // App is one installed application. FileSharing is true when the app exposes
@@ -167,17 +170,17 @@ type App struct {
 
 // AFCEntry is raw metadata for one path in an AFC file tree.
 type AFCEntry struct {
-	IsDir    bool  `json:"isDir"`
-	Size     int64 `json:"size"`
-	Modified int64 `json:"modified"` // unix seconds, 0 if unknown
+	IsDir    bool
+	Size     int64
+	Modified int64 // unix seconds, 0 if unknown
 }
 
-// AFCSource selects which native service opens an AFC connection.
+// AFCSource selects which device service opens an AFC connection.
 type AFCSource int32
 
 const (
-	AFCMedia        AFCSource = C.AV_AFC_SOURCE_MEDIA         // whole media partition (com.apple.afc)
-	AFCAppDocuments AFCSource = C.AV_AFC_SOURCE_APP_DOCUMENTS // one app's Documents container (house_arrest)
+	AFCMedia        AFCSource = iota // whole media partition (com.apple.afc)
+	AFCAppDocuments                  // one app's Documents container (house_arrest)
 )
 
 // AFCSession is one sequential conversation on an AFC connection; the engine
@@ -201,23 +204,6 @@ type AFCFile interface {
 	ModTime() time.Time // zero if unknown
 	// SeekTo moves the device read cursor to an absolute offset (one round trip).
 	SeekTo(offset int64) error
-}
-
-// afcError adapts the typed engine error to the session-owner contract: the
-// owning context's error wins; otherwise a cancelled native slot was closed
-// under the call (e.g. after a timed-out read) and surfaces as io.ErrClosedPipe.
-func afcError(ctx context.Context, err error) error {
-	if err == nil {
-		return nil
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	var engineErr *Error
-	if errors.As(err, &engineErr) && engineErr.Kind == ErrorCancelled {
-		return io.ErrClosedPipe
-	}
-	return err
 }
 
 // ConsoleLine is one structured record from the device's os_trace stream.
@@ -253,8 +239,8 @@ const (
 // PresenceState is the latest complete muxer state. Watchers may coalesce
 // intermediate changes because every value is authoritative on its own.
 type PresenceState struct {
-	MuxUp   bool             `json:"up"`
-	Devices []DevicePresence `json:"devices"`
+	MuxUp   bool
+	Devices []DevicePresence
 }
 
 // LockStream abstracts the owned notification stream so its supervisor can be

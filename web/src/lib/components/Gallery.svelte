@@ -1,8 +1,7 @@
 <script lang="ts">
-  // Camera-roll gallery backed by the phone's own thumbnails
-  // (PhotoData/Thumbnails), so it stays cheap for tens of thousands of photos:
-  // tiles fetch thumbs near the viewport, far-off thumbs are evicted, the roll
-  // pages in on scroll. A click opens the full-res image; videos offer Save.
+  // Backed by the phone's own thumbnails, so it stays cheap for tens of thousands
+  // of photos: tiles fetch thumbs near the viewport, far-off thumbs are evicted,
+  // and the roll pages in on scroll.
   import { onMount } from 'svelte';
   import { ApiError, errMsg } from '../api/client';
   import { galleryPage, mediaThumbsBatch, type GalleryAsset } from '../api/gallery';
@@ -32,7 +31,7 @@
 
   // JPEG data URLs keyed by path; MAX_THUMBS bounds how many stay alive.
   let thumbs = $state<Record<string, string>>({});
-  const MAX_THUMBS = 600; // 5 × PAGE — thumbs beyond this are evicted once off-screen
+  const MAX_THUMBS = 600; // 5 × PAGE
   const near = new Set<string>(); // paths inside the tile observer's margin
   const thumbLoader = createBatchLoader<string>({
     batchSize: 30,
@@ -46,7 +45,6 @@
     },
   });
 
-  // Tiles coming near the viewport join `near` and queue their thumbs.
   const tiles = nearViewport('1200px 0px', (path, isNear) => {
     if (isNear) {
       near.add(path);
@@ -68,7 +66,6 @@
     }
   }
 
-  // Drop every thumb and cancel their requests; a later load starts over.
   function resetThumbs(): void {
     thumbLoader.reset();
     thumbs = {};
@@ -80,7 +77,6 @@
   let saveError = $state<string | null>(null);
   const saveCtrl = new AbortController();
 
-  // Index of the open asset in the loaded roll, for prev/next navigation.
   const lbIndex = $derived(lightbox ? assets.findIndex((a) => a.path === lightbox!.path) : -1);
 
   function canPreview(a: GalleryAsset): boolean {
@@ -177,7 +173,6 @@
     }
   }
 
-  // Photo facts derived purely from the asset (no extra device calls).
   function assetType(a: GalleryAsset): string {
     if (a.kind === 'video') return 'Video';
     return a.live ? 'Live Photo' : 'Photo';

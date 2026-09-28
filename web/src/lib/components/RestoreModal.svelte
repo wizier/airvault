@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Restore confirmation: collects the options and launches the run. The card
-  // is the run's surface — progress via SSE, failures via the server's
-  // last-restore-error; only errors of the start request itself show inline,
+  // The card is the run's surface (progress via SSE, failures via the server's
+  // last-restore-error); only errors of the start request itself show inline,
   // where they can be corrected.
   import { startRestore, type RestorePoint } from '../api/backups';
   import { errorCode } from '../api/client';

@@ -19,9 +19,6 @@ type errorBody struct {
 	Code string `json:"code"`
 }
 
-// errorHandler renders all HTTP/API failures through the same envelope. Echo
-// framework failures (routing, method, body size) are mapped as well as domain
-// errors returned by services.
 func (h *Handler) errorHandler(c *echo.Context, err error) {
 	// The SPA deliberately aborts stale refreshes when a newer event arrives.
 	// The client is already gone, so this is neither a 500 nor a useful response.
@@ -40,8 +37,7 @@ func (h *Handler) errorHandler(c *echo.Context, err error) {
 	_ = c.JSON(status, errorResponse{Error: body})
 }
 
-// mapAndLogAPIError maps err to its wire status and code and logs server faults.
-// Streams that already sent their headers deliver the code in-band.
+// Streams that already sent their headers use this to deliver the code in-band.
 func mapAndLogAPIError(c *echo.Context, err error) (int, errorBody) {
 	status, body := mapAPIError(err)
 	if status >= http.StatusInternalServerError {
@@ -80,9 +76,6 @@ func mapAPIError(err error) (int, errorBody) {
 	return http.StatusInternalServerError, errorBody{Code: "internal_error"}
 }
 
-// statusCodeName names the plain HTTP statuses: those of the framework (bind,
-// CSRF, router, body limit) and the echo sentinels handlers return for auth
-// (401) and previews (413/415). Domain errors carry their own code instead.
 func statusCodeName(status int) string {
 	switch status {
 	case http.StatusBadRequest:

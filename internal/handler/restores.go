@@ -8,7 +8,6 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-// [POST] /api/devices/:udid/restore
 // Binding over the defaults keeps them for omitted fields, while an explicit
 // false stays an override.
 func (h *Handler) startRestore(c *echo.Context) error {
@@ -27,7 +26,6 @@ type restoreSourcesResponse struct {
 	RestoreSources []service.RestorePoint `json:"restoreSources"`
 }
 
-// [GET] /api/restore-sources
 func (h *Handler) listRestoreSources(c *echo.Context) error {
 	sources, err := h.svc.RestoreSources(c.Request().Context())
 	if err != nil {

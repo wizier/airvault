@@ -1,5 +1,3 @@
-// Package handler is AirVault's HTTP layer: a JSON API under /api and the
-// embedded Svelte SPA served at the root. Built on Echo v5.
 package handler
 
 import (
@@ -16,12 +14,8 @@ import (
 	echoMiddleware "github.com/labstack/echo/v5/middleware"
 )
 
-// maxIPABytes caps a user-uploaded .ipa (device apps are well under this).
 const maxIPABytes = 2 << 30 // 2 GiB
 
-// Handler owns the HTTP surface's dependencies. All data access goes through
-// the Service (this layer only maps HTTP <-> use-cases); the bus feeds the SSE
-// stream.
 type Handler struct {
 	auth     *auth.Credentials
 	svc      *service.Service
@@ -29,13 +23,11 @@ type Handler struct {
 	staticFS fs.FS
 }
 
-// New builds the HTTP transport. Background-operation lifetime belongs to the service.
 func New(credentials *auth.Credentials, svc *service.Service,
 	bus *events.Bus, staticFS fs.FS) *Handler {
 	return &Handler{auth: credentials, svc: svc, bus: bus, staticFS: staticFS}
 }
 
-// Router builds the Echo instance with middleware, the JSON API, and the SPA.
 func (h *Handler) Router() *echo.Echo {
 	e := echo.New()
 	e.HTTPErrorHandler = h.errorHandler
@@ -58,10 +50,9 @@ func (h *Handler) Router() *echo.Echo {
 		ReferrerPolicy:     "same-origin",
 	}))
 	e.Use(echoMiddleware.GzipWithConfig(echoMiddleware.GzipConfig{
-		// SSE and the install progress stream must flush immediately; downloads
-		// (device files and whole backup archives, …/download), previews and
-		// wallpapers carry an exact Content-Length and Range — compressing them
-		// wastes CPU and voids both.
+		// SSE and the install progress stream must flush immediately; downloads,
+		// previews and wallpapers carry an exact Content-Length and Range that
+		// compression would void.
 		Skipper: func(c *echo.Context) bool {
 			p := c.Request().URL.Path
 			return p == "/api/events" || strings.HasSuffix(p, "/console") ||
@@ -71,7 +62,6 @@ func (h *Handler) Router() *echo.Echo {
 		},
 	}))
 
-	// Liveness for uptime monitors — DB reachability only.
 	e.GET("/healthz", func(c *echo.Context) error {
 		if err := h.svc.Ping(c.Request().Context()); err != nil {
 			return c.String(http.StatusServiceUnavailable, "db unavailable")
@@ -79,34 +69,25 @@ func (h *Handler) Router() *echo.Echo {
 		return c.String(http.StatusOK, "ok")
 	})
 
-	// Login session (token -> HttpOnly cookie). Open — it validates the token
-	// itself; everything under the /api group requires a session or Basic auth.
+	// Outside the auth group: it validates the token itself.
 	e.POST("/api/session", h.createSession)
 	e.DELETE("/api/session", h.deleteSession)
 
 	api := e.Group("/api", apiAuthMiddleware(h.auth))
 
-	// System and real-time state. The build version is baked into the SPA at
-	// build time (VITE_APP_VERSION), so it needs no endpoint.
 	api.GET("/status", h.status)
 	api.GET("/devices", h.listDevices)
 	api.GET("/events", h.streamEvents)
 
-	// Runtime control for in-flight backup/restore runs.
 	api.POST("/runs/:id/cancel", h.cancelRun)
 
-	// Backup catalog and restore selection.
 	api.GET("/restore-sources", h.listRestoreSources)
 	api.GET("/backups/:snapshotId/download", h.downloadBackup)
 	api.HEAD("/backups/:snapshotId/download", h.downloadBackup)
 
-	// Guided pairing wizard — pairing ONLY; backups and encryption are
-	// configured later on the device page (a paired-but-never-backed-up phone
-	// is a valid end state). Pairing always enables Wi-Fi sync.
 	api.GET("/pair/state", h.getPairingState)
 	api.POST("/pair/trust", h.startPairing)
 
-	// Everything below this group targets one registered device.
 	device := api.Group("/devices/:udid", udidGuard)
 	device.GET("/backups", h.listBackups)
 	device.POST("/backup", h.startBackup)
@@ -137,16 +118,12 @@ func (h *Handler) Router() *echo.Echo {
 	device.GET("/media/stat", h.mediaStat)
 	device.GET("/console", h.streamDeviceConsole)
 
-	// The embedded Svelte SPA at the root (/api and /healthz are more specific
-	// and always win). In dev you browse Vite at :8080 instead — it proxies the
-	// API to the daemon at :8081 (see web/vite.config.ts and `make dev`).
 	e.GET("/*", echo.WrapHandler(http.FileServer(http.FS(h.staticFS))))
 	return e
 }
 
-// udidGuard rejects :udid values that could not possibly be a device id —
-// udids feed filesystem paths downstream, so this is cheap defense-in-depth
-// in front of the DB-existence checks every operation already performs.
+// UDIDs feed filesystem paths downstream, so this is cheap defense-in-depth in
+// front of the DB-existence checks every operation already performs.
 func udidGuard(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		if domain.ValidateSource(c.Param("udid")) != nil {

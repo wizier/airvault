@@ -83,9 +83,8 @@ func parseKeybag(data []byte) (*backupKeybag, error) {
 	return bag, nil
 }
 
-// verifyBackupPassword reports whether the password unwraps any password-
-// wrapped class key. The PBKDF2 stretch costs seconds of CPU by design
-// (DPIC is ~10M on modern iOS).
+// The PBKDF2 stretch costs seconds of CPU by design (DPIC is ~10M on modern
+// iOS).
 func verifyBackupPassword(keybagData []byte, password string) (bool, error) {
 	bag, err := parseKeybag(keybagData)
 	if err != nil {
@@ -124,7 +123,6 @@ func verifyBackupPassword(keybagData []byte, password string) (bool, error) {
 	return false, nil
 }
 
-// VerifyPassword checks the password against the snapshot's keybag.
 func VerifyPassword(view *objectstore.View, password string) (bool, error) {
 	var manifest struct {
 		BackupKeyBag []byte `plist:"BackupKeyBag"`
@@ -138,8 +136,8 @@ func VerifyPassword(view *objectstore.View, password string) (bool, error) {
 	return verifyBackupPassword(manifest.BackupKeyBag, password)
 }
 
-// aesUnwrap implements RFC 3394 key unwrapping. A failed integrity check
-// means the wrapping key — and so the password behind it — is wrong.
+// aesUnwrap is RFC 3394. A failed integrity check means the wrapping key, and
+// so the password behind it, is wrong.
 func aesUnwrap(kek, wrapped []byte) ([]byte, error) {
 	if len(wrapped) < 24 || len(wrapped)%8 != 0 {
 		return nil, errors.New("invalid wrapped key length")

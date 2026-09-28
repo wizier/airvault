@@ -14,9 +14,6 @@ const (
 	errorCodeActivationFailed = "activation_failed"
 )
 
-// activateIfNeeded activates a Setup-Assistant phone before a restore: session
-// blob → Apple drmHandshake → activation info → deviceActivation → record. An
-// activated phone is a no-op; an Apple ID form reply means Activation Lock.
 func (s *Service) activateIfNeeded(run *runReservation, deviceName string) (string, error) {
 	ctx, udid := run.ctx, engine.DeviceID(run.udid)
 	state, err := s.engine.ActivationState(ctx, udid)

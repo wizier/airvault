@@ -20,8 +20,8 @@ type resourceRequest struct {
 	mode resourceMode
 }
 
-// resourceState is one resource's current holders. holder/since are diagnostics
-// for the rejection log only — exact for a writer, stale for readers.
+// holder/since are diagnostics for the rejection log only: exact for a writer,
+// stale for readers.
 type resourceState struct {
 	writer  bool
 	readers int
@@ -29,8 +29,6 @@ type resourceState struct {
 	since   time.Time
 }
 
-// operationManager atomically leases resources and is the admission half of
-// operation lifecycle. Domain workers remain owned by their use cases.
 type operationManager struct {
 	mu        sync.Mutex
 	resources map[string]*resourceState
@@ -74,9 +72,8 @@ func (c *operationManager) acquire(holder string, requests ...resourceRequest) (
 	return sync.OnceFunc(func() { c.release(requests) }), nil
 }
 
-// busyWith explains the rejection: a writer is named, readers are only counted
-// (the one that created the state may have left). Unwraps to domain.ErrBusy —
-// only that stable code crosses the HTTP edge.
+// A writer is named; readers are only counted, since the one that created the
+// state may have left.
 func busyWith(key string, state *resourceState) error {
 	if state.writer {
 		return fmt.Errorf("%w: %s holds %s for %s",
@@ -104,7 +101,7 @@ func (c *operationManager) release(requests []resourceRequest) {
 	}
 }
 
-// The device resource is an admission policy, not a native session: backups and
+// The device resource is an admission policy, not a device session: backups and
 // AFC reads share it, restores and mutations take it exclusively. Independent
 // reads (hardware, console) skip it; devicefs caps real AFC sessions per phone.
 func deviceWriteResource(udid string) resourceRequest {
