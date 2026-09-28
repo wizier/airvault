@@ -13,7 +13,7 @@ COPY web/ ./
 ARG VERSION=dev
 RUN VITE_APP_VERSION=$VERSION npm run build
 
-FROM golang:1.26-trixie AS build
+FROM golang:1.27-trixie AS build
 # .git is dockerignored; the release version comes in as an ARG.
 ARG VERSION=dev
 WORKDIR /src

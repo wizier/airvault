@@ -163,11 +163,8 @@ func friendlyCarrier(bundleID string) string {
 	if name == "" || strings.EqualFold(name, "CarrierDefault") {
 		return ""
 	}
-	if i := strings.LastIndexByte(name, '_'); i >= 0 {
-		head, cc := name[:i], name[i+1:]
-		if len(cc) >= 2 && len(cc) <= 3 && isASCIIAlpha(cc) {
-			return head + " (" + strings.ToUpper(cc) + ")"
-		}
+	if head, cc, found := strings.CutLast(name, "_"); found && len(cc) >= 2 && len(cc) <= 3 && isASCIIAlpha(cc) {
+		return head + " (" + strings.ToUpper(cc) + ")"
 	}
 	return name
 }

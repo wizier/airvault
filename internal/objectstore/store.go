@@ -8,11 +8,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"uuid"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/durable"
-
-	"github.com/google/uuid"
 )
 
 // A Store owns its root exclusively; the lock file keeps other processes out.

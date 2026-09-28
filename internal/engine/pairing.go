@@ -6,8 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/wizier/airvault/internal/ios"
 )
@@ -115,7 +114,7 @@ func (e *Engine) pairingIdentity(ctx context.Context, udid string) (pairIdentity
 	if err != nil {
 		return pairIdentity{}, err
 	}
-	return e.pairs.ReserveIdentity(udid, pairIdentity{HostID: strings.ToUpper(uuid.NewString()), SystemBUID: buid})
+	return e.pairs.ReserveIdentity(udid, pairIdentity{HostID: strings.ToUpper(uuid.NewV4().String()), SystemBUID: buid})
 }
 
 // finishPairing sets up Wi-Fi: the muxer needs a record to find the phone.

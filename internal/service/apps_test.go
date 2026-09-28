@@ -22,8 +22,7 @@ func TestAppIconsValidatesBatch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := (&Service{}).AppIcons(context.Background(), "udid", tc.bundleIDs)
-			var validation *domain.ValidationError
-			if !errors.As(err, &validation) || validation.Code != tc.code {
+			if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != tc.code {
 				t.Fatalf("err = %v, want validation code %q", err, tc.code)
 			}
 		})

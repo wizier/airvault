@@ -76,15 +76,15 @@ func (e *Engine) HardwareReport(ctx context.Context, device DeviceID) (HardwareR
 		// leaves it torn: the ones after it are skipped.
 		reads := []func(context.Context) error{
 			func(ctx context.Context) (err error) {
-				report.Lockdown, err = ios.Value[LockdownValues](ctx, session.Lockdown, "", "")
+				report.Lockdown, err = session.Value[LockdownValues](ctx, "", "")
 				return err
 			},
 			func(ctx context.Context) (err error) {
-				report.DiskUsage, err = ios.Value[DiskUsage](ctx, session.Lockdown, "com.apple.disk_usage", "")
+				report.DiskUsage, err = session.Value[DiskUsage](ctx, "com.apple.disk_usage", "")
 				return err
 			},
 			func(ctx context.Context) error {
-				associated, err := ios.Value[bool](ctx, session.Lockdown, "com.apple.fmip", "IsAssociated")
+				associated, err := session.Value[bool](ctx, "com.apple.fmip", "IsAssociated")
 				if err == nil {
 					report.FindMy = &associated
 				}
@@ -115,6 +115,6 @@ func (e *Engine) batteryGauge(ctx context.Context, udid string) BatteryGauge {
 	}
 	diagnostics := ios.NewDiagnostics(conn)
 	defer diagnostics.Close()
-	gauge, _ := ios.IORegistry[BatteryGauge](ctx, diagnostics, "AppleSmartBattery")
+	gauge, _ := diagnostics.IORegistry[BatteryGauge](ctx, "AppleSmartBattery")
 	return gauge
 }

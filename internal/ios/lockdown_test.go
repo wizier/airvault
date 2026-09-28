@@ -38,7 +38,7 @@ func TestLockdownSessionAndService(t *testing.T) {
 	if kind, err := lockdown.QueryType(ctx); err != nil || kind != "com.apple.mobile.lockdown" {
 		t.Fatalf("QueryType = %q, %v", kind, err)
 	}
-	if name, err := ios.Value[string](ctx, lockdown, "", "DeviceName"); err != nil || name != "Test iPhone" {
+	if name, err := lockdown.Value[string](ctx, "", "DeviceName"); err != nil || name != "Test iPhone" {
 		t.Fatalf("DeviceName = %q, %v", name, err)
 	}
 	if _, err := lockdown.StartService(ctx, "com.example.echo", nil); !errors.Is(err, ios.ErrSessionInactive) {
@@ -54,7 +54,7 @@ func TestLockdownSessionAndService(t *testing.T) {
 	if phone.Value("com.apple.mobile.wireless_lockdown", "EnableWifiConnections") != true {
 		t.Fatal("SetValue did not reach the device")
 	}
-	if domain, err := ios.Value[map[string]any](ctx, lockdown, "", ""); err != nil || domain["ProductType"] != "iPhone17,1" {
+	if domain, err := lockdown.Value[map[string]any](ctx, "", ""); err != nil || domain["ProductType"] != "iPhone17,1" {
 		t.Fatalf("root domain over TLS = %v, %v", domain, err)
 	}
 	service, err := lockdown.StartService(ctx, "com.example.echo", record.EscrowBag)
@@ -91,7 +91,7 @@ func TestLockdownRejectsUnknownHost(t *testing.T) {
 	if err := lockdown.StartSession(ctx, &stranger); !errors.Is(err, ios.ErrInvalidHostID) {
 		t.Fatalf("unknown host: %v, want ErrInvalidHostID", err)
 	}
-	if _, err := ios.Value[string](ctx, lockdown, "", "Missing"); err == nil {
+	if _, err := lockdown.Value[string](ctx, "", "Missing"); err == nil {
 		t.Fatal("reading a missing value succeeded")
 	}
 }

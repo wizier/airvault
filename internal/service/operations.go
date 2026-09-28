@@ -7,11 +7,10 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"time"
+	"uuid"
 
 	"github.com/wizier/airvault/internal/domain"
 	airlog "github.com/wizier/airvault/internal/logging"
-
-	"github.com/google/uuid"
 )
 
 type runIdentity struct{ udid, kind string }
@@ -65,7 +64,7 @@ func (s *Service) acquireFor(ctx context.Context, kind, udid string,
 // request without a run, terminal event or sticky error. The run lives as long
 // as the app, not the request that admitted it.
 func (s *Service) reserveRun(kind, udid string, requests ...resourceRequest) (*runReservation, error) {
-	id := uuid.NewString()
+	id := uuid.New().String()
 	runCtx := airlog.WithJobID(s.app, id)
 	release, err := s.acquireFor(runCtx, kind, udid, requests...)
 	if err != nil {
@@ -117,7 +116,7 @@ type commandReservation struct {
 
 func (s *Service) reserveCommand(ctx context.Context, kind, udid string,
 	requests ...resourceRequest) (*commandReservation, error) {
-	id := uuid.NewString()
+	id := uuid.New().String()
 	ctx = airlog.WithJobID(ctx, id)
 	release, err := s.acquireFor(ctx, kind, udid, requests...)
 	if err != nil {

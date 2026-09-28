@@ -157,8 +157,9 @@ func TestAutoBackupTriggerDwell(t *testing.T) {
 			signal(engine.ScreenLockComplete)
 			time.Sleep(2 * screenLockPairWindow) // past the lock's trailing pulse
 		}
-		expectFired := func(step string, want int) {
-			synctest.Wait()
+		// firedAfter checks, d later, how often the trigger fired.
+		firedAfter := func(d time.Duration, step string, want int) {
+			synctest.Sleep(d)
 			if got := len(fired); got != want {
 				t.Fatalf("%s: fired %d times, want %d", step, got, want)
 			}
@@ -168,32 +169,26 @@ func TestAutoBackupTriggerDwell(t *testing.T) {
 		}
 
 		unlock()
-		time.Sleep(autoBackupDwell - time.Second)
-		expectFired("before the dwell", 0)
-		time.Sleep(time.Second)
-		expectFired("after the dwell", 1)
-		time.Sleep(time.Minute)
-		expectFired("the same unlock again", 0)
+		firedAfter(autoBackupDwell-time.Second, "before the dwell", 0)
+		firedAfter(time.Second, "after the dwell", 1)
+		firedAfter(time.Minute, "the same unlock again", 0)
 
 		lock()
 		unlock()
 		time.Sleep(autoBackupDwell / 2)
 		lock()
-		time.Sleep(autoBackupDwell)
-		expectFired("a relock within the dwell", 0)
+		firedAfter(autoBackupDwell, "a relock within the dwell", 0)
 
 		unlock()
 		time.Sleep(autoBackupDwell / 2)
 		s.live.applyPresence(nil)
-		time.Sleep(autoBackupDwell)
-		expectFired("an offline phone", 0)
+		firedAfter(autoBackupDwell, "an offline phone", 0)
 
 		s.live.applyPresence(map[string]string{"phone": "wifi"})
 		unlock()
 		cancel()
 		<-done
-		time.Sleep(autoBackupDwell)
-		expectFired("after shutdown", 0)
+		firedAfter(autoBackupDwell, "after shutdown", 0)
 	})
 }
 
@@ -215,8 +210,7 @@ func TestAutoBackupSettingsValidation(t *testing.T) {
 	}
 	for _, test := range invalid {
 		_, err := autoBackupRow(test.settings)
-		var validation *domain.ValidationError
-		if !errors.As(err, &validation) || validation.Code != test.code {
+		if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != test.code {
 			t.Errorf("autoBackupRow(%+v) = %v, want %s", test.settings, err, test.code)
 		}
 	}

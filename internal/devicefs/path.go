@@ -39,8 +39,8 @@ func validComponent(name string) bool {
 func (p Path) String() string { return p.relative }
 
 func (p Path) Name() string {
-	if index := strings.LastIndexByte(p.relative, '/'); index >= 0 {
-		return p.relative[index+1:]
+	if _, name, found := strings.CutLast(p.relative, "/"); found {
+		return name
 	}
 	return p.relative
 }

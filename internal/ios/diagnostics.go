@@ -26,15 +26,15 @@ func (d *Diagnostics) Shutdown(ctx context.Context) error { return d.power(ctx, 
 func (d *Diagnostics) Sleep(ctx context.Context) error    { return d.power(ctx, "Sleep") }
 
 func (d *Diagnostics) power(ctx context.Context, request string) error {
-	_, err := diagnosticsRequest[struct{}](ctx, d, map[string]any{"Request": request})
+	_, err := d.exchange[struct{}](ctx, map[string]any{"Request": request})
 	return err
 }
 
-func IORegistry[T any](ctx context.Context, d *Diagnostics, name string) (T, error) {
-	return diagnosticsRequest[T](ctx, d, map[string]any{"Request": "IORegistry", "EntryName": name})
+func (d *Diagnostics) IORegistry[T any](ctx context.Context, name string) (T, error) {
+	return d.exchange[T](ctx, map[string]any{"Request": "IORegistry", "EntryName": name})
 }
 
-func diagnosticsRequest[T any](ctx context.Context, d *Diagnostics, request map[string]any) (T, error) {
+func (d *Diagnostics) exchange[T any](ctx context.Context, request map[string]any) (T, error) {
 	var reply struct {
 		Status      string `plist:"Status"`
 		Diagnostics struct {

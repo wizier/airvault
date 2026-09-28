@@ -84,7 +84,7 @@ func (e *Engine) inspect(ctx context.Context, device ios.Device) DeviceInfo {
 		info.MetadataKnown = true
 	}
 	if info.PairingState == PairingStatePaired {
-		if encrypted, err := ios.Value[bool](ctx, lockdown, "com.apple.mobile.backup", "WillEncrypt"); err == nil {
+		if encrypted, err := lockdown.Value[bool](ctx, "com.apple.mobile.backup", "WillEncrypt"); err == nil {
 			info.Encrypted, info.FlagsKnown = encrypted, true
 		}
 	}
@@ -113,7 +113,7 @@ func (e *Engine) pairingState(ctx context.Context, lockdown *ios.Lockdown, udid 
 }
 
 func nonEmpty(ctx context.Context, lockdown *ios.Lockdown, key string) (string, error) {
-	value, err := ios.Value[string](ctx, lockdown, "", key)
+	value, err := lockdown.Value[string](ctx, "", key)
 	if err == nil && value == "" {
 		err = fmt.Errorf("%w: empty %s", ios.ErrProtocol, key)
 	}
@@ -163,7 +163,7 @@ func (e *Engine) Battery(ctx context.Context, device DeviceID) (Battery, error) 
 			return Battery{}, err
 		}
 		defer session.Close()
-		domain, err := ios.Value[map[string]any](ctx, session.Lockdown, "com.apple.mobile.battery", "")
+		domain, err := session.Value[map[string]any](ctx, "com.apple.mobile.battery", "")
 		if err != nil {
 			return Battery{}, err
 		}

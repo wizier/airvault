@@ -223,8 +223,8 @@ func TestEngineRequestErrors(t *testing.T) {
 		{errors.New("not an engine error"), "download_failed"},
 	}
 	for _, test := range tests {
-		var action *domain.ActionError
-		if err := newEngineActionError("download_failed", test.err); !errors.As(err, &action) || action.Code != test.want {
+		err := newEngineActionError("download_failed", test.err)
+		if action, ok := errors.AsType[*domain.ActionError](err); !ok || action.Code != test.want {
 			t.Errorf("newEngineActionError(%v) = %v, want code %q", test.err, err, test.want)
 		}
 	}

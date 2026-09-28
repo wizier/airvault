@@ -77,8 +77,7 @@ func optionalTime(unix *int64) *time.Time {
 	if unix == nil {
 		return nil
 	}
-	value := time.Unix(*unix, 0).UTC()
-	return &value
+	return new(time.Unix(*unix, 0).UTC())
 }
 
 func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
@@ -98,8 +97,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 		seen[d.UDID] = struct{}{}
 		ov := s.decorate(d, rt)
 		if gs, ok := summary[d.UDID]; ok {
-			created := time.Unix(gs.LatestCreated, 0).UTC()
-			ov.LastBackup = &created
+			ov.LastBackup = new(time.Unix(gs.LatestCreated, 0).UTC())
 			ov.DiskBytes = gs.DiskBytes
 			ov.RestorePoints = gs.RestorePoints
 		}
@@ -112,11 +110,11 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 		if _, ok := seen[source]; ok {
 			continue
 		}
-		created := time.Unix(stored.LatestCreated, 0).UTC()
 		out = append(out, DeviceOverview{
 			UDID: source, Name: cmp.Or(stored.DeviceName, source), Connection: "offline",
-			ProductType: stored.ProductType, IOSVersion: stored.IOSVersion, LastBackup: &created,
-			DiskBytes: stored.DiskBytes, RestorePoints: stored.RestorePoints, Orphaned: true,
+			ProductType: stored.ProductType, IOSVersion: stored.IOSVersion,
+			LastBackup: new(time.Unix(stored.LatestCreated, 0).UTC()),
+			DiskBytes:  stored.DiskBytes, RestorePoints: stored.RestorePoints, Orphaned: true,
 		})
 	}
 	slices.SortFunc(out, func(a, b DeviceOverview) int { return cmp.Compare(a.UDID, b.UDID) })

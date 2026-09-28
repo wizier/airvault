@@ -89,8 +89,7 @@ func transferResult(ctx context.Context, operation string, err error) error {
 		return nil
 	}
 	err = failure(ctx, operation, err)
-	var classified *Error
-	if ctx.Err() != nil && errors.As(err, &classified) && classified.Kind != ErrorCancelled {
+	if classified, ok := errors.AsType[*Error](err); ok && ctx.Err() != nil && classified.Kind != ErrorCancelled {
 		return &Error{Kind: ErrorCancelled, Detail: classified.Detail}
 	}
 	return err
@@ -230,7 +229,7 @@ func (e *Engine) checkFindMy(ctx context.Context, udid string) error {
 			return false, err
 		}
 		defer session.Close()
-		return ios.Value[bool](ctx, session.Lockdown, "com.apple.fmip", "IsAssociated")
+		return session.Value[bool](ctx, "com.apple.fmip", "IsAssociated")
 	})
 	if err == nil && on {
 		return &Error{Kind: ErrorFindMyEnabled, Detail: "Find My iPhone is on; turn it off on the phone before restoring"}

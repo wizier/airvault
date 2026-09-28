@@ -46,8 +46,8 @@ func treeFromEntries(entries map[string]manifestEntry) *tree {
 }
 
 func splitKey(key string) (parent, name string) {
-	if i := strings.LastIndexByte(key, '/'); i >= 0 {
-		return key[:i], key[i+1:]
+	if parent, name, found := strings.CutLast(key, "/"); found {
+		return parent, name
 	}
 	return "", key
 }

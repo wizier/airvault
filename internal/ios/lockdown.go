@@ -43,7 +43,7 @@ func (l *Lockdown) QueryType(ctx context.Context) (string, error) {
 }
 
 // Value reads key in domain into a T; an empty key reads the whole domain.
-func Value[T any](ctx context.Context, l *Lockdown, domain, key string) (T, error) {
+func (l *Lockdown) Value[T any](ctx context.Context, domain, key string) (T, error) {
 	var reply struct {
 		Value *T `plist:"Value"`
 	}

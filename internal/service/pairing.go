@@ -16,8 +16,7 @@ import (
 type USBDevice = engine.USBDevice
 
 func actionErrorCode(err error, fallback string) string {
-	var action *domain.ActionError
-	if errors.As(err, &action) && action.Code != "" {
+	if action, ok := errors.AsType[*domain.ActionError](err); ok && action.Code != "" {
 		return action.Code
 	}
 	return fallback

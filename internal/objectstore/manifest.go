@@ -143,10 +143,10 @@ func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
 		// The stat above fixed the size, so hitting EOF mid-value is truncated
 		// content, not a read failure; syntax and type errors likewise judge
 		// bytes that were delivered. Anything else may be transient I/O.
-		var syntaxErr *json.SyntaxError
-		var typeErr *json.UnmarshalTypeError
+		_, syntax := errors.AsType[*json.SyntaxError](err)
+		_, typed := errors.AsType[*json.UnmarshalTypeError](err)
 		wrapped := fmt.Errorf("decode object manifest %q: %w", relative, err)
-		if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		if syntax || typed || errors.Is(err, io.ErrUnexpectedEOF) {
 			return nil, corrupt(wrapped)
 		}
 		return nil, wrapped

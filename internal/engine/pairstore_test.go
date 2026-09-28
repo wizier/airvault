@@ -86,8 +86,8 @@ func TestPairStoreUnusableRecords(t *testing.T) {
 	}
 
 	for _, udid := range []string{"", "../escape", "a/b", strings.Repeat("a", 65)} {
-		var engineErr *Error
-		if _, err := store.Load(udid); !errors.As(err, &engineErr) || engineErr.Kind != ErrorInvalidArgument {
+		_, err := store.Load(udid)
+		if engineErr, ok := errors.AsType[*Error](err); !ok || engineErr.Kind != ErrorInvalidArgument {
 			t.Errorf("Load(%q) = %v, want ErrorInvalidArgument", udid, err)
 		}
 	}

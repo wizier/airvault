@@ -15,11 +15,11 @@ import (
 // Pair asks the device to trust this host. While the Trust dialog is open it
 // answers ErrPairingDialogResponsePending; asking again does not stack dialogs.
 func (l *Lockdown) Pair(ctx context.Context, hostID, systemBUID, hostName string) (*PairRecord, error) {
-	devicePublicKey, err := Value[[]byte](ctx, l, "", "DevicePublicKey")
+	devicePublicKey, err := l.Value[[]byte](ctx, "", "DevicePublicKey")
 	if err != nil {
 		return nil, err
 	}
-	wifiMAC, err := Value[string](ctx, l, "", "WiFiAddress")
+	wifiMAC, err := l.Value[string](ctx, "", "WiFiAddress")
 	if err != nil {
 		return nil, err
 	}

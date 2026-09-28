@@ -245,8 +245,7 @@ func (s *Service) autoBackupView(d model.Device, lastBackup *time.Time, now time
 	wait, notBefore := s.autoBackupWait(d.UDID, autoBackupEvery(settings.Days), lastBackup, now)
 	view.Wait = wait
 	if !notBefore.IsZero() {
-		utc := notBefore.UTC()
-		view.NotBefore = &utc
+		view.NotBefore = new(notBefore.UTC())
 	}
 	return view
 }

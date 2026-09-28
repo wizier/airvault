@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"howett.net/plist"
 
 	"github.com/wizier/airvault/internal/ios"
@@ -128,7 +128,7 @@ func browseApps(apps ...map[string]any) iostest.Handler {
 }
 
 func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (*objectstore.StagingView, int64, error) {
-	session, err := f.objects.BeginSnapshot(string(f.udid), uuid.NewString(), nil)
+	session, err := f.objects.BeginSnapshot(string(f.udid), uuid.New().String(), nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -139,7 +139,7 @@ func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress))
 // plists a restore needs.
 func (f *transferFixture) publish(t *testing.T, source string, files map[string][]byte) *iosbackup.Backup {
 	t.Helper()
-	session, err := f.objects.BeginSnapshot(source, uuid.NewString(), nil)
+	session, err := f.objects.BeginSnapshot(source, uuid.New().String(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

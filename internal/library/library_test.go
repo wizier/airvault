@@ -113,8 +113,8 @@ func TestOpenTellsMissingFromIncomplete(t *testing.T) {
 	if _, err := lib.Open(ctx, incompleteID); !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("incomplete backup: %v, want ErrIncomplete", err)
 	}
-	var validation *domain.ValidationError
-	if _, err := lib.Open(ctx, "eeeeeeee-0000-4000-8000-000000000005"); !errors.As(err, &validation) || validation.Code != "snapshot_not_found" {
+	_, err := lib.Open(ctx, "eeeeeeee-0000-4000-8000-000000000005")
+	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "snapshot_not_found" {
 		t.Fatalf("unknown snapshot: %v, want snapshot_not_found", err)
 	}
 }

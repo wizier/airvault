@@ -105,12 +105,10 @@ func parseLogRecord(packet []byte) (LogRecord, error) {
 	record.Level = level
 	sizes := []int{int(le.Uint16(packet[107:])), int(le.Uint16(packet[109:])), int(le.Uint32(packet[117:])), int(le.Uint32(packet[121:]))}
 
-	rest := packet[logHeaderSize:]
-	fileEnd := bytes.IndexByte(rest, 0)
-	if fileEnd < 0 {
+	_, rest, found := bytes.Cut(packet[logHeaderSize:], []byte{0}) // past the file name
+	if !found {
 		return LogRecord{}, fmt.Errorf("%w: unterminated log file name", ErrProtocol)
 	}
-	rest = rest[fileEnd+1:]
 	fields := []*string{&record.Image, &record.Message, &record.Subsystem, &record.Category}
 	for i, field := range fields {
 		if i == 2 && (sizes[2] == 0 || sizes[3] == 0 || len(rest) == 0) {

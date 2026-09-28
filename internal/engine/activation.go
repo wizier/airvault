@@ -20,7 +20,7 @@ func (e *Engine) ActivationState(ctx context.Context, device DeviceID) (string, 
 			return "", err
 		}
 		defer session.Close()
-		return ios.Value[string](ctx, session.Lockdown, "", "ActivationState")
+		return session.Value[string](ctx, "", "ActivationState")
 	})
 }
 

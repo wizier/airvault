@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wizier/airvault/internal/ios"
 	"github.com/wizier/airvault/internal/ios/backup2"
 )
 
@@ -102,8 +101,8 @@ func outcomeUnknown(detail string) error {
 }
 
 func isOutcomeUnknown(err error) bool {
-	var classified *Error
-	return errors.As(err, &classified) && classified.Kind == ErrorOutcomeUnknown
+	classified, ok := errors.AsType[*Error](err)
+	return ok && classified.Kind == ErrorOutcomeUnknown
 }
 
 func (e *Engine) backupEncryption(ctx context.Context, udid string) BackupPasswordResult {
@@ -113,7 +112,7 @@ func (e *Engine) backupEncryption(ctx context.Context, udid string) BackupPasswo
 			return false, err
 		}
 		defer session.Close()
-		return ios.Value[bool](ctx, session.Lockdown, "com.apple.mobile.backup", "WillEncrypt")
+		return session.Value[bool](ctx, "com.apple.mobile.backup", "WillEncrypt")
 	})
 	return BackupPasswordResult{EncryptionKnown: err == nil, Encrypted: encrypted}
 }

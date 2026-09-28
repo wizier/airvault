@@ -189,12 +189,10 @@ func (s *Session) Stat(path Path) (Entry, error) {
 	}
 	entry := Entry{Name: path.Name(), Kind: kind}
 	if kind == EntryFile {
-		size := info.Size
-		entry.Size = &size
+		entry.Size = new(info.Size)
 	}
 	if info.Modified > 0 {
-		modified := info.Modified
-		entry.Modified = &modified
+		entry.Modified = new(info.Modified)
 	}
 	return entry, nil
 }

@@ -182,8 +182,8 @@ func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, err
 
 // engineErrorCode maps an engine error to a transfer's public code, "" for none.
 func engineErrorCode(err error) string {
-	var engineErr *engine.Error
-	if !errors.As(err, &engineErr) {
+	engineErr, ok := errors.AsType[*engine.Error](err)
+	if !ok {
 		return ""
 	}
 	switch engineErr.Kind {
@@ -227,8 +227,7 @@ func newTransferActionError(operationCode string, err error) *domain.ActionError
 // newEngineActionError is for device requests: a missing item is a 404, and
 // protocol or integrity failures keep the operation's own code.
 func newEngineActionError(operationCode string, err error) error {
-	var engineErr *engine.Error
-	if errors.As(err, &engineErr) {
+	if engineErr, ok := errors.AsType[*engine.Error](err); ok {
 		switch engineErr.Kind {
 		case engine.ErrorNotFound:
 			return fmt.Errorf("%w: %w", domain.ErrNotFound, err)

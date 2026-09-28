@@ -72,8 +72,7 @@ func TestRecvReturnsDeviceErrors(t *testing.T) {
 		_ = WriteFrame(&buffer, body)
 		conn := NewPlistConn(&bufferConn{Buffer: &buffer}, plist.XMLFormat)
 		err = conn.Recv(&struct{}{})
-		var device *DeviceError
-		if !errors.As(err, &device) || device.Code != test.code {
+		if device, ok := errors.AsType[*DeviceError](err); !ok || device.Code != test.code {
 			t.Errorf("reply %v: %v, want device error %q", test.reply, err, test.code)
 		}
 		if test.want != nil && !errors.Is(err, test.want) {
@@ -118,8 +117,8 @@ func TestBindInterruptsAndReleases(t *testing.T) {
 }
 
 func isTimeout(err error) bool {
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
+	netErr, ok := errors.AsType[net.Error](err)
+	return ok && netErr.Timeout()
 }
 
 // bufferConn is a net.Conn over a buffer, for framing tests.

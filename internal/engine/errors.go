@@ -66,8 +66,7 @@ func failure(ctx context.Context, operation string, err error) error {
 	if err == nil {
 		return nil
 	}
-	var classified *Error
-	if errors.As(err, &classified) {
+	if _, ok := errors.AsType[*Error](err); ok {
 		return err
 	}
 	return &Error{Kind: classify(ctx, err), Detail: operation + ": " + err.Error()}
@@ -111,8 +110,8 @@ func classify(ctx context.Context, err error) ErrorKind {
 
 // isCanceledByUser recognizes the error of Cancel tapped on the phone.
 func isCanceledByUser(err error) bool {
-	var device *ios.DeviceError
-	return errors.As(err, &device) && strings.Contains(device.Code, "Canceled by user")
+	device, ok := errors.AsType[*ios.DeviceError](err)
+	return ok && strings.Contains(device.Code, "Canceled by user")
 }
 
 func afcKind(status afc.Error) ErrorKind {
@@ -151,8 +150,8 @@ func storeFailure(operation string, err error) error {
 // verdictFailure classifies the device refusing a mobilebackup2 request;
 // an unconfirmed passcode fails a backup as not confirmed.
 func verdictFailure(err error, backup bool) error {
-	var refusal *backup2.Error
-	if !errors.As(err, &refusal) {
+	refusal, ok := errors.AsType[*backup2.Error](err)
+	if !ok {
 		return err
 	}
 	kind := ErrorProtocol

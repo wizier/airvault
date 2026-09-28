@@ -5,8 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/wizier/airvault/internal/ios"
 	"github.com/wizier/airvault/internal/ios/afc"
@@ -44,7 +43,7 @@ func (e *Engine) backupInfo(ctx context.Context, udid string) (*iosbackup.Info, 
 		return nil, err
 	}
 	defer session.Close()
-	values, _ := ios.Value[map[string]any](ctx, session.Lockdown, "", "")
+	values, _ := session.Value[map[string]any](ctx, "", "")
 	value := func(key string) string {
 		text, _ := values[key].(string)
 		return text
@@ -53,7 +52,7 @@ func (e *Engine) backupInfo(ctx context.Context, udid string) (*iosbackup.Info, 
 		BuildVersion:     value("BuildVersion"),
 		DeviceName:       value("DeviceName"),
 		DisplayName:      value("DeviceName"),
-		GUID:             strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", "")),
+		GUID:             strings.ToUpper(strings.ReplaceAll(uuid.NewV4().String(), "-", "")),
 		ICCID:            value("IntegratedCircuitCardIdentity"),
 		IMEI:             value("InternationalMobileEquipmentIdentity"),
 		MEID:             value("MobileEquipmentIdentifier"),
@@ -68,10 +67,10 @@ func (e *Engine) backupInfo(ctx context.Context, udid string) (*iosbackup.Info, 
 		ITunesVersion:    "10.0.1",
 		ITunesSettings:   map[string]any{},
 	}
-	if version, err := ios.Value[string](ctx, session.Lockdown, "com.apple.mobile.iTunes", "MinITunesVersion"); err == nil {
+	if version, err := session.Value[string](ctx, "com.apple.mobile.iTunes", "MinITunesVersion"); err == nil {
 		info.ITunesVersion = version
 	}
-	if settings, err := ios.Value[any](ctx, session.Lockdown, "com.apple.iTunes", ""); err == nil {
+	if settings, err := session.Value[any](ctx, "com.apple.iTunes", ""); err == nil {
 		info.ITunesSettings = settings
 	}
 	e.addITunesFiles(ctx, udid, info)

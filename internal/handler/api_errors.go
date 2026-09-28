@@ -47,13 +47,13 @@ func mapAndLogAPIError(c *echo.Context, err error) (int, errorBody) {
 }
 
 func mapAPIError(err error) (int, errorBody) {
-	var validation *domain.ValidationError
-	var action *domain.ActionError
-	switch {
-	case errors.As(err, &validation):
+	if validation, ok := errors.AsType[*domain.ValidationError](err); ok {
 		return http.StatusUnprocessableEntity, errorBody{Code: validation.Code}
-	case errors.As(err, &action):
+	}
+	if action, ok := errors.AsType[*domain.ActionError](err); ok {
 		return http.StatusConflict, errorBody{Code: action.Code}
+	}
+	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, errorBody{Code: "not_found"}
 	case errors.Is(err, domain.ErrDeviceOffline):

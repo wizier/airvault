@@ -277,9 +277,8 @@ func TestVerdict(t *testing.T) {
 	if err := Verdict(answer("ErrorCode", int64(0))); err != nil {
 		t.Errorf("success = %v", err)
 	}
-	var refusal *Error
-	if err := Verdict(answer("ErrorCode", int64(CodeDeviceLocked), "ErrorDescription", "locked")); !errors.As(err, &refusal) ||
-		refusal.Code != CodeDeviceLocked || !strings.Contains(err.Error(), "locked") {
+	err := Verdict(answer("ErrorCode", int64(CodeDeviceLocked), "ErrorDescription", "locked"))
+	if refusal, ok := errors.AsType[*Error](err); !ok || refusal.Code != CodeDeviceLocked || !strings.Contains(err.Error(), "locked") {
 		t.Errorf("refusal = %v", err)
 	}
 	for _, outcome := range []*Dict{nil, answer("ErrorDescription", "no code"), answer("ErrorCode", "zero")} {
@@ -303,8 +302,7 @@ func TestOutcomeSkipsIntermediateMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	outcome, err := conn.Outcome(ctx)
-	var refusal *Error
-	if err != nil || !errors.As(Verdict(outcome), &refusal) || refusal.Code != CodeWrongPassword {
+	if refusal, ok := errors.AsType[*Error](Verdict(outcome)); err != nil || !ok || refusal.Code != CodeWrongPassword {
 		t.Errorf("outcome = %v, %v", outcome, err)
 	}
 }

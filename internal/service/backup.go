@@ -5,15 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"time"
-
-	"github.com/google/uuid"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/library"
 	"github.com/wizier/airvault/internal/model"
 	"github.com/wizier/airvault/internal/objectstore"
+	"log/slog"
+	"time"
+	"uuid"
 )
 
 const deviceAppearWindow = 2 * time.Minute
@@ -88,11 +87,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	if err != nil {
 		return runOutcome{}, fmt.Errorf("couldn't prepare an immutable backup snapshot: %w", err)
 	}
-	snapshotID, err := uuid.NewV7()
-	if err != nil {
-		return runOutcome{}, fmt.Errorf("allocate snapshot id: %w", err)
-	}
-	id, startedAt := snapshotID.String(), time.Now().Unix()
+	id, startedAt := uuid.NewV7().String(), time.Now().Unix()
 	if err := ctx.Err(); err != nil {
 		// The engine has not started, so no staging data or pooled objects exist.
 		return runOutcome{}, err
