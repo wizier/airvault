@@ -53,5 +53,5 @@ EXPOSE 8080
 ENV AIRVAULT_BIND_HOST=0.0.0.0
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${AIRVAULT_PORT:-8080}/healthz" || exit 1
+  CMD ["airvault", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

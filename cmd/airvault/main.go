@@ -32,6 +32,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck())
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "error", err)
 		os.Exit(1)
@@ -185,4 +188,26 @@ func configureHTTPServer(base context.Context, server *http.Server) {
 	server.ReadHeaderTimeout = 10 * time.Second
 	server.IdleTimeout = 60 * time.Second
 	server.BaseContext = func(net.Listener) context.Context { return base }
+}
+
+// healthcheck asks /healthz where the server listens, as configured, for the
+// container's health probe.
+func healthcheck() int {
+	host, port, err := net.SplitHostPort(config.Load().ListenAddr)
+	if err != nil {
+		return 1
+	}
+	if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
+		host = "localhost"
+	}
+	client := http.Client{Timeout: 4 * time.Second}
+	response, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		return 1
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }

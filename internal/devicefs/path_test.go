@@ -2,21 +2,22 @@ package devicefs
 
 import "testing"
 
-func TestParsePathPreservesWhitespace(t *testing.T) {
-	path, err := ParsePath("DCIM/100APPLE/ photo .HEIC ")
+// A name is taken as it is: iOS allows whitespace and backslashes in it.
+func TestParsePathKeepsNamesAsTheyAre(t *testing.T) {
+	path, err := ParsePath(`DCIM/100APPLE/ photo\2 .HEIC `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := path.String(); got != "DCIM/100APPLE/ photo .HEIC " {
+	if got := path.String(); got != `DCIM/100APPLE/ photo\2 .HEIC ` {
 		t.Fatalf("path changed: %q", got)
 	}
-	if got := path.Name(); got != " photo .HEIC " {
+	if got := path.Name(); got != ` photo\2 .HEIC ` {
 		t.Fatalf("path name changed: %q", got)
 	}
 }
 
 func TestParsePathRejectsUnsafeValues(t *testing.T) {
-	for _, value := range []string{"../file", "DCIM//file", "/DCIM/file", "DCIM/file\x00suffix", `DCIM\file`} {
+	for _, value := range []string{"../file", "DCIM//file", "/DCIM/file", "DCIM/file\x00suffix"} {
 		if _, err := ParsePath(value); err == nil {
 			t.Errorf("ParsePath(%q) succeeded", value)
 		}

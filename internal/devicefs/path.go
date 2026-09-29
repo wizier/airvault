@@ -33,7 +33,7 @@ func ParsePath(value string) (Path, error) {
 
 func validComponent(name string) bool {
 	return name != "" && name != "." && name != ".." && len(name) <= maxComponentBytes &&
-		!strings.ContainsAny(name, "/\\\x00") && utf8.ValidString(name)
+		!strings.ContainsAny(name, "/\x00") && utf8.ValidString(name)
 }
 
 func (p Path) String() string { return p.relative }

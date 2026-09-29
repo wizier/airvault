@@ -33,6 +33,7 @@ func (h *Handler) Router() *echo.Echo {
 	e.HTTPErrorHandler = h.errorHandler
 
 	e.Use(echoMiddleware.Recover())
+	e.Use(writeDeadlines(writeTimeout))
 	// The SPA shell is public; /api is gated by apiAuthMiddleware on its group.
 	// CSRF stays global so the shell load seeds the token before the login POST.
 	e.Use(csrfMiddleware())

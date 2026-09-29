@@ -77,10 +77,13 @@ export USBMUXD_SOCKET_ADDRESS="$SOCKET_DIR/usbmuxd-net"
 "${RUN_AS[@]}" airvault &
 APP=$!
 
-term() { kill -TERM "$APP" "$NETMUXD" "$USBMUXD" 2>/dev/null || true; }
-trap term TERM INT
-
-wait -n "$APP" "$NETMUXD" "$USBMUXD"; rc=$?
-term
+# The daemon stops before the muxers, so the runs it ends can still reach the
+# phones. `|| rc=$?` keeps set -e from exiting on the signal-interrupted wait.
+trap 'kill -TERM "$APP" 2>/dev/null || true' TERM INT
+rc=0
+wait -n "$APP" "$NETMUXD" "$USBMUXD" || rc=$?
+kill -TERM "$APP" 2>/dev/null || true
+wait "$APP" || true
+kill -TERM "$NETMUXD" "$USBMUXD" 2>/dev/null || true
 wait || true
 exit "$rc"
