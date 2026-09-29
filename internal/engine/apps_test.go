@@ -17,7 +17,9 @@ import (
 func TestListApps(t *testing.T) {
 	p := newTestPhone(t)
 	p.phone.Handle(ios.InstallationProxyService, xmlService(func(request map[string]any) map[string]any {
-		if options, _ := request["ClientOptions"].(map[string]any); request["Command"] != "Lookup" || options["ApplicationType"] != "User" {
+		options, _ := request["ClientOptions"].(map[string]any)
+		attributes, _ := options["ReturnAttributes"].([]any)
+		if request["Command"] != "Lookup" || options["ApplicationType"] != "User" || len(attributes) != len(appAttributes) {
 			return map[string]any{"Error": "BadRequest"}
 		}
 		return map[string]any{"LookupResult": map[string]any{

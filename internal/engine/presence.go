@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/wizier/airvault/internal/ios"
@@ -69,7 +70,7 @@ func (w *presenceWatch) step(ctx context.Context) (PresenceState, bool) {
 	event, err := w.listener.Next(quiet)
 	cancel()
 	switch {
-	case err != nil && ctx.Err() == nil && quiet.Err() != nil:
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
 		w.drop() // the next step subscribes again
 		return PresenceState{}, false
 	case err != nil:

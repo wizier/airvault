@@ -21,13 +21,13 @@ func NewInstallationProxy(conn net.Conn) *InstallationProxy {
 func (p *InstallationProxy) Close() error { return p.conn.Close() }
 
 // LookupApps returns the apps' Info.plist attributes by bundle id.
-func (p *InstallationProxy) LookupApps(ctx context.Context, applicationType string) (map[string]map[string]any, error) {
+func (p *InstallationProxy) LookupApps(ctx context.Context, applicationType string, attributes []string) (map[string]map[string]any, error) {
 	var reply struct {
 		LookupResult map[string]any `plist:"LookupResult"`
 	}
 	request := map[string]any{
 		"Command":       "Lookup",
-		"ClientOptions": map[string]any{"ApplicationType": applicationType},
+		"ClientOptions": map[string]any{"ApplicationType": applicationType, "ReturnAttributes": attributes},
 	}
 	if err := p.conn.Exchange(ctx, request, &reply); err != nil {
 		return nil, fmt.Errorf("lookup apps: %w", err)

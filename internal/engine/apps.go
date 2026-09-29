@@ -38,11 +38,14 @@ type InstallProgress struct {
 	Percent int          `json:"percent"`
 }
 
+// Asked for by name: otherwise the phone sends every Info.plist whole.
+var appAttributes = []string{"CFBundleDisplayName", "CFBundleName", "CFBundleShortVersionString", "CFBundleVersion", "UIFileSharingEnabled"}
+
 func (e *Engine) ListApps(ctx context.Context, device DeviceID) ([]App, error) {
 	return call(ctx, deviceWorkTimeout, "app list", func(ctx context.Context) ([]App, error) {
 		var lookup map[string]map[string]any
 		err := e.installationProxy(ctx, device, func(proxy *ios.InstallationProxy) (err error) {
-			lookup, err = proxy.LookupApps(ctx, "User")
+			lookup, err = proxy.LookupApps(ctx, "User", appAttributes)
 			return err
 		})
 		if err != nil {

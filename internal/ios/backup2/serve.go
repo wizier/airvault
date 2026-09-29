@@ -56,7 +56,6 @@ const (
 
 const (
 	downloadChunk = 32 << 10 // what the reference hosts send
-	maxName       = 64 << 10 // a device path in an upload
 	maxBlock      = 64 << 20 // one upload data block
 	emitEvery     = 256 << 10
 )
@@ -68,23 +67,25 @@ const messageGrace = 5 * time.Second
 // Serve answers the device until it reports the outcome, nil when it
 // disconnected without one. A file the host cannot give is reported to the
 // device; only a broken conversation is an error. Like Finder, it heeds ctx
-// only between messages.
+// only between messages. A nil storage refuses every request.
 func (c *Conn) Serve(ctx context.Context, storage Storage, progress func(Progress)) (*Dict, error) {
-	stop := context.AfterFunc(ctx, func() {
-		time.AfterFunc(messageGrace, func() { _ = c.conn.SetDeadline(time.Now()) })
-	})
-	defer stop()
+	cutoff, cut := context.WithCancel(context.WithoutCancel(ctx))
+	defer cut()
+	defer context.AfterFunc(ctx, func() { time.AfterFunc(messageGrace, cut) })()
 	if progress == nil {
 		progress = func(Progress) {}
 	}
 	s := &server{conn: c, storage: storage, report: progress}
 	for {
+		var tag string
+		var message []any
 		// Only the wait for the device's next message ends with ctx.
-		release := ios.Bind(ctx, c.conn)
-		tag, message, err := c.recv()
-		release()
+		_, err := ios.Guard(ctx, c.conn, func() (err error) {
+			tag, message, err = c.recv()
+			return err
+		})
 		if err != nil {
-			return nil, cmp.Or(ctx.Err(), err)
+			return nil, err
 		}
 		switch tag {
 		case "DLMessageProcessMessage":
@@ -93,37 +94,8 @@ func (c *Conn) Serve(ctx context.Context, storage Storage, progress func(Progres
 		case "DLMessageDisconnect":
 			return nil, nil
 		}
-		if !s.started {
-			s.started = true
-			progress(Progress{Percent: -1})
-		}
-		target := s.target(tag, message)
-		switch tag {
-		case "DLMessageDownloadFiles":
-			err = s.download(message, target)
-		case "DLMessageUploadFiles":
-			err = s.upload(message, target)
-		case "DLMessageGetFreeDiskSpace":
-			err = s.status(0, "", storage.FreeSpace())
-		case "DLContentsOfDirectory":
-			err = s.status(0, "", s.list(message))
-		case "DLMessageCreateDirectory":
-			err = s.status(s.makeDir(message), "", nil)
-		case "DLMessageMoveFiles", "DLMessageMoveItems":
-			err = s.status(s.move(message), "", map[string]any{})
-		case "DLMessageRemoveFiles", "DLMessageRemoveItems":
-			err = s.status(s.remove(message), "", map[string]any{})
-		case "DLMessageCopyItem":
-			err = s.status(s.copy(message), "", map[string]any{})
-		default:
-			err = s.status(-1, "Operation not supported", nil)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if target > 0 && tag != "DLMessageDownloadFiles" && tag != "DLMessageUploadFiles" {
-			s.tracker.finishBatch(0, target)
-			s.emit(0, batchPosition{}, 0)
+		if _, err := ios.Guard(cutoff, c.conn, func() error { return s.handle(tag, message) }); err != nil {
+			return nil, cmp.Or(ctx.Err(), err)
 		}
 	}
 }
@@ -134,6 +106,43 @@ type server struct {
 	report  func(Progress)
 	tracker tracker
 	started bool
+}
+
+func (s *server) handle(tag string, message []any) error {
+	if s.storage == nil {
+		return s.status(-1, "Operation not supported", nil)
+	}
+	if !s.started {
+		s.started = true
+		s.report(Progress{Percent: -1})
+	}
+	target := s.target(tag, message)
+	var err error
+	switch tag {
+	case "DLMessageDownloadFiles":
+		return s.download(message, target)
+	case "DLMessageUploadFiles":
+		return s.upload(message, target)
+	case "DLMessageGetFreeDiskSpace":
+		err = s.status(0, "", s.storage.FreeSpace())
+	case "DLContentsOfDirectory":
+		err = s.status(0, "", s.list(message))
+	case "DLMessageCreateDirectory":
+		err = s.status(s.makeDir(message), "", nil)
+	case "DLMessageMoveFiles", "DLMessageMoveItems":
+		err = s.status(s.move(message), "", map[string]any{})
+	case "DLMessageRemoveFiles", "DLMessageRemoveItems":
+		err = s.status(s.remove(message), "", map[string]any{})
+	case "DLMessageCopyItem":
+		err = s.status(s.copy(message), "", map[string]any{})
+	default:
+		err = s.status(-1, "Operation not supported", nil)
+	}
+	if err == nil && target > 0 {
+		s.tracker.finishBatch(0, target)
+		s.emit(0, batchPosition{}, 0)
+	}
+	return err
 }
 
 // target is the percent the device says this message's work ends at.

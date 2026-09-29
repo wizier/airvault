@@ -156,15 +156,13 @@ func (m Mux) Connect(ctx context.Context, device Device, port uint16) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
-	release := Bind(ctx, conn)
-	// The muxer takes the port in network byte order inside a host-order field.
-	err = requestResult(conn, muxRequest("Connect", map[string]any{
-		"DeviceID":   device.ID,
-		"PortNumber": port<<8 | port>>8,
-	}))
-	if !release() && err == nil {
-		err = ctx.Err()
-	}
+	_, err = Guard(ctx, conn, func() error {
+		// The muxer takes the port in network byte order inside a host-order field.
+		return requestResult(conn, muxRequest("Connect", map[string]any{
+			"DeviceID":   device.ID,
+			"PortNumber": port<<8 | port>>8,
+		}))
+	})
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("connect to %s port %d: %w", device.UDID, port, err)
@@ -187,11 +185,7 @@ func (m Mux) Listen(ctx context.Context) (*Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	release := Bind(ctx, conn)
-	err = requestResult(conn, muxRequest("Listen", nil))
-	if !release() && err == nil {
-		err = ctx.Err()
-	}
+	_, err = Guard(ctx, conn, func() error { return requestResult(conn, muxRequest("Listen", nil)) })
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("listen: %w", err)
@@ -200,13 +194,11 @@ func (m Mux) Listen(ctx context.Context) (*Listener, error) {
 }
 
 func (l *Listener) Next(ctx context.Context) (ListenEvent, error) {
-	release := Bind(ctx, l.conn)
-	defer release()
 	var event struct {
 		MessageType string `plist:"MessageType"`
 		DeviceID    uint32 `plist:"DeviceID"`
 	}
-	if err := readMux(l.conn, &event); err != nil {
+	if _, err := Guard(ctx, l.conn, func() error { return readMux(l.conn, &event) }); err != nil {
 		return ListenEvent{}, err
 	}
 	return ListenEvent{Type: event.MessageType, DeviceID: event.DeviceID}, nil
@@ -230,12 +222,13 @@ func (m Mux) exchange(ctx context.Context, request map[string]any, reply any) er
 		return err
 	}
 	defer conn.Close()
-	release := Bind(ctx, conn)
-	defer release()
-	if err := writeMux(conn, request); err != nil {
-		return err
-	}
-	return readMux(conn, reply)
+	_, err = Guard(ctx, conn, func() error {
+		if err := writeMux(conn, request); err != nil {
+			return err
+		}
+		return readMux(conn, reply)
+	})
+	return err
 }
 
 func (m Mux) result(ctx context.Context, request map[string]any) error {
@@ -244,9 +237,8 @@ func (m Mux) result(ctx context.Context, request map[string]any) error {
 		return err
 	}
 	defer conn.Close()
-	release := Bind(ctx, conn)
-	defer release()
-	return requestResult(conn, request)
+	_, err = Guard(ctx, conn, func() error { return requestResult(conn, request) })
+	return err
 }
 
 func requestResult(conn net.Conn, request map[string]any) error {

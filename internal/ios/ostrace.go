@@ -33,27 +33,28 @@ type OSTrace struct {
 }
 
 func StartOSTrace(ctx context.Context, conn net.Conn) (*OSTrace, error) {
-	release := Bind(ctx, conn)
-	defer release()
-	request := map[string]any{"Request": "StartActivity", "Pid": -1, "MessageFilter": 65535, "StreamFlags": 60}
-	if err := NewPlistConn(conn, plist.BinaryFormat).Send(request); err != nil {
-		return nil, fmt.Errorf("start log stream: %w", err)
-	}
 	reader := bufio.NewReader(conn)
-	// One byte precedes the framed reply.
-	if _, err := reader.ReadByte(); err != nil {
-		return nil, fmt.Errorf("start log stream: %w", err)
-	}
 	var reply struct {
 		Status string `plist:"Status"`
 	}
-	body, err := ReadFrame(reader)
-	if err == nil {
-		err = replyError(body)
-	}
-	if err == nil {
-		err = decodePlist(body, &reply)
-	}
+	_, err := Guard(ctx, conn, func() error {
+		request := map[string]any{"Request": "StartActivity", "Pid": -1, "MessageFilter": 65535, "StreamFlags": 60}
+		if err := NewPlistConn(conn, plist.BinaryFormat).Send(request); err != nil {
+			return err
+		}
+		// One byte precedes the framed reply.
+		if _, err := reader.ReadByte(); err != nil {
+			return err
+		}
+		body, err := ReadFrame(reader)
+		if err == nil {
+			err = replyError(body)
+		}
+		if err == nil {
+			err = decodePlist(body, &reply)
+		}
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("start log stream: %w", err)
 	}
@@ -66,19 +67,22 @@ func StartOSTrace(ctx context.Context, conn net.Conn) (*OSTrace, error) {
 func (t *OSTrace) Close() error { return t.conn.Close() }
 
 func (t *OSTrace) Next(ctx context.Context) (LogRecord, error) {
-	release := Bind(ctx, t.conn)
-	defer release()
-	var header [5]byte
-	if _, err := io.ReadFull(t.reader, header[:]); err != nil {
+	var packet []byte
+	_, err := Guard(ctx, t.conn, func() error {
+		var header [5]byte
+		if _, err := io.ReadFull(t.reader, header[:]); err != nil {
+			return err
+		}
+		size := binary.LittleEndian.Uint32(header[1:])
+		if header[0] != 0x02 || size > maxLogRecord {
+			return fmt.Errorf("%w: log record marker %#x, %d bytes", ErrProtocol, header[0], size)
+		}
+		packet = make([]byte, size)
+		_, err := io.ReadFull(t.reader, packet)
+		return noEOF(err)
+	})
+	if err != nil {
 		return LogRecord{}, err
-	}
-	size := binary.LittleEndian.Uint32(header[1:])
-	if header[0] != 0x02 || size > maxLogRecord {
-		return LogRecord{}, fmt.Errorf("%w: log record marker %#x, %d bytes", ErrProtocol, header[0], size)
-	}
-	packet := make([]byte, size)
-	if _, err := io.ReadFull(t.reader, packet); err != nil {
-		return LogRecord{}, noEOF(err)
 	}
 	return parseLogRecord(packet)
 }

@@ -79,11 +79,8 @@ func (c *PlistConn) RecvContext(ctx context.Context, v any) error {
 }
 
 func (c *PlistConn) bound(ctx context.Context, exchange func() error) error {
-	release := Bind(ctx, c.Conn)
-	err := exchange()
-	if !release() {
-		c.torn = true
-	}
+	torn, err := Guard(ctx, c.Conn, exchange)
+	c.torn = c.torn || torn
 	return err
 }
 

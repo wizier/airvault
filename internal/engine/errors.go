@@ -46,6 +46,7 @@ const (
 type Error struct {
 	Kind   ErrorKind
 	Detail string
+	Err    error
 }
 
 func (e *Error) Error() string {
@@ -54,6 +55,8 @@ func (e *Error) Error() string {
 	}
 	return "device engine operation failed"
 }
+
+func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Is(target error) bool {
 	return target == fs.ErrNotExist && e.Kind == ErrorNotFound
@@ -69,7 +72,7 @@ func failure(ctx context.Context, operation string, err error) error {
 	if _, ok := errors.AsType[*Error](err); ok {
 		return err
 	}
-	return &Error{Kind: classify(ctx, err), Detail: operation + ": " + err.Error()}
+	return &Error{Kind: classify(ctx, err), Detail: operation + ": " + err.Error(), Err: err}
 }
 
 // classify consults the context first: it explains the I/O errors it caused.
@@ -144,7 +147,7 @@ func storeFailure(operation string, err error) error {
 	case errors.Is(err, syscall.ENOSPC), errors.Is(err, syscall.EDQUOT):
 		kind = ErrorStorageFull
 	}
-	return &Error{Kind: kind, Detail: operation + ": " + err.Error()}
+	return &Error{Kind: kind, Detail: operation + ": " + err.Error(), Err: err}
 }
 
 // verdictFailure classifies the device refusing a mobilebackup2 request;
@@ -166,5 +169,5 @@ func verdictFailure(err error, backup bool) error {
 	case backup2.CodeFindMyEnabled:
 		kind = ErrorFindMyEnabled
 	}
-	return &Error{Kind: kind, Detail: refusal.Error()}
+	return &Error{Kind: kind, Detail: refusal.Error(), Err: refusal}
 }

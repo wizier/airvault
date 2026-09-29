@@ -53,12 +53,12 @@ func (e *Engine) EraseDevice(ctx context.Context, device DeviceID) error {
 		return err
 	}
 	defer conn.Close()
-	if err := conn.Erase(ctx); err != nil {
+	if err := conn.Erase(ctx, udid); err != nil {
 		return failure(ctx, "erase", err)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), passwordPromptTimeout)
 	defer cancel()
-	outcome, err := conn.Outcome(ctx)
+	outcome, err := conn.Serve(ctx, nil, nil)
 	switch {
 	case err != nil && classify(ctx, err) == ErrorConnectionLost, err == nil && outcome == nil:
 		return nil

@@ -34,12 +34,7 @@ type Conn struct {
 // Open runs the DeviceLink and mobilebackup2 handshakes.
 func Open(ctx context.Context, conn net.Conn) (*Conn, error) {
 	c := &Conn{conn: conn, reader: bufio.NewReaderSize(conn, 256<<10), writer: bufio.NewWriterSize(conn, 256<<10)}
-	release := ios.Bind(ctx, conn)
-	err := c.handshake()
-	if !release() && err == nil {
-		err = ctx.Err()
-	}
-	if err != nil {
+	if _, err := ios.Guard(ctx, conn, c.handshake); err != nil {
 		return nil, fmt.Errorf("mobilebackup2 handshake: %w", err)
 	}
 	return c, nil
@@ -125,33 +120,13 @@ func (c *Conn) ChangePassword(ctx context.Context, target, old, new string) erro
 }
 
 // Erase asks the device to erase all content and settings, as Finder does.
-func (c *Conn) Erase(ctx context.Context) error {
-	return c.request(ctx, "EraseDevice", nil)
+func (c *Conn) Erase(ctx context.Context, target string) error {
+	return c.request(ctx, "EraseDevice", map[string]any{"TargetIdentifier": target})
 }
 
 func (c *Conn) request(ctx context.Context, name string, fields map[string]any) error {
-	release := ios.Bind(ctx, c.conn)
-	defer release()
-	return c.sendMessage(name, fields)
-}
-
-// Outcome waits for the device's final answer, skipping what comes before
-// it; nil when the device disconnected without one.
-func (c *Conn) Outcome(ctx context.Context) (*Dict, error) {
-	release := ios.Bind(ctx, c.conn)
-	defer release()
-	for {
-		tag, message, err := c.recv()
-		switch {
-		case err != nil:
-			return nil, err
-		case tag == "DLMessageProcessMessage":
-			outcome, _ := at(message, 1).(*Dict)
-			return outcome, nil
-		case tag == "DLMessageDisconnect":
-			return nil, nil
-		}
-	}
+	_, err := ios.Guard(ctx, c.conn, func() error { return c.sendMessage(name, fields) })
+	return err
 }
 
 func (c *Conn) sendMessage(name string, fields map[string]any) error {

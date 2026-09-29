@@ -90,7 +90,7 @@ func transferResult(ctx context.Context, operation string, err error) error {
 	}
 	err = failure(ctx, operation, err)
 	if classified, ok := errors.AsType[*Error](err); ok && ctx.Err() != nil && classified.Kind != ErrorCancelled {
-		return &Error{Kind: ErrorCancelled, Detail: classified.Detail}
+		return &Error{Kind: ErrorCancelled, Detail: classified.Detail, Err: classified.Err}
 	}
 	return err
 }

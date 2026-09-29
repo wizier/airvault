@@ -57,7 +57,7 @@ func TestEraseDevice(t *testing.T) {
 			var asked atomic.Bool
 			p.phone.Handle(backup2.Service, iostest.Backup2(t, func(dl *iostest.DeviceLink) {
 				asked.Store(true)
-				if request := dl.Request(); request["MessageName"] != "EraseDevice" {
+				if request := dl.Request(); request["MessageName"] != "EraseDevice" || request["TargetIdentifier"] != string(p.udid) {
 					t.Errorf("request = %v", request)
 				}
 				c.device(dl)

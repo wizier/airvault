@@ -288,20 +288,24 @@ func TestVerdict(t *testing.T) {
 	}
 }
 
-func TestOutcomeSkipsIntermediateMessages(t *testing.T) {
+// Without storage the host still answers each request, or the device would
+// wait for the reply instead of giving its verdict.
+func TestServeWithoutStorageRefuses(t *testing.T) {
 	conn := converse(t, func(dl *iostest.DeviceLink) {
 		request := dl.Request()
 		if request["MessageName"] != "ChangePassword" || request["OldPassword"] != nil || request["NewPassword"] != "secret" {
 			t.Errorf("request = %v", request)
 		}
-		dl.Send("DLMessageGetFreeDiskSpace", "UDID")
+		if code, _ := dl.Ask("DLMessageGetFreeDiskSpace", "UDID"); code != -1 {
+			t.Errorf("free space answered %d, want a refusal", code)
+		}
 		dl.Finish(CodeWrongPassword, "wrong password")
 	})
 	ctx := context.Background()
 	if err := conn.ChangePassword(ctx, "UDID", "", "secret"); err != nil {
 		t.Fatal(err)
 	}
-	outcome, err := conn.Outcome(ctx)
+	outcome, err := conn.Serve(ctx, nil, nil)
 	if refusal, ok := errors.AsType[*Error](Verdict(outcome)); err != nil || !ok || refusal.Code != CodeWrongPassword {
 		t.Errorf("outcome = %v, %v", outcome, err)
 	}

@@ -86,7 +86,7 @@ func (e *Engine) awaitPasswordChange(ctx context.Context, conn *backup2.Conn, ud
 }
 
 func passwordVerdict(ctx context.Context, conn *backup2.Conn) error {
-	outcome, err := conn.Outcome(ctx)
+	outcome, err := conn.Serve(ctx, nil, nil)
 	if err == nil {
 		err = backup2.Verdict(outcome)
 	}

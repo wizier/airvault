@@ -81,24 +81,30 @@ func TestRecvReturnsDeviceErrors(t *testing.T) {
 	}
 }
 
-// Cancelling the context interrupts a blocked read; the stream is then not
-// intact. A context that ends quietly leaves the connection reusable.
-func TestBindInterruptsAndReleases(t *testing.T) {
+// Cancelling the context interrupts a blocked read and tears the stream, even
+// when the exchange itself got through. A context that ends quietly leaves the
+// connection reusable.
+func TestGuardInterruptsAndReleases(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	release := Bind(ctx, client)
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		cancel()
 	}()
-	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, context.Canceled) && !isTimeout(err) {
-		t.Fatalf("read under a cancelled context: %v", err)
+	torn, err := Guard(ctx, client, func() error {
+		_, err := client.Read(make([]byte, 1))
+		return err
+	})
+	if !torn || !errors.Is(err, context.Canceled) {
+		t.Fatalf("read under a cancelled context: torn %v, %v", torn, err)
 	}
-	if release() {
-		t.Fatal("an interrupted connection reported intact")
+
+	ctx, cancel = context.WithCancel(context.Background())
+	if torn, err := Guard(ctx, client, func() error { cancel(); return nil }); !torn || !errors.Is(err, context.Canceled) {
+		t.Fatalf("an exchange its context outlived: torn %v, %v", torn, err)
 	}
 
 	quiet, peer := net.Pipe()
@@ -106,19 +112,14 @@ func TestBindInterruptsAndReleases(t *testing.T) {
 	defer peer.Close()
 	ctx, cancel = context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
-	if release := Bind(ctx, quiet); !release() {
-		t.Fatal("an untouched connection reported interrupted")
+	if torn, err := Guard(ctx, quiet, func() error { return nil }); torn || err != nil {
+		t.Fatalf("an untouched connection: torn %v, %v", torn, err)
 	}
 	cancel()
 	go func() { _, _ = peer.Write([]byte{1}) }()
 	if _, err := quiet.Read(make([]byte, 1)); err != nil {
 		t.Fatalf("a released connection must outlive its context: %v", err)
 	}
-}
-
-func isTimeout(err error) bool {
-	netErr, ok := errors.AsType[net.Error](err)
-	return ok && netErr.Timeout()
 }
 
 // bufferConn is a net.Conn over a buffer, for framing tests.

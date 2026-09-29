@@ -229,9 +229,12 @@ func (c *Client) request(ctx context.Context, op uint64, header, payload []byte)
 	if c.torn {
 		return packet{}, errTorn
 	}
-	release := ios.Bind(ctx, c.conn)
-	reply, err := c.exchange(op, header, payload)
-	if !release() || err != nil {
+	var reply packet
+	torn, err := ios.Guard(ctx, c.conn, func() (err error) {
+		reply, err = c.exchange(op, header, payload)
+		return err
+	})
+	if torn || err != nil {
 		c.torn = true
 		return packet{}, err
 	}

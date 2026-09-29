@@ -92,6 +92,7 @@ func (l *Lockdown) StartSession(ctx context.Context, record *PairRecord) error {
 	}
 	conn, err := handshake(ctx, l.conn.Conn, config)
 	if err != nil {
+		l.conn.torn = true
 		return fmt.Errorf("start session: %w", err)
 	}
 	l.conn = NewPlistConn(conn, plist.XMLFormat)

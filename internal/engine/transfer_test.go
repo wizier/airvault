@@ -3,8 +3,13 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sync"
@@ -31,6 +36,7 @@ var (
 // scripts mobilebackup2 itself.
 type transferFixture struct {
 	*testPhone
+	root          string
 	objects       *objectstore.Store
 	media         *iostest.FS
 	done          <-chan struct{}
@@ -46,7 +52,8 @@ func newTransferFixture(t *testing.T) *transferFixture {
 	t.Helper()
 	f := &transferFixture{testPhone: newTestPhone(t), media: iostest.NewFS(), done: t.Context().Done(),
 		cancelOnPhone: make(chan struct{}), finished: make(chan struct{}), asserted: make(chan struct{})}
-	objects, err := objectstore.New(t.TempDir())
+	f.root = t.TempDir()
+	objects, err := objectstore.New(f.root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,6 +437,27 @@ func TestRestoreSnapshotFailures(t *testing.T) {
 				t.Fatal("the staged app list was left on the phone")
 			}
 		})
+	}
+}
+
+// A restore that meets a missing object fails as integrity and keeps the
+// store's error, so the restore point can be marked damaged.
+func TestRestoreSnapshotKeepsTheDamage(t *testing.T) {
+	f := newTransferFixture(t)
+	backup := f.publish(t, "PHONE-UDID", map[string][]byte{"photo": []byte("photo")})
+	sum := sha256.Sum256([]byte("photo"))
+	ref := hex.EncodeToString(sum[:])
+	if err := os.Remove(filepath.Join(f.root, "PHONE-UDID", "objects", ref[:2], ref)); err != nil {
+		t.Fatal(err)
+	}
+	f.mobileBackup(t, func(dl *iostest.DeviceLink) {
+		dl.Request()
+		dl.Download(50, "PHONE-UDID/photo")
+		dl.Finish(0, "")
+	})
+	err := f.engine.RestoreSnapshot(context.Background(), f.udid, backup, RestoreOptions{}, nil)
+	if kindOf(err) != ErrorIntegrity || !errors.Is(err, objectstore.ErrIntegrity) {
+		t.Fatalf("err = %v", err)
 	}
 }
 
