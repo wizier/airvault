@@ -39,6 +39,32 @@ func (s *Service) Power(ctx context.Context, udid, action string) error {
 	return err
 }
 
+// EraseDevice erases the phone as Finder does. The erased phone no longer knows
+// this host, so it leaves AirVault; its backups stay, restorable onto any phone.
+func (s *Service) EraseDevice(ctx context.Context, udid string) error {
+	if err := s.reachableDevice(ctx, udid); err != nil {
+		return err
+	}
+	return s.runCommand(ctx, runKindErase, udid, func(ctx context.Context) error {
+		// A discovery pass must not commit the paired device back after it goes.
+		s.deviceRefreshMu.Lock()
+		defer s.deviceRefreshMu.Unlock()
+		if err := s.engine.EraseDevice(ctx, engine.DeviceID(udid)); err != nil {
+			return newTransferActionError("erase_failed", err)
+		}
+		slog.InfoContext(ctx, "erase: the phone is erasing", "udid", udid)
+		finalCtx := context.WithoutCancel(ctx)
+		if err := s.engine.ForgetPairing(engine.DeviceID(udid)); err != nil {
+			return fmt.Errorf("%w: %v", domain.ErrPairingCleanup, err)
+		}
+		if err := s.forgetDevice(finalCtx, udid); err != nil {
+			return err
+		}
+		s.bus.Emit(pairingChanged(udid, false))
+		return nil
+	}, deviceWriteResource(udid))
+}
+
 // Engine records whose JSON shape is already the API's are served as they are.
 type (
 	Battery     = engine.Battery

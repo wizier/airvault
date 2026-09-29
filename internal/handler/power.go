@@ -20,3 +20,10 @@ func (h *Handler) controlPower(c *echo.Context) error {
 	}
 	return c.NoContent(http.StatusNoContent)
 }
+
+func (h *Handler) eraseDevice(c *echo.Context) error {
+	if err := h.svc.EraseDevice(c.Request().Context(), c.Param("udid")); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
+}

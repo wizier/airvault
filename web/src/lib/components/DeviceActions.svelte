@@ -2,15 +2,17 @@
   import type { Device } from '../api/devices';
   import { deleteAllBackups, unpair } from '../stores.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import EraseDialog from './EraseDialog.svelte';
   import Icon from './Icon.svelte';
 
   let { device }: { device: Device } = $props();
 
+  type Action = 'unpair' | 'deleteBackups' | 'erase';
   // Opening the dialog moves focus into it, which also closes the dropdown.
-  let action = $state<'unpair' | 'deleteBackups' | null>(null);
+  let action = $state<Action | null>(null);
   let alsoDelete = $state(false);
 
-  function open(next: 'unpair' | 'deleteBackups') {
+  function open(next: Action) {
     action = next;
     alsoDelete = false;
   }
@@ -33,6 +35,20 @@
         Unpair device…
       </button>
     </li>
+    {#if device.paired}
+      <li class={device.connection === 'offline' ? 'disabled' : ''}>
+        <button
+          type="button"
+          class="text-error"
+          disabled={device.connection === 'offline'}
+          title={device.connection === 'offline' ? 'Connect the phone (Wi-Fi or USB) to erase it' : undefined}
+          onclick={() => open('erase')}
+        >
+          <Icon name="alert" size={15} />
+          Erase iPhone…
+        </button>
+      </li>
+    {/if}
   </ul>
 </div>
 
@@ -60,6 +76,8 @@
       </span>
     </label>
   </ConfirmDialog>
+{:else if action === 'erase'}
+  <EraseDialog {device} onclose={() => (action = null)} />
 {:else if action === 'deleteBackups'}
   <ConfirmDialog
     title={`Delete backups of ${device.name}?`}

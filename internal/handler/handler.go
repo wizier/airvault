@@ -99,6 +99,7 @@ func (h *Handler) Router() *echo.Echo {
 	device.POST("/backup-password", h.changeBackupPassword)
 	device.PUT("/auto-backup", h.setAutoBackup)
 	device.POST("/power", h.controlPower)
+	device.POST("/erase", h.eraseDevice)
 	device.GET("/battery", h.getDeviceBattery)
 	device.GET("/hardware", h.getHardware)
 	device.GET("/wallpaper", h.getWallpaper)

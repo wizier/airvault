@@ -4,9 +4,12 @@ import (
 	"context"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wizier/airvault/internal/ios"
+	"github.com/wizier/airvault/internal/ios/backup2"
+	"github.com/wizier/airvault/internal/ios/iostest"
 )
 
 func TestPower(t *testing.T) {
@@ -30,6 +33,42 @@ func TestPower(t *testing.T) {
 	}
 	if err := p.engine.Power(ctx, p.udid, PowerSleep+1); kindOf(err) != ErrorInvalidArgument {
 		t.Fatalf("bad action: %v", err)
+	}
+}
+
+// The phone answers an erase or hangs up to start it; with Find My on it is
+// never asked, since the erased phone would stay locked to its owner.
+func TestEraseDevice(t *testing.T) {
+	cases := []struct {
+		name   string
+		findMy bool
+		device func(dl *iostest.DeviceLink)
+		kind   ErrorKind
+	}{
+		{"accepted", false, func(dl *iostest.DeviceLink) { dl.Finish(0, "") }, 0},
+		{"hung up to erase", false, func(dl *iostest.DeviceLink) {}, 0},
+		{"refused", false, func(dl *iostest.DeviceLink) { dl.Finish(1, "failed") }, ErrorProtocol},
+		{"find my on", true, nil, ErrorFindMyEnabled},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := newTestPhone(t)
+			p.phone.SetValue("com.apple.fmip", "IsAssociated", c.findMy)
+			var asked atomic.Bool
+			p.phone.Handle(backup2.Service, iostest.Backup2(t, func(dl *iostest.DeviceLink) {
+				asked.Store(true)
+				if request := dl.Request(); request["MessageName"] != "EraseDevice" {
+					t.Errorf("request = %v", request)
+				}
+				c.device(dl)
+			}))
+			if err := p.engine.EraseDevice(context.Background(), p.udid); kindOf(err) != c.kind {
+				t.Fatalf("err = %v, want kind %d", err, c.kind)
+			}
+			if asked.Load() == c.findMy {
+				t.Fatalf("erase asked = %v with Find My %v", asked.Load(), c.findMy)
+			}
+		})
 	}
 }
 

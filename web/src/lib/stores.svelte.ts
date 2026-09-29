@@ -9,7 +9,7 @@ import {
   listRestorePoints,
   listRestoreSources,
 } from './api/backups';
-import { getDeviceBattery, getHardwareInfo, listDevices, unpairDevice, type Device } from './api/devices';
+import { eraseDevice, getDeviceBattery, getHardwareInfo, listDevices, unpairDevice, type Device } from './api/devices';
 import { getPairState } from './api/pairing';
 import { getStatus } from './api/system';
 import type { ErrorTextKey } from './error-text';
@@ -164,6 +164,13 @@ export const pairStateStore = new Resource(getPairState);
 
 export async function unpair(udid: string, deleteBackups: boolean): Promise<void> {
   await unpairDevice(udid, { deleteBackups });
+  devicesStore.mutate((devices) => devices.filter((d) => d.udid !== udid));
+}
+
+/** The erased phone no longer knows this host, so like an unpaired one it
+ *  leaves the list; its backups stay. */
+export async function erase(udid: string): Promise<void> {
+  await eraseDevice(udid);
   devicesStore.mutate((devices) => devices.filter((d) => d.udid !== udid));
 }
 

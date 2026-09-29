@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/wizier/airvault/internal/ios"
+	"github.com/wizier/airvault/internal/ios/backup2"
 )
 
 type PowerAction uint8
@@ -34,6 +35,37 @@ func (e *Engine) Power(ctx context.Context, device DeviceID, action PowerAction)
 		}
 		return diagnostics.Sleep(ctx)
 	})
+}
+
+// EraseDevice erases all content and settings over mobilebackup2, as Finder
+// does. Once sent it cannot be recalled, so the caller cannot cancel the wait;
+// the phone may ask for its passcode first, and hanging up means it began.
+func (e *Engine) EraseDevice(ctx context.Context, device DeviceID) error {
+	udid := string(device)
+	if err := validateUDID(udid); err != nil {
+		return err
+	}
+	if err := e.checkFindMy(ctx, udid); err != nil {
+		return err
+	}
+	conn, err := e.openBackup2(ctx, udid)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.Erase(ctx); err != nil {
+		return failure(ctx, "erase", err)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), passwordPromptTimeout)
+	defer cancel()
+	outcome, err := conn.Outcome(ctx)
+	switch {
+	case err != nil && classify(ctx, err) == ErrorConnectionLost, err == nil && outcome == nil:
+		return nil
+	case err != nil:
+		return failure(ctx, "erase", err)
+	}
+	return verdictFailure(backup2.Verdict(outcome), false)
 }
 
 func (e *Engine) Wallpaper(ctx context.Context, device DeviceID, lockScreen bool) ([]byte, error) {

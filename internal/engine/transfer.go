@@ -220,8 +220,9 @@ func (e *Engine) openBackup2(ctx context.Context, udid string) (*backup2.Conn, e
 	})
 }
 
-// checkFindMy fails a restore up front like Finder: the device refuses it
-// while Find My is on. An unreadable flag leaves the decision to the device.
+// checkFindMy fails a restore or an erase up front like Finder: the device
+// refuses a restore while Find My is on, and an erased phone would stay locked
+// to its owner. An unreadable flag leaves the decision to the device.
 func (e *Engine) checkFindMy(ctx context.Context, udid string) error {
 	on, err := call(ctx, connectTimeout, "Find My check", func(ctx context.Context) (bool, error) {
 		session, err := e.openSession(ctx, udid)
@@ -232,7 +233,7 @@ func (e *Engine) checkFindMy(ctx context.Context, udid string) error {
 		return session.Value[bool](ctx, "com.apple.fmip", "IsAssociated")
 	})
 	if err == nil && on {
-		return &Error{Kind: ErrorFindMyEnabled, Detail: "Find My iPhone is on; turn it off on the phone before restoring"}
+		return &Error{Kind: ErrorFindMyEnabled, Detail: "Find My iPhone is on; turn it off on the phone first"}
 	}
 	return nil
 }

@@ -77,7 +77,7 @@ export interface SIM {
 }
 
 export interface HardwareInfo {
-  /** The phone refuses any restore while Find My is on. */
+  /** Restore and erase are refused while Find My is on. */
   findMyEnabled?: boolean;
   serial?: string;
   productType?: string;
@@ -144,6 +144,12 @@ export async function powerDevice(udid: string, action: PowerAction): Promise<vo
     method: 'POST',
     body: { action },
   });
+}
+
+/** Erases all content and settings, as Finder does; the phone then leaves
+ *  AirVault while its backups stay. */
+export async function eraseDevice(udid: string): Promise<void> {
+  await request<void>(`${devicePath(udid)}/erase`, { method: 'POST' });
 }
 
 export function getHardwareInfo(udid: string, signal?: AbortSignal): Promise<HardwareInfo> {

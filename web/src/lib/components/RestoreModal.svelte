@@ -8,6 +8,7 @@
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
   import { hardwareResources, restoreSourcesStore } from '../stores.svelte';
   import ErrorLine from './ErrorLine.svelte';
+  import FindMyAlert from './FindMyAlert.svelte';
   import Icon from './Icon.svelte';
   import PasswordField from './PasswordField.svelte';
 
@@ -195,25 +196,7 @@
     {/if}
 
     {#if findMyOn}
-      <div role="alert" class="alert alert-warning alert-soft mt-3">
-        <Icon name="alert" size={18} />
-        <div class="text-sm">
-          <p class="font-medium">Find My iPhone is on</p>
-          <p class="mt-1 opacity-80">
-            The phone refuses restore while Find My is on.
-            Turn it off (Settings → your name → Find My), then check again.
-          </p>
-        </div>
-        <button
-          type="button"
-          class="btn btn-ghost btn-xs"
-          disabled={hwRes.loading}
-          onclick={() => hwRes.refresh()}
-        >
-          {#if hwRes.loading}<span class="loading loading-spinner loading-xs"></span>{/if}
-          Check again
-        </button>
-      </div>
+      <FindMyAlert {udid} />
     {/if}
 
     {#if crossDevice}

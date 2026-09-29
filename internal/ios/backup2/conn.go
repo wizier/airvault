@@ -124,6 +124,11 @@ func (c *Conn) ChangePassword(ctx context.Context, target, old, new string) erro
 	return c.request(ctx, "ChangePassword", fields)
 }
 
+// Erase asks the device to erase all content and settings, as Finder does.
+func (c *Conn) Erase(ctx context.Context) error {
+	return c.request(ctx, "EraseDevice", nil)
+}
+
 func (c *Conn) request(ctx context.Context, name string, fields map[string]any) error {
 	release := ios.Bind(ctx, c.conn)
 	defer release()

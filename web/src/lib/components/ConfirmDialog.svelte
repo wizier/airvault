@@ -15,6 +15,7 @@
     busyLabel,
     cancelLabel = 'Cancel',
     confirmClass = 'btn-error',
+    confirmDisabled = false,
     failureCode,
     onconfirm,
     onclose,
@@ -26,6 +27,8 @@
     busyLabel: string;
     cancelLabel?: string;
     confirmClass?: string;
+    /** Holds the action back until the dialog's own guard is met. */
+    confirmDisabled?: boolean;
     failureCode: ErrorTextKey;
     onconfirm: () => Promise<void>;
     onclose: () => void;
@@ -63,7 +66,7 @@
     <ErrorLine {error} className="mt-3" />
     <div class="modal-action">
       <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => dialog.close()}>{cancelLabel}</button>
-      <button type="button" class={`btn ${confirmClass}`} disabled={busy} onclick={confirm}>
+      <button type="button" class={`btn ${confirmClass}`} disabled={busy || confirmDisabled} onclick={confirm}>
         {#if busy}
           <span class="loading loading-spinner loading-xs"></span> {busyLabel}
         {:else}

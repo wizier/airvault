@@ -24,6 +24,7 @@ const (
 	runKindPassword  = "password"
 	runKindPower     = "power"
 	runKindVerify    = "verify"
+	runKindErase     = "erase"
 
 	runStateRunning   = "running"
 	runStateCompleted = "completed"

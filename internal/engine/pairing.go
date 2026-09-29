@@ -164,6 +164,13 @@ func (e *Engine) Unpair(ctx context.Context, device DeviceID) error {
 			slog.InfoContext(ctx, "unpair: the device forgot this host", "udid", udid)
 		}
 	}
+	return e.ForgetPairing(device)
+}
+
+// ForgetPairing drops this host's pairing with the device without telling it,
+// for a device that has already forgotten this host, as an erased one has.
+func (e *Engine) ForgetPairing(device DeviceID) error {
+	udid := string(device)
 	e.afc.forget(udid)
 	if err := errors.Join(e.pairs.Delete(udid), e.pairs.DeleteIdentity(udid)); err != nil {
 		return &Error{Kind: ErrorInternal, Detail: "remove pairing state: " + err.Error()}
