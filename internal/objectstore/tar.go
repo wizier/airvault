@@ -112,7 +112,7 @@ func (t *Tar) readContent(index int, offset int64, buffer []byte) (int, error) {
 		t.closeFile()
 		file, err := t.view.store.openObject(t.view.Source(), entry.ObjectRef, entry.Size)
 		if err != nil {
-			return 0, fmt.Errorf("pack %q: %w", t.paths[index], err)
+			return 0, fmt.Errorf("%w: pack %q: %v", ErrIntegrity, t.paths[index], err)
 		}
 		t.file = &tarFile{index: index, file: file, check: newContentCheck(entry.ObjectRef, entry.Size)}
 	}

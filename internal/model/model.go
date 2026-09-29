@@ -13,14 +13,13 @@ type Device struct {
 	AutoBackup
 }
 
-// The window is minutes after local midnight in TimeZone and may cross
+// The window is minutes after midnight in the server's zone (TZ) and may cross
 // midnight; nil means any time.
 type AutoBackup struct {
 	Enabled     bool   `db:"auto_backup"`
 	Days        int    `db:"auto_backup_days"`
 	WindowStart *int64 `db:"auto_backup_window_start"`
 	WindowEnd   *int64 `db:"auto_backup_window_end"`
-	TimeZone    string `db:"auto_backup_tz"`
 }
 
 // SourceUDID survives device deletion; CreatedAt is the authoritative time.

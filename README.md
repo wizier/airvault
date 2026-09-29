@@ -22,7 +22,7 @@ Nothing else needs to persist.
 | `AIRVAULT_PORT` | `8080` | Web UI port |
 | `AIRVAULT_AUTH_TOKEN` | *(generated)* | Web UI password; when unset, the stored one is printed in the log |
 | `AIRVAULT_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `TZ` | `Etc/UTC` | Timezone for log timestamps and downloaded backup names |
+| `TZ` | `Etc/UTC` | Timezone for log timestamps, downloaded backup names and automatic-backup windows |
 | `PUID` / `PGID` | *(unset — run as root)* | Backups and settings are written as this uid:gid (`99`/`100` on Unraid; `id` shows yours) |
 | `UMASK` | *(unset)* | Permission mask for files the container creates |
 

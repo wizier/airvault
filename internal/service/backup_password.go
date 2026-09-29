@@ -18,8 +18,6 @@ func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new strin
 		return err
 	}
 	return s.runCommand(ctx, runKindPassword, udid, func(ctx context.Context) error {
-		s.deviceRefreshMu.Lock()
-		defer s.deviceRefreshMu.Unlock()
 		// Refresh after every request that could have reached iOS, including
 		// rejection, cancellation and an indeterminate transport outcome.
 		defer s.requestDeviceRefresh()
@@ -28,7 +26,10 @@ func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new strin
 		// any state the engine actually observed using a non-cancelled context.
 		if result.EncryptionKnown {
 			commitCtx := context.WithoutCancel(ctx)
-			if err := s.store.Device.SetEncrypted(commitCtx, udid, result.Encrypted); err != nil {
+			s.deviceRefreshMu.Lock()
+			err := s.store.Device.SetEncrypted(commitCtx, udid, result.Encrypted)
+			s.deviceRefreshMu.Unlock()
+			if err != nil {
 				if engineErr == nil {
 					return err
 				}

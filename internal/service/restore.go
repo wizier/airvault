@@ -31,7 +31,7 @@ func (s *Service) reserveRestore(ctx context.Context, udid string, opts RestoreO
 		s.discardRun(run)
 		return nil, nil, err
 	}
-	if err := s.announceRun(run, StageRestoring); err != nil {
+	if err := s.runs.announce(run, StageRestoring); err != nil {
 		s.discardRun(run)
 		return nil, nil, err
 	}
@@ -68,7 +68,7 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	restoreErr := s.engine.RestoreSnapshot(ctx, engine.DeviceID(udid), plan.backup, engine.RestoreOptions{
 		Password: opts.Password, SystemFiles: opts.SystemFiles, Reboot: opts.Reboot,
 		SettingsFromBackup: opts.SettingsFromBackup, RemoveItemsNotRestored: opts.RemoveItemsNotRestored,
-	}, s.progressSink(run, "", StageRestoring, plan.backup.SizeBytes()))
+	}, s.runs.progressSink(run, "", StageRestoring, plan.backup.SizeBytes()))
 	fctx := context.WithoutCancel(ctx)
 	if restoreErr != nil {
 		slog.DebugContext(fctx, "restore: engine failed", "device", dev.Name, "error", restoreErr)
@@ -78,7 +78,7 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	// A restore the engine reports as done is already applied and irreversible,
 	// so a late cancel can't turn it into a cancellation. beginCommit still
 	// latches the commit phase so CancelRun stops offering a dead cancel.
-	_ = s.beginCommit(run)
+	_ = s.runs.beginCommit(run)
 	slog.DebugContext(fctx, "restore: done", "device", dev.Name)
 	return runOutcome{}, nil
 }

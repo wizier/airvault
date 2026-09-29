@@ -52,11 +52,6 @@ func (l *Library) AllRestorePoints(ctx context.Context) ([]model.Backup, error) 
 	return l.catalog.Backup.ListComplete(ctx)
 }
 
-// LatestCreated is nil before the source's first backup.
-func (l *Library) LatestCreated(ctx context.Context, source string) (*int64, error) {
-	return l.catalog.Backup.LatestCreated(ctx, source)
-}
-
 // Lookup reads a restore point's catalog row. The id comes from a user, so an
 // unknown one is a validation error.
 func (l *Library) Lookup(ctx context.Context, id string) (*model.Backup, error) {
@@ -122,14 +117,22 @@ func Project(view *objectstore.View) (model.Backup, error) {
 
 type Export struct {
 	*objectstore.Tar
-	Name string
+	Name    string
+	damaged func(error)
+}
+
+func (e *Export) Read(p []byte) (int, error) {
+	n, err := e.Tar.Read(p)
+	if errors.Is(err, objectstore.ErrIntegrity) {
+		e.damaged(err)
+	}
+	return n, err
 }
 
 // Export packs a restore point as a tar named after the phone, around a
-// "<UDID>-<date>" folder that cannot merge into a backup of the same phone
-// already in MobileSync/Backup. It needs no lease: only deleting this restore
-// point can cut the download short. Names use the server's time zone.
-func (l *Library) Export(ctx context.Context, id string) (*Export, error) {
+// "<UDID>-<date>" folder (server time) that cannot merge into MobileSync/Backup.
+// No lease: only a deletion can cut it short. Damage it finds goes to damaged.
+func (l *Library) Export(ctx context.Context, id string, damaged func(source string, err error)) (*Export, error) {
 	snapshot, err := l.catalog.Backup.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -150,5 +153,6 @@ func (l *Library) Export(ctx context.Context, id string) (*Export, error) {
 		return nil, fmt.Errorf("pack snapshot: %w", err)
 	}
 	name := cmp.Or(snapshot.DeviceName, snapshot.SourceUDID)
-	return &Export{Tar: archive, Name: fmt.Sprintf("AirVault-%s-%s.tar", name, created.Format("2006-01-02-1504"))}, nil
+	return &Export{Tar: archive, Name: fmt.Sprintf("AirVault-%s-%s.tar", name, created.Format("2006-01-02-1504")),
+		damaged: func(err error) { damaged(snapshot.SourceUDID, err) }}, nil
 }

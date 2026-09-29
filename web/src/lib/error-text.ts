@@ -89,7 +89,6 @@ const english = {
   auto_backup_save_failed: 'The automatic backup settings could not be saved',
   invalid_auto_backup_interval: 'Choose how often to back up',
   invalid_auto_backup_window: 'Choose two different times for the window',
-  invalid_time_zone: "This browser's time zone is not recognized by the server",
 
   backup_start_failed: 'Failed to start backup',
   backup_cancel_failed: 'Failed to cancel',

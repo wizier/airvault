@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -162,7 +163,8 @@ func (s *Session) Create(key string) (*Writer, error) {
 	if s.staging == "" {
 		return nil, errReadOnly
 	}
-	temp, err := os.CreateTemp(filepath.Join(s.staging, "objects"), "*.tmp")
+	// Not CreateTemp: its 0600 would ignore the umask set for the share.
+	temp, err := os.OpenFile(filepath.Join(s.staging, "objects", rand.Text()+".tmp"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return nil, s.fail(fmt.Errorf("create object: %w", err))
 	}

@@ -17,8 +17,7 @@ func TestDiscoveryKeepsAutoBackupSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	start, end := int64(19*60), int64(23*60)
-	settings := model.AutoBackup{Enabled: true, Days: 3, WindowStart: &start, WindowEnd: &end,
-		TimeZone: "Europe/Moscow"}
+	settings := model.AutoBackup{Enabled: true, Days: 3, WindowStart: &start, WindowEnd: &end}
 	if err := store.Device.SetAutoBackup(ctx, device.UDID, settings); err != nil {
 		t.Fatal(err)
 	}
@@ -32,17 +31,7 @@ func TestDiscoveryKeepsAutoBackupSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := stored.AutoBackup
-	if !got.Enabled || got.Days != 3 || *got.WindowStart != start || *got.WindowEnd != end ||
-		got.TimeZone != settings.TimeZone {
+	if !got.Enabled || got.Days != 3 || *got.WindowStart != start || *got.WindowEnd != end {
 		t.Fatalf("settings after discovery = %+v, want %+v", got, settings)
-	}
-}
-
-// A source without restore points has no latest one: the automatic trigger
-// reads nil as "the first backup is still manual".
-func TestLatestCreatedWithoutBackups(t *testing.T) {
-	latest, err := newTestStore(t).Backup.LatestCreated(context.Background(), testSource)
-	if err != nil || latest != nil {
-		t.Fatalf("LatestCreated = %v, %v; want nil", latest, err)
 	}
 }

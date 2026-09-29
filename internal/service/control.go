@@ -46,9 +46,6 @@ func (s *Service) EraseDevice(ctx context.Context, udid string) error {
 		return err
 	}
 	return s.runCommand(ctx, runKindErase, udid, func(ctx context.Context) error {
-		// A discovery pass must not commit the paired device back after it goes.
-		s.deviceRefreshMu.Lock()
-		defer s.deviceRefreshMu.Unlock()
 		if err := s.engine.EraseDevice(ctx, engine.DeviceID(udid)); err != nil {
 			return newTransferActionError("erase_failed", err)
 		}

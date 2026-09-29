@@ -9,13 +9,16 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
+	"github.com/wizier/airvault/internal/storage"
 )
 
 func TestAutoWait(t *testing.T) {
 	now := time.Date(2026, 9, 26, 20, 0, 0, 0, time.UTC)
-	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	ago := func(d time.Duration) storage.SourceSummary {
+		return storage.SourceSummary{RestorePoints: 1, LatestRestorable: new(now.Add(-d).Unix())}
+	}
 	daily := autoBackupEvery(1)
-	// failed lists the latest failures, oldest first, as recordAutoBackup keeps them.
+	// failed lists the latest failures, oldest first, as the registry keeps them.
 	failed := func(ago ...time.Duration) autoHistory {
 		var h autoHistory
 		for i, d := range ago {
@@ -24,14 +27,15 @@ func TestAutoWait(t *testing.T) {
 		return h
 	}
 	tests := []struct {
-		name       string
-		every      time.Duration
-		lastBackup *time.Time
-		history    autoHistory
-		wantWait   string
-		wantAt     time.Time
+		name     string
+		every    time.Duration
+		backups  storage.SourceSummary
+		history  autoHistory
+		wantWait string
+		wantAt   time.Time
 	}{
-		{"first backup is manual", daily, nil, autoHistory{}, autoWaitFirstBackup, time.Time{}},
+		{"first backup is manual", daily, storage.SourceSummary{}, autoHistory{}, autoWaitFirstBackup, time.Time{}},
+		{"all backups damaged is due", daily, storage.SourceSummary{RestorePoints: 2}, autoHistory{}, "", time.Time{}},
 		{"daily is due 4 h early", daily, ago(20 * time.Hour), autoHistory{}, "", time.Time{}},
 		{"daily not yet due", daily, ago(19 * time.Hour), autoHistory{}, autoWaitSchedule, now.Add(time.Hour)},
 		{"weekly", autoBackupEvery(7), ago(6 * 24 * time.Hour), autoHistory{}, autoWaitSchedule,
@@ -48,7 +52,7 @@ func TestAutoWait(t *testing.T) {
 			failed(30*time.Hour, 3*time.Hour, 2*time.Hour), "", time.Time{}},
 	}
 	for _, test := range tests {
-		wait, at := autoWait(test.every, test.lastBackup, test.history, now)
+		wait, at := autoWait(test.every, test.backups, test.history, now)
 		if wait != test.wantWait || !at.Equal(test.wantAt) {
 			t.Errorf("%s: autoWait = %q %v, want %q %v", test.name, wait, at, test.wantWait, test.wantAt)
 		}
@@ -101,7 +105,7 @@ func TestRecordAutoBackup(t *testing.T) {
 			s.completeRun(run, runOutcome{errorCode: errorCode}, err)
 		}
 		expect := func(step string, failures [autoBackupLimit]time.Time, pausedUntil time.Time) {
-			got := s.autoHistory["udid-1"]
+			got := s.runs.autoHistory["udid-1"]
 			for i := range failures {
 				if !got.failures[i].Equal(failures[i]) {
 					t.Fatalf("%s: failures = %v, want %v", step, got.failures, failures)
@@ -128,7 +132,7 @@ func TestRecordAutoBackup(t *testing.T) {
 			failures[autoBackupLimit].Add(autoBackupPause))
 
 		finish(false, "")
-		if _, kept := s.autoHistory["udid-1"]; kept {
+		if _, kept := s.runs.autoHistory["udid-1"]; kept {
 			t.Fatal("success left a history behind")
 		}
 	})
@@ -193,8 +197,8 @@ func TestAutoBackupTriggerDwell(t *testing.T) {
 }
 
 func TestAutoBackupSettingsValidation(t *testing.T) {
-	window := func(start, end, zone string) *AutoBackupWindow {
-		return &AutoBackupWindow{Start: start, End: end, TimeZone: zone}
+	window := func(start, end string) *AutoBackupWindow {
+		return &AutoBackupWindow{Start: start, End: end}
 	}
 	invalid := []struct {
 		settings AutoBackupSettings
@@ -202,11 +206,9 @@ func TestAutoBackupSettingsValidation(t *testing.T) {
 	}{
 		{AutoBackupSettings{Enabled: true, EveryDays: 2}, "invalid_auto_backup_interval"},
 		{AutoBackupSettings{EveryDays: 0}, "invalid_auto_backup_interval"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("19:00", "19:00", "UTC")}, "invalid_auto_backup_window"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("24:00", "02:00", "UTC")}, "invalid_auto_backup_window"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("7pm", "11pm", "UTC")}, "invalid_auto_backup_window"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("19:00", "23:00", "")}, "invalid_time_zone"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("19:00", "23:00", "Mars/Olympus")}, "invalid_time_zone"},
+		{AutoBackupSettings{EveryDays: 1, Window: window("19:00", "19:00")}, "invalid_auto_backup_window"},
+		{AutoBackupSettings{EveryDays: 1, Window: window("24:00", "02:00")}, "invalid_auto_backup_window"},
+		{AutoBackupSettings{EveryDays: 1, Window: window("7pm", "11pm")}, "invalid_auto_backup_window"},
 	}
 	for _, test := range invalid {
 		_, err := autoBackupRow(test.settings)
@@ -215,7 +217,7 @@ func TestAutoBackupSettingsValidation(t *testing.T) {
 		}
 	}
 
-	settings := AutoBackupSettings{Enabled: true, EveryDays: 3, Window: window("22:30", "01:15", "Europe/Moscow")}
+	settings := AutoBackupSettings{Enabled: true, EveryDays: 3, Window: window("22:30", "01:15")}
 	row, err := autoBackupRow(settings)
 	if err != nil {
 		t.Fatal(err)

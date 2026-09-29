@@ -62,15 +62,6 @@ func (r *BackupRepo) Get(ctx context.Context, id string) (*model.Backup, error) 
 		`SELECT * FROM backups WHERE id = ?`, id)
 }
 
-func (r *BackupRepo) LatestCreated(ctx context.Context, source string) (*int64, error) {
-	var latest *int64
-	if err := sqlx.GetContext(ctx, r.s.ext(), &latest,
-		`SELECT MAX(created_at) FROM backups WHERE source_udid = ?`, source); err != nil {
-		return nil, wrap(err, "latest source snapshot")
-	}
-	return latest, nil
-}
-
 func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, error) {
 	rows, err := listOf[struct {
 		ID     string `db:"id"`
@@ -107,27 +98,26 @@ func (r *BackupRepo) ListComplete(ctx context.Context) ([]model.Backup, error) {
 // Backups hold hundreds of thousands of files, so a request never walks
 // manifests; that accounting belongs to the mutation and reconciliation paths.
 type SourceSummary struct {
-	SourceUDID    string `db:"source_udid"`
-	RestorePoints int    `db:"restore_points"`
-	LatestCreated int64  `db:"latest_created_at"`
-	DiskBytes     *int64 `db:"disk_bytes"`
-	// Identity of the newest snapshot, so a source with no registry row still
-	// shows a real name and model.
-	DeviceName  string `db:"device_name"`
-	ProductType string `db:"product_type"`
-	IOSVersion  string `db:"ios_version"`
+	SourceUDID       string `db:"source_udid"`
+	RestorePoints    int    `db:"restore_points"`
+	LatestRestorable *int64 `db:"latest_restorable_at"`
+	DiskBytes        *int64 `db:"disk_bytes"`
+	DeviceName       string `db:"device_name"`
+	ProductType      string `db:"product_type"`
+	IOSVersion       string `db:"ios_version"`
 }
 
 // Nil DiskBytes means the size is unknown, never a fabricated zero.
 func (r *BackupRepo) SummaryBySource(ctx context.Context) (map[string]SourceSummary, error) {
 	rows, err := listOf[SourceSummary](ctx, r.s.ext(), `
 		SELECT summary.source_udid, summary.restore_points,
-			summary.latest_created_at, summary.device_name,
+			summary.latest_restorable_at, summary.device_name,
 			summary.product_type, summary.ios_version, source.disk_bytes
 		FROM (
 			SELECT source_udid, device_name, product_type, ios_version,
 				COUNT(*) OVER (PARTITION BY source_udid) AS restore_points,
-				created_at AS latest_created_at,
+				MAX(CASE WHEN damage = '' THEN created_at END)
+					OVER (PARTITION BY source_udid) AS latest_restorable_at,
 				ROW_NUMBER() OVER (
 					PARTITION BY source_udid ORDER BY created_at DESC, id DESC
 				) AS rn

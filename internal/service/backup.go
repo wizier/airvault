@@ -62,7 +62,7 @@ func (s *Service) startBackup(ctx context.Context, udid string, auto bool) (stri
 		s.discardRun(run)
 		return "", err
 	}
-	if err := s.announceRun(run, StageWaiting); err != nil {
+	if err := s.runs.announce(run, StageWaiting); err != nil {
 		s.discardRun(run)
 		return "", err
 	}
@@ -81,7 +81,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 		return runOutcome{errorCode: "device_never_came_online"},
 			errors.New("backup: the phone didn't come online — make sure it's on Wi-Fi and awake")
 	}
-	s.setRunStage(run, StagePreparing)
+	s.runs.setStage(run, StagePreparing)
 
 	base, err := s.library.LatestBase(ctx, udid)
 	if err != nil {
@@ -102,8 +102,8 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 		}
 	}
 	// beginCommit is the cancellation boundary: past it the backup is published.
-	if err == nil && s.beginCommit(run) {
-		row.StartedAt, row.TransferredBytes = &startedAt, new(s.transferredBytes(run))
+	if err == nil && s.runs.beginCommit(run) {
+		row.StartedAt, row.TransferredBytes = &startedAt, new(s.runs.transferred(run))
 		if err := s.library.Publish(finalCtx, staged, row); err != nil {
 			return runOutcome{}, fmt.Errorf("publish backup: %w", err)
 		}
@@ -131,5 +131,5 @@ func (s *Service) buildSnapshot(ctx context.Context, run *runReservation, id str
 	if err != nil {
 		return nil, err
 	}
-	return s.engine.BuildSnapshot(ctx, engine.DeviceID(run.udid), session, s.progressSink(run, idleStage, StageBackingUp, 0))
+	return s.engine.BuildSnapshot(ctx, engine.DeviceID(run.udid), session, s.runs.progressSink(run, idleStage, StageBackingUp, 0))
 }

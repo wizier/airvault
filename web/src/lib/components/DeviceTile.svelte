@@ -122,7 +122,11 @@
           </div>
           <div class="mt-2 flex min-h-7 items-end justify-between gap-2">
             <strong class="truncate text-lg" title={formatDateTime(device.lastBackup)}>
-              {device.lastBackup ? relativeTime(device.lastBackup, $now) : 'No backups yet'}
+              {device.lastBackup
+                ? relativeTime(device.lastBackup, $now)
+                : device.restorePoints
+                  ? 'No usable backup'
+                  : 'No backups yet'}
             </strong>
             {#if device.lastBackup}
               <span class="max-w-28 truncate text-xs text-base-content/50">

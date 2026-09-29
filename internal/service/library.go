@@ -57,7 +57,7 @@ func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
 		return err
 	}
 	// Wiping a source's history resets its status to "never", stale failure included.
-	s.clearRunOutcomes(udid)
+	s.runs.forget(udid)
 	return nil
 }
 
@@ -80,8 +80,17 @@ func (s *Service) SnapshotsReclaimable(ctx context.Context, udid string, snapsho
 	return s.library.Reclaimable(ctx, udid, snapshotIDs)
 }
 
+// Damage a download finds is recorded unless a backup, check or deletion holds
+// the source: its own collection records it.
 func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*BackupExport, error) {
-	return s.library.Export(ctx, snapshotID)
+	return s.library.Export(ctx, snapshotID, func(source string, err error) {
+		release, busy := s.ops.acquire("backup download", snapshotReadResource(source))
+		if busy != nil {
+			return
+		}
+		defer release()
+		s.library.NoticeDamage(ctx, source, err)
+	})
 }
 
 // StartVerify checks that every object the source's restore points need still
@@ -95,13 +104,13 @@ func (s *Service) StartVerify(ctx context.Context, udid string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if err := s.announceRun(run, StageVerifying); err != nil {
+	if err := s.runs.announce(run, StageVerifying); err != nil {
 		s.discardRun(run)
 		return "", err
 	}
 	s.bus.Emit(runStarted(run, ""))
 	return s.launchRun(run, func() (runOutcome, error) {
-		sink := s.progressSink(run, "", StageVerifying, 0)
+		sink := s.runs.progressSink(run, "", StageVerifying, 0)
 		return runOutcome{}, s.library.Verify(run.ctx, udid, func(done, total int64) {
 			sink(engine.Progress{BytesDone: done, Percent: int(done * 100 / max(total, 1))})
 		})

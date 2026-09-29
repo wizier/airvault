@@ -52,7 +52,7 @@ func TestScreenLockDoesNotGateConnection(t *testing.T) {
 
 // The lock screen shows until an unlock is seen, so the first unlock after a
 // (re)connect flips the projection, and a lock's trailing lockstate pulse is
-// not an unlock.
+// not an unlock. An unlock seen before a USB hop is forgotten.
 func TestScreenLockProjection(t *testing.T) {
 	live := newDeviceRuntimeStore()
 	live.applyPresence(map[string]string{"phone": "wifi"})
@@ -76,6 +76,13 @@ func TestScreenLockProjection(t *testing.T) {
 	}
 	if changed, lockScreen, _ := live.applyScreenLock("phone", engine.ScreenLockChanged, lockAt.Add(100*time.Millisecond), screenLockPairWindow); changed || !lockScreen {
 		t.Fatalf("trailing lock pulse: changed=%v lockScreen=%v, want the unchanged lock screen", changed, lockScreen)
+	}
+
+	live.applyScreenLock("phone", engine.ScreenLockChanged, lockAt.Add(time.Minute), screenLockPairWindow)
+	live.applyPresence(map[string]string{"phone": "usb"})
+	live.applyPresence(map[string]string{"phone": "wifi"})
+	if r := live.snapshot()["phone"]; !r.lockScreen() || !r.unlockedAt.IsZero() {
+		t.Fatalf("after a USB hop = %+v, want the lock screen", r)
 	}
 }
 

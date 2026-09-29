@@ -26,8 +26,8 @@ func (s *Service) activateIfNeeded(run *runReservation, deviceName string) (stri
 		return "", nil
 	}
 	slog.InfoContext(ctx, "restore: phone is unactivated, activating with Apple", "device", deviceName, "udid", run.udid)
-	s.setRunStage(run, StageActivating)
-	defer s.setRunStage(run, StageRestoring)
+	s.runs.setStage(run, StageActivating)
+	defer s.runs.setStage(run, StageRestoring)
 
 	blob, err := s.engine.ActivationSessionInfo(ctx, udid)
 	if err != nil {

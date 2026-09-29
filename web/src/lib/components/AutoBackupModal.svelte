@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { errorCode, isAbortError } from '../api/client';
   import { AUTO_BACKUP_PRESETS, setAutoBackup, type AutoBackupDays, type AutoBackupState } from '../api/devices';
-  import { AUTO_BACKUP_EVERY, browserTimeZone } from '../device-ui';
+  import { AUTO_BACKUP_EVERY } from '../device-ui';
   import { errorText, type ErrorTextKey } from '../error-text';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
@@ -24,7 +24,6 @@
   let windowOn = $state(!!initial?.window);
   let start = $state(initial?.window?.start ?? '19:00');
   let end = $state(initial?.window?.end ?? '23:00');
-  const timeZone = browserTimeZone();
   let busy = $state(false);
   let failureCode = $state<string | null>(null);
   const failure = $derived(failureCode && errorText(failureCode, 'auto_backup_save_failed'));
@@ -52,7 +51,7 @@
     try {
       await setAutoBackup(
         udid,
-        { enabled, everyDays, window: windowOn ? { start, end, timeZone } : undefined },
+        { enabled, everyDays, window: windowOn ? { start, end } : undefined },
         controller.signal,
       );
       dialog.close();
@@ -109,7 +108,7 @@
             <input type="time" class="input input-sm w-32" bind:value={end} disabled={busy} aria-label="Until" />
           </div>
           <p class="pl-7 text-xs text-base-content/60">
-            Times are in {timeZone}; the window may cross midnight
+            Server time ({initial?.timeZone}); the window may cross midnight
           </p>
         {/if}
       </div>

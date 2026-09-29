@@ -46,7 +46,7 @@ func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOv
 		UDID: d.UDID, Name: d.Name, ProductType: d.ProductType, IOSVersion: d.IOSVersion,
 		Connection: cmp.Or(r.presence, "offline"), Paired: d.Paired, Encrypted: d.Encrypted,
 		LastSeen: optionalTime(d.LastSeenAt), LockScreen: r.presence != "" && r.lockScreen(),
-		ActivationState: r.activation, LastRunErrors: s.lastRunErrors(d.UDID),
+		ActivationState: r.activation, LastRunErrors: s.runs.lastErrors(d.UDID),
 	}
 }
 
@@ -102,11 +102,11 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 		seen[d.UDID] = struct{}{}
 		ov := s.decorate(d, rt)
 		if gs, ok := summary[d.UDID]; ok {
-			ov.LastBackup = new(time.Unix(gs.LatestCreated, 0).UTC())
+			ov.LastBackup = optionalTime(gs.LatestRestorable)
 			ov.DiskBytes = gs.DiskBytes
 			ov.RestorePoints = gs.RestorePoints
 		}
-		ov.AutoBackup = s.autoBackupView(d, ov.LastBackup, now)
+		ov.AutoBackup = s.autoBackupView(d, summary[d.UDID], now)
 		out = append(out, ov)
 	}
 	// SQLite's device registry is disposable. A source rebuilt from manifests
@@ -118,7 +118,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 		out = append(out, DeviceOverview{
 			UDID: source, Name: cmp.Or(stored.DeviceName, source), Connection: "offline",
 			ProductType: stored.ProductType, IOSVersion: stored.IOSVersion,
-			LastBackup: new(time.Unix(stored.LatestCreated, 0).UTC()),
+			LastBackup: optionalTime(stored.LatestRestorable),
 			DiskBytes:  stored.DiskBytes, RestorePoints: stored.RestorePoints, Orphaned: true,
 		})
 	}
@@ -173,13 +173,15 @@ func (s *Service) RestoreSources(ctx context.Context) ([]RestorePoint, error) {
 	return out, nil
 }
 
-// Only Unpair calls this, holding the device write lease; otherwise discovery
-// would re-register a reachable device seconds later.
+// Serialized with discovery, so a pass that read the phone before it cannot
+// register the device again.
 func (s *Service) forgetDevice(ctx context.Context, udid string) error {
+	s.deviceRefreshMu.Lock()
+	defer s.deviceRefreshMu.Unlock()
 	// removeLocal emits no offline transition, so stop the observer directly.
 	s.lockObs.setOffline(udid)
 	s.live.removeLocal(udid)
-	s.clearRunOutcomes(udid)
+	s.runs.forget(udid)
 	s.gallery.remove(udid)
 	if err := s.store.Device.Delete(ctx, udid); err != nil {
 		return err
@@ -215,10 +217,6 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 			}
 		}()
 	}
-	// A discovery pass reads several values before its eventual Upsert. Keep an
-	// old paired snapshot from being committed after this revoke+delete.
-	s.deviceRefreshMu.Lock()
-	defer s.deviceRefreshMu.Unlock()
 	if err := s.engine.Unpair(ctx, engine.DeviceID(udid)); err != nil {
 		slog.Warn("unpair failed", "udid", udid, "error", err)
 		return fmt.Errorf("%w: %v", domain.ErrPairingCleanup, err)

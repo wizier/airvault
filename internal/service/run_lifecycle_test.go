@@ -29,37 +29,43 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 
 // A failed run stores its code per kind; the next success of that kind clears
 // only that kind's record. Neither a cancel from the phone nor an unanswered
-// automatic prompt counts as a failure.
+// automatic prompt counts as a failure. Forgetting the device clears them all.
 func TestLastRunErrorLifecycle(t *testing.T) {
 	s := newTestService()
-	s.lastRunError[runIdentity{"udid-1", runKindRestore}] = "restore_failed"
+	s.runs.lastError["udid-1"] = map[string]string{runKindRestore: "restore_failed"}
 
 	run := registerRun(s)
 	s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("device failure"))
 	want := map[string]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
-	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after failure lastRunErrors = %v, want %v", got, want)
 	}
 
 	run = registerRun(s)
 	s.completeRun(run, runOutcome{}, nil)
 	want = map[string]string{runKindRestore: "restore_failed"}
-	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after success lastRunErrors = %v, want %v", got, want)
 	}
 
 	run = registerRun(s)
 	cancelled := &engine.Error{Kind: engine.ErrorCancelled}
 	s.completeRun(run, runOutcome{errorCode: engineErrorCode(cancelled)}, cancelled)
-	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after a phone cancel lastRunErrors = %v, want %v", got, want)
 	}
 
 	run = registerRun(s)
 	run.auto = true
 	s.completeRun(run, runOutcome{errorCode: errorBackupNotConfirmed}, errors.New("prompt unanswered"))
-	if got := s.lastRunErrors("udid-1"); !maps.Equal(got, want) {
+	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after an unanswered automatic prompt lastRunErrors = %v, want %v", got, want)
+	}
+
+	s.runs.lastError["udid-1"][runKindVerify] = "backup_integrity_failed"
+	s.runs.forget("udid-1")
+	if got := s.runs.lastErrors("udid-1"); got != nil {
+		t.Fatalf("after clearing lastRunErrors = %v, want none of any kind", got)
 	}
 }
 
@@ -70,10 +76,10 @@ func TestBeginCommitWinsRefusesCancel(t *testing.T) {
 	s := newTestService()
 	run := registerRun(s)
 
-	if !s.beginCommit(run) {
+	if !s.runs.beginCommit(run) {
 		t.Fatal("beginCommit on an active run returned false")
 	}
-	if got := s.runs[run.udid].phase; got != runPhaseCommitting {
+	if got := s.runs.active[run.udid].phase; got != runPhaseCommitting {
 		t.Fatalf("phase = %d, want Committing", got)
 	}
 	if err := s.CancelRun("run-1"); !errors.Is(err, domain.ErrOperationState) {
@@ -91,13 +97,13 @@ func TestCancelWinsRefusesCommit(t *testing.T) {
 	if err := s.CancelRun("run-1"); err != nil {
 		t.Fatalf("CancelRun on an active run: %v", err)
 	}
-	if got := s.runs[run.udid].phase; got != runPhaseCancelling {
+	if got := s.runs.active[run.udid].phase; got != runPhaseCancelling {
 		t.Fatalf("phase = %d, want Cancelling", got)
 	}
 	if run.ctx.Err() == nil {
 		t.Fatal("cancelled run ctx must be cancelled")
 	}
-	if s.beginCommit(run) {
+	if s.runs.beginCommit(run) {
 		t.Fatal("beginCommit succeeded after cancel")
 	}
 }
@@ -108,15 +114,15 @@ func TestCancelWinsRefusesCommit(t *testing.T) {
 func TestProgressSinkPhaseTransitions(t *testing.T) {
 	s := newTestService()
 	run := registerRun(s)
-	sink := s.progressSink(run, "", StageBackingUp, 0)
+	sink := s.runs.progressSink(run, "", StageBackingUp, 0)
 
 	sink(engine.Progress{BytesDone: 123})
-	if got := s.runs[run.udid]; got.phase != runPhaseActive || got.progress.Stage != StageBackingUp {
+	if got := s.runs.active[run.udid]; got.phase != runPhaseActive || got.progress.Stage != StageBackingUp {
 		t.Fatalf("normal frame: phase=%d stage=%q", got.phase, got.progress.Stage)
 	}
 
 	sink(engine.Progress{Phase: engine.ProgressPhaseSealing, BytesDone: 123})
-	if got := s.runs[run.udid]; got.phase != runPhaseFinalizing ||
+	if got := s.runs.active[run.udid]; got.phase != runPhaseFinalizing ||
 		got.progress.Stage != StageFinalizing || got.progress.Percent != 100 ||
 		got.progress.Transferred != 123 || got.progress.Speed != 0 {
 		t.Fatalf("finalizing frame: phase=%d stage=%q pct=%d transferred=%d speed=%d",
@@ -127,7 +133,7 @@ func TestProgressSinkPhaseTransitions(t *testing.T) {
 		t.Fatalf("CancelRun: %v", err)
 	}
 	sink(engine.Progress{Phase: engine.ProgressPhaseSealing})
-	if got := s.runs[run.udid]; got.phase != runPhaseCancelling ||
+	if got := s.runs.active[run.udid]; got.phase != runPhaseCancelling ||
 		got.progress.Stage != StageCancellingBackup {
 		t.Fatalf("finalizing after cancel: phase=%d stage=%q", got.phase, got.progress.Stage)
 	}
@@ -148,8 +154,8 @@ func TestProgressSinkLeavesTheIdleStageOnFirstPayload(t *testing.T) {
 	} {
 		s := newTestService()
 		run := registerRun(s)
-		s.progressSink(run, StageCalculating, StageBackingUp, 0)(test.frame)
-		if got := s.runs[run.udid].progress.Stage; got != test.want {
+		s.runs.progressSink(run, StageCalculating, StageBackingUp, 0)(test.frame)
+		if got := s.runs.active[run.udid].progress.Stage; got != test.want {
 			t.Errorf("%s: stage = %q, want %q", test.name, got, test.want)
 		}
 	}
@@ -160,15 +166,15 @@ func TestProgressSinkLeavesTheIdleStageOnFirstPayload(t *testing.T) {
 func TestProgressSinkDerivesPercentFromAKnownTotal(t *testing.T) {
 	s := newTestService()
 	run := registerRun(s)
-	sink := s.progressSink(run, "", StageRestoring, 400)
+	sink := s.runs.progressSink(run, "", StageRestoring, 400)
 
 	sink(engine.Progress{BytesDone: 100, Percent: 77})
-	if got := s.runs[run.udid].progress; got.Percent != 25 || got.Transferred != 100 {
+	if got := s.runs.active[run.udid].progress; got.Percent != 25 || got.Transferred != 100 {
 		t.Fatalf("quarter sent: pct=%d transferred=%d", got.Percent, got.Transferred)
 	}
 
 	sink(engine.Progress{BytesDone: 900, Percent: 77})
-	if got := s.runs[run.udid].progress.Percent; got != 100 {
+	if got := s.runs.active[run.udid].progress.Percent; got != 100 {
 		t.Fatalf("overshoot must clamp: pct=%d", got)
 	}
 }

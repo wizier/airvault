@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/model"
+	"github.com/wizier/airvault/internal/objectstore"
 )
 
 // An export is named after the phone and packs a "<UDID>-<date>" folder that
@@ -26,7 +28,7 @@ func TestExportNamesFileAndFolder(t *testing.T) {
 	}
 	created := time.Unix(view.CreatedUnix(), 0)
 
-	export, err := lib.Export(context.Background(), testSnapshot)
+	export, err := lib.Export(context.Background(), testSnapshot, func(string, error) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,8 +47,30 @@ func TestExportNamesFileAndFolder(t *testing.T) {
 
 func TestExportOfAnUnknownSnapshotIsNotFound(t *testing.T) {
 	lib, _ := newTestLibrary(t)
-	if _, err := lib.Export(context.Background(), testSnapshot); !errors.Is(err, domain.ErrNotFound) {
+	if _, err := lib.Export(context.Background(), testSnapshot, func(string, error) {}); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("error = %v, want not found", err)
+	}
+}
+
+// A download that finds an object gone records the damage, as a restore does.
+func TestExportRecordsTheDamageItFinds(t *testing.T) {
+	lib, root := newTestLibrary(t)
+	const source = "testphoneudid0026"
+	ctx := context.Background()
+	publishFixture(t, lib, root, source, testSnapshot)
+	reconcile(t, lib)
+	removeObject(t, root, source, fixtureFiles["Manifest.db"])
+
+	export, err := lib.Export(ctx, testSnapshot, func(source string, err error) { lib.NoticeDamage(ctx, source, err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer export.Close()
+	if _, err := io.ReadAll(export); !errors.Is(err, objectstore.ErrIntegrity) {
+		t.Fatalf("download error = %v, want ErrIntegrity", err)
+	}
+	if row, err := lib.catalog.Backup.Get(ctx, testSnapshot); err != nil || row.Damage != objectstore.DamageFilesMissing {
+		t.Fatalf("row = %+v, %v; want the damage recorded", row, err)
 	}
 }
 

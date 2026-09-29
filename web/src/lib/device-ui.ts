@@ -18,7 +18,7 @@ export function blockedReason(device: Device, live: RunningProgress | null): str
   return live ? 'Another operation is running on this phone' : null;
 }
 
-/** The IANA zone this browser runs in; automatic-backup windows are saved in it. */
+/** The IANA zone this browser runs in. */
 export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
@@ -40,7 +40,7 @@ export function autoBackupStatus(
   let schedule = AUTO_BACKUP_EVERY[auto.everyDays];
   if (window) {
     schedule += `, ${window.start}–${window.end}`;
-    if (window.timeZone !== browserTimeZone()) schedule += ` (${window.timeZone})`;
+    if (auto.timeZone !== browserTimeZone()) schedule += ` (${auto.timeZone})`;
   }
   if (auto.wait === 'first_backup') {
     return { schedule, next: 'Starts after the first backup — run it with Back up now' };

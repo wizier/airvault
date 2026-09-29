@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/wizier/airvault/internal/model"
@@ -43,5 +44,25 @@ func TestNoCachedFootprintOutlivesItsSnapshots(t *testing.T) {
 	}
 	if got := summary[testSource].DiskBytes; got != nil {
 		t.Fatalf("footprint = %d, want unknown", *got)
+	}
+}
+
+// A source's latest backup is its newest restorable one; damaged ones still
+// count as restore points.
+func TestSummaryLatestSkipsDamage(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	for i, damage := range []string{"", "files_missing"} {
+		if err := store.Backup.InsertSnapshot(ctx, model.Backup{ID: fmt.Sprintf("eeeeeeee-0000-4000-8000-00000000000%d", i),
+			SourceUDID: testSource, CreatedAt: int64(1_700_000_000 + i), Damage: damage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary, err := store.Backup.SummaryBySource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := summary[testSource]; s.RestorePoints != 2 || s.LatestRestorable == nil || *s.LatestRestorable != 1_700_000_000 {
+		t.Fatalf("summary = %+v", s)
 	}
 }

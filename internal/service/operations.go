@@ -13,8 +13,6 @@ import (
 	airlog "github.com/wizier/airvault/internal/logging"
 )
 
-type runIdentity struct{ udid, kind string }
-
 const (
 	runKindBackup    = "backup"
 	runKindRestore   = "restore"
@@ -82,24 +80,6 @@ func (s *Service) reserveRun(kind, udid string, requests ...resourceRequest) (*r
 func (s *Service) discardRun(run *runReservation) {
 	run.cancel()
 	run.release()
-}
-
-// From here the run is visible to Running(), progress and cancellation, and it
-// must reach a terminal event via completeRun.
-func (s *Service) announceRun(run *runReservation, stage RunStage) error {
-	s.runMu.Lock()
-	if _, busy := s.runs[run.udid]; busy {
-		s.runMu.Unlock()
-		return rejectOperation(run.ctx, run.kind, run.udid,
-			fmt.Errorf("%w: a run is already active for this device", domain.ErrBusy))
-	}
-	s.runs[run.udid] = &activeRun{run: run, progress: RunProgress{
-		RunID: run.id, UDID: run.udid, Stage: stage, Restore: run.kind == runKindRestore,
-		Verify: run.kind == runKindVerify, Auto: run.auto,
-	}}
-	s.runMu.Unlock()
-	logOperationStarted(run.ctx, run.kind, run.udid, run.logAttrs()...)
-	return nil
 }
 
 func rejectOperation(ctx context.Context, kind, udid string, cause error) error {
@@ -234,25 +214,4 @@ func logOperationFinished(
 	}
 	attrs = append(attrs, extra...)
 	slog.LogAttrs(ctx, level, message, attrs...)
-}
-
-// Removing the run and recording its outcome share one critical section, so a
-// refetch can never see them disagree.
-func (s *Service) hideRun(run *runReservation, state, errorCode string) {
-	s.runMu.Lock()
-	delete(s.runs, run.udid)
-	key := runIdentity{run.udid, run.kind}
-	switch {
-	case state == runStateFailed && run.auto && errorCode == errorBackupNotConfirmed:
-		// An unanswered automatic prompt is expected, not a failure to flag: the
-		// automatic-backup status shows the pause it caused.
-	case state == runStateFailed:
-		s.lastRunError[key] = errorCode
-	default:
-		delete(s.lastRunError, key)
-	}
-	if run.kind == runKindBackup {
-		s.recordAutoBackup(run, state, errorCode, time.Now())
-	}
-	s.runMu.Unlock()
 }

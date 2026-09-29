@@ -14,6 +14,8 @@ import (
 // pulse, not a separate unlock — iOS announces a lock as {lockcomplete, lockstate}.
 const screenLockPairWindow = time.Second
 
+// applySnapshot and screenLockSignal commit under deviceTransitionMu, so
+// presence, lock signals and their events never reorder.
 func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresence) bool {
 	s.deviceTransitionMu.Lock()
 	defer s.deviceTransitionMu.Unlock()

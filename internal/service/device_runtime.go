@@ -107,6 +107,10 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connect
 		}
 		if r.presence != transport {
 			transitions = append(transitions, connectionTransition{udid: udid, from: r.presence, to: transport})
+			if r.presence == "wifi" {
+				// Lock signals only arrive over Wi-Fi: what was seen there goes stale.
+				r.screen, r.lockedAt, r.unlockedAt = screenLockUnknown, time.Time{}, time.Time{}
+			}
 			r.presence = transport
 		}
 	}

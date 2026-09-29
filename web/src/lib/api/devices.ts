@@ -30,13 +30,11 @@ export interface Device {
 export const AUTO_BACKUP_PRESETS = [1, 3, 7] as const;
 export type AutoBackupDays = (typeof AUTO_BACKUP_PRESETS)[number];
 
-/** A daily span of local time, which may cross midnight. */
+/** A daily span of the server's time, which may cross midnight. */
 export interface AutoBackupWindow {
-  /** "HH:MM" in timeZone. */
+  /** "HH:MM" in the server's zone. */
   start: string;
   end: string;
-  /** IANA zone the times are read in. */
-  timeZone: string;
 }
 
 export interface AutoBackupSettings {
@@ -49,6 +47,8 @@ export interface AutoBackupSettings {
 export type AutoBackupWait = 'first_backup' | 'schedule' | 'paused' | 'limit';
 
 export interface AutoBackupState extends AutoBackupSettings {
+  /** The server's zone (TZ) the window is read in. */
+  timeZone: string;
   /** Only while enabled; absent when the next unlock (inside the window)
    *  starts a backup. */
   wait?: AutoBackupWait;

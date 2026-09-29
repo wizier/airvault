@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/model"
+	"github.com/wizier/airvault/internal/storage"
 )
 
 // Automatic backups start on the owner's own unlock. iOS asks for the device
@@ -49,16 +49,16 @@ type AutoBackupSettings struct {
 	Window    *AutoBackupWindow `json:"window,omitempty"`
 }
 
-// The window may cross midnight. TimeZone is the IANA zone the times are read
-// in.
+// The window may cross midnight; its times are in the server's zone (TZ).
 type AutoBackupWindow struct {
-	Start    string `json:"start"` // "HH:MM"
-	End      string `json:"end"`
-	TimeZone string `json:"timeZone"`
+	Start string `json:"start"` // "HH:MM"
+	End   string `json:"end"`
 }
 
 type AutoBackupView struct {
 	AutoBackupSettings
+	// TimeZone names the server's zone the window is read in.
+	TimeZone string `json:"timeZone"`
 	// Wait names why an enabled automatic backup cannot start yet (see the
 	// autoWait* codes); empty when the next unlock inside the window starts it.
 	Wait      string     `json:"wait,omitempty"`
@@ -89,9 +89,10 @@ type autoHistory struct {
 }
 
 // autoWait ignores the window. It returns the reason and end of the latest
-// constraint still in force.
-func autoWait(every time.Duration, lastBackup *time.Time, history autoHistory, now time.Time) (string, time.Time) {
-	if lastBackup == nil {
+// constraint still in force. The schedule counts from the latest restorable
+// backup, so a source whose backups are all damaged is due.
+func autoWait(every time.Duration, backups storage.SourceSummary, history autoHistory, now time.Time) (string, time.Time) {
+	if backups.RestorePoints == 0 {
 		return autoWaitFirstBackup, time.Time{}
 	}
 	wait, notBefore := "", now
@@ -100,7 +101,9 @@ func autoWait(every time.Duration, lastBackup *time.Time, history autoHistory, n
 			wait, notBefore = reason, until
 		}
 	}
-	hold(autoWaitSchedule, lastBackup.Add(every))
+	if latest := backups.LatestRestorable; latest != nil {
+		hold(autoWaitSchedule, time.Unix(*latest, 0).Add(every))
+	}
 	hold(autoWaitPaused, history.pausedUntil)
 	if oldest := history.failures[0]; !oldest.IsZero() {
 		hold(autoWaitLimit, oldest.Add(autoBackupLimitWindow))
@@ -117,28 +120,28 @@ func autoBackupEvery(days int) time.Duration {
 
 // A success clears the history. A failed or cancelled automatic attempt counts
 // toward the limit and pauses the trigger; an unanswered prompt also pauses it.
-// hideRun calls this under runMu, so a run gone from s.runs was recorded.
-func (s *Service) recordAutoBackup(run *runReservation, state, errorCode string, now time.Time) {
+// hide calls this under the lock, so a run gone from the registry was recorded.
+func (r *runRegistry) recordAutoBackup(run *runReservation, state, errorCode string, now time.Time) {
 	switch {
 	case state == runStateCompleted:
-		delete(s.autoHistory, run.udid)
+		delete(r.autoHistory, run.udid)
 	case run.auto || errorCode == errorBackupNotConfirmed:
-		h := s.autoHistory[run.udid]
+		h := r.autoHistory[run.udid]
 		if run.auto {
 			copy(h.failures[:], h.failures[1:])
 			h.failures[autoBackupLimit-1] = now
 		}
 		h.pausedUntil = now.Add(autoBackupPause)
-		s.autoHistory[run.udid] = h
+		r.autoHistory[run.udid] = h
 	}
 }
 
 // The history never leaves the lock that guards it.
-func (s *Service) autoBackupWait(udid string, every time.Duration, lastBackup *time.Time,
+func (r *runRegistry) autoBackupWait(udid string, every time.Duration, backups storage.SourceSummary,
 	now time.Time) (string, time.Time) {
-	s.runMu.RLock()
-	defer s.runMu.RUnlock()
-	return autoWait(every, lastBackup, s.autoHistory[udid], now)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return autoWait(every, backups, r.autoHistory[udid], now)
 }
 
 func (s *Service) wakeAutoBackup() {
@@ -183,7 +186,7 @@ func (s *Service) runAutoBackupTrigger(ctx context.Context, fire func(ctx contex
 func (s *Service) fireAutoBackup(ctx context.Context, udid string) {
 	// Our own run holds the leases: reserving would only log a rejection. With
 	// no run active, the last one's outcome is already in the history.
-	if s.runActive(udid) {
+	if s.runs.busy(udid) {
 		return
 	}
 	due, err := s.autoBackupDue(ctx, udid)
@@ -204,24 +207,13 @@ func (s *Service) autoBackupDue(ctx context.Context, udid string) (bool, error) 
 	if !settings.Enabled {
 		return false, nil
 	}
-	window, err := clockWindowOf(settings)
-	if err != nil {
-		return false, err
-	}
-	created, err := s.library.LatestCreated(ctx, udid)
+	summary, err := s.library.Summary(ctx)
 	if err != nil {
 		return false, err
 	}
 	now := time.Now()
-	wait, _ := s.autoBackupWait(udid, autoBackupEvery(settings.Days), optionalTime(created), now)
-	return wait == "" && window.contains(now), nil
-}
-
-func (s *Service) runActive(udid string) bool {
-	s.runMu.RLock()
-	defer s.runMu.RUnlock()
-	_, active := s.runs[udid]
-	return active
+	wait, _ := s.runs.autoBackupWait(udid, autoBackupEvery(settings.Days), summary[udid], now)
+	return wait == "" && clockWindowOf(settings).contains(now), nil
 }
 
 func (s *Service) SetAutoBackup(ctx context.Context, udid string, settings AutoBackupSettings) error {
@@ -236,13 +228,13 @@ func (s *Service) SetAutoBackup(ctx context.Context, udid string, settings AutoB
 	return nil
 }
 
-func (s *Service) autoBackupView(d model.Device, lastBackup *time.Time, now time.Time) *AutoBackupView {
+func (s *Service) autoBackupView(d model.Device, backups storage.SourceSummary, now time.Time) *AutoBackupView {
 	settings := d.AutoBackup
-	view := &AutoBackupView{AutoBackupSettings: autoBackupSettingsOf(settings)}
+	view := &AutoBackupView{AutoBackupSettings: autoBackupSettingsOf(settings), TimeZone: serverZone()}
 	if !settings.Enabled {
 		return view
 	}
-	wait, notBefore := s.autoBackupWait(d.UDID, autoBackupEvery(settings.Days), lastBackup, now)
+	wait, notBefore := s.runs.autoBackupWait(d.UDID, autoBackupEvery(settings.Days), backups, now)
 	view.Wait = wait
 	if !notBefore.IsZero() {
 		view.NotBefore = new(notBefore.UTC())
@@ -263,10 +255,7 @@ func autoBackupRow(settings AutoBackupSettings) (model.AutoBackup, error) {
 			return model.AutoBackup{}, &domain.ValidationError{Code: "invalid_auto_backup_window",
 				Message: "auto backup window needs two different HH:MM times"}
 		}
-		if _, err := loadWindowZone(window.TimeZone); err != nil {
-			return model.AutoBackup{}, &domain.ValidationError{Code: "invalid_time_zone", Message: err.Error()}
-		}
-		row.WindowStart, row.WindowEnd, row.TimeZone = &start, &end, window.TimeZone
+		row.WindowStart, row.WindowEnd = &start, &end
 	}
 	return row, nil
 }
@@ -275,28 +264,25 @@ func autoBackupSettingsOf(stored model.AutoBackup) AutoBackupSettings {
 	settings := AutoBackupSettings{Enabled: stored.Enabled, EveryDays: stored.Days}
 	if stored.WindowStart != nil && stored.WindowEnd != nil {
 		settings.Window = &AutoBackupWindow{Start: formatClock(*stored.WindowStart),
-			End: formatClock(*stored.WindowEnd), TimeZone: stored.TimeZone}
+			End: formatClock(*stored.WindowEnd)}
 	}
 	return settings
 }
 
-func clockWindowOf(stored model.AutoBackup) (*clockWindow, error) {
+func clockWindowOf(stored model.AutoBackup) *clockWindow {
 	if stored.WindowStart == nil || stored.WindowEnd == nil {
-		return nil, nil
+		return nil
 	}
-	loc, err := loadWindowZone(stored.TimeZone)
-	if err != nil {
-		return nil, err
-	}
-	return &clockWindow{start: int(*stored.WindowStart), end: int(*stored.WindowEnd), loc: loc}, nil
+	return &clockWindow{start: int(*stored.WindowStart), end: int(*stored.WindowEnd), loc: time.Local}
 }
 
-// loadWindowZone refuses the empty name time.LoadLocation reads as UTC.
-func loadWindowZone(name string) (*time.Location, error) {
-	if name == "" {
-		return nil, errors.New("auto backup window needs a time zone")
+// Without TZ, time.Local is the host's zone and has no IANA name.
+func serverZone() string {
+	if name := time.Local.String(); name != "Local" {
+		return name
 	}
-	return time.LoadLocation(name)
+	name, _ := time.Now().Zone()
+	return name
 }
 
 func parseClock(value string) (int64, error) {

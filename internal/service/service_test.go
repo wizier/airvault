@@ -11,11 +11,10 @@ import (
 	"github.com/wizier/airvault/internal/storage"
 )
 
-// newTestService builds a Service with only the fields the run-lifecycle phase
-// machine touches (the event bus, the live-run map and the outcome records).
+// newTestService is a Service with only what running a run touches.
 func newTestService() *Service {
-	return &Service{app: context.Background(), bus: events.New(), runs: map[string]*activeRun{},
-		lastRunError: map[runIdentity]string{}, autoHistory: map[string]autoHistory{}}
+	bus := events.New()
+	return &Service{app: context.Background(), bus: bus, runs: newRunRegistry(bus)}
 }
 
 // registerRun installs backup run "run-1" on "udid-1" in phase Active, as
@@ -24,7 +23,7 @@ func registerRun(s *Service) *runReservation {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &runReservation{id: "run-1", udid: "udid-1", kind: runKindBackup,
 		ctx: ctx, cancel: cancel}
-	s.runs[run.udid] = &activeRun{
+	s.runs.active[run.udid] = &activeRun{
 		run:      run,
 		progress: RunProgress{RunID: run.id, UDID: run.udid, Stage: StageBackingUp},
 	}

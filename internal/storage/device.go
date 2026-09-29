@@ -12,7 +12,7 @@ type DeviceRepo struct{ s *Store }
 // Columns are named explicitly so scanning does not depend on the table's
 // physical column set.
 const deviceColumns = `udid, name, product_type, ios_version, paired, encrypted, last_seen_at,
-	auto_backup, auto_backup_days, auto_backup_window_start, auto_backup_window_end, auto_backup_tz`
+	auto_backup, auto_backup_days, auto_backup_window_start, auto_backup_window_end`
 
 func (r *DeviceRepo) List(ctx context.Context) ([]model.Device, error) {
 	return listOf[model.Device](ctx, r.s.ext(),
@@ -60,11 +60,9 @@ func (r *DeviceRepo) SetAutoBackup(ctx context.Context, udid string, settings mo
 			auto_backup              = ?,
 			auto_backup_days         = ?,
 			auto_backup_window_start = ?,
-			auto_backup_window_end   = ?,
-			auto_backup_tz           = ?
+			auto_backup_window_end   = ?
 		WHERE udid = ?`,
-		settings.Enabled, settings.Days, settings.WindowStart, settings.WindowEnd,
-		settings.TimeZone, udid)
+		settings.Enabled, settings.Days, settings.WindowStart, settings.WindowEnd, udid)
 	if err != nil {
 		return wrap(err, "set auto backup")
 	}
