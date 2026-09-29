@@ -19,7 +19,7 @@ import (
 const (
 	// autoBackupDwell is how long an unlock must last before the trigger fires,
 	// so a glance at the phone never raises the passcode prompt.
-	autoBackupDwell = 10 * time.Second
+	autoBackupDwell = 5 * time.Second
 	// autoBackupSlack makes the next backup due this much before the full
 	// interval, so a daily backup does not drift later day by day.
 	autoBackupSlack = 4 * time.Hour
