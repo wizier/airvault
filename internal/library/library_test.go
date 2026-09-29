@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,33 +50,44 @@ func TestExportOfAnUnknownSnapshotIsNotFound(t *testing.T) {
 	}
 }
 
-// Publish lists the restore point with the run's facts and grows the
-// footprint by what the backup pooled plus its manifest.
+// Publish lists the restore point with the run's facts, then collects the
+// source: the footprint is measured and nothing the backup dropped stays.
 func TestPublishListsTheRestorePoint(t *testing.T) {
-	lib, _ := newTestLibrary(t)
+	lib, root := newTestLibrary(t)
 	const source = "testphoneudid0061"
 	ctx := context.Background()
 	staged := sealFiles(t, lib, source, testSnapshot, fixtureFiles)
+	dropped := objectPath(root, source, "written, then replaced")
+	writeTestFile(t, dropped, []byte("written, then replaced"))
 	row, err := Project(&staged.View)
 	if err != nil {
 		t.Fatal(err)
 	}
 	started, transferred := int64(1_700_000_000), int64(4096)
 	row.StartedAt, row.TransferredBytes = &started, &transferred
-	if err := lib.Publish(ctx, staged, row, 100); err != nil {
+	if err := lib.Publish(ctx, staged, row); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := lib.catalog.Backup.Get(ctx, testSnapshot)
 	if err != nil || *listed.StartedAt != started || *listed.TransferredBytes != transferred || listed.DeviceName != "Test iPhone" {
 		t.Fatalf("catalog row = %+v, %v", listed, err)
 	}
-	manifest, err := lib.objects.SnapshotManifestBytes(source, testSnapshot)
+	manifest, err := lib.objects.SnapshotManifestInfo(source, testSnapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sourceFootprint(t, lib, source); got == nil || *got != 100+manifest {
-		t.Fatalf("footprint = %v, want %d", got, 100+manifest)
+	// Each distinct content is pooled once, plus the manifest.
+	want, pooled := manifest.Size(), map[string]bool{}
+	for _, body := range fixtureFiles {
+		if !pooled[body] {
+			pooled[body] = true
+			want += int64(len(body))
+		}
 	}
+	if got := sourceFootprint(t, lib, source); got == nil || *got != want {
+		t.Fatalf("footprint = %v, want %d", got, want)
+	}
+	requireAbsent(t, dropped)
 	if base, err := lib.LatestBase(ctx, source); err != nil || base == nil || base.ID() != testSnapshot {
 		t.Fatalf("LatestBase = %v, %v", base, err)
 	}
@@ -116,5 +128,17 @@ func TestOpenTellsMissingFromIncomplete(t *testing.T) {
 	_, err := lib.Open(ctx, "eeeeeeee-0000-4000-8000-000000000005")
 	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "snapshot_not_found" {
 		t.Fatalf("unknown snapshot: %v, want snapshot_not_found", err)
+	}
+	// Same size, different bytes: only reading Manifest.db through tells.
+	if err := os.WriteFile(objectPath(root, source, fixtureFiles["Manifest.db"]), []byte("SQLITE fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lib.Open(ctx, testSnapshot); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("damaged Manifest.db: %v, want ErrIncomplete", err)
+	}
+	// The read set the object aside, so the restore point is now marked.
+	_, err = lib.Open(ctx, testSnapshot)
+	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "backup_damaged" {
+		t.Fatalf("after the damaged read: %v, want backup_damaged", err)
 	}
 }

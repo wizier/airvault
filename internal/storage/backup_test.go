@@ -19,9 +19,8 @@ func insertTestSnapshot(t *testing.T, store *Store, id string) {
 	}
 }
 
-// No cached footprint may outlive the source's snapshots. A delta needs a
-// measured base: applied to an unknown size it must leave it unknown, not seed
-// one short by everything already on disk.
+// No cached footprint may outlive the source's snapshots, nor come back with
+// a snapshot of the same source admitted later.
 func TestNoCachedFootprintOutlivesItsSnapshots(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -38,9 +37,6 @@ func TestNoCachedFootprintOutlivesItsSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	insertTestSnapshot(t, store, id)
-	if err := store.Backup.AddSourceFootprint(ctx, testSource, 512); err != nil {
-		t.Fatal(err)
-	}
 	summary, err := store.Backup.SummaryBySource(ctx)
 	if err != nil {
 		t.Fatal(err)

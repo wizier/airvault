@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,7 @@ func newTarTestSnapshot(t *testing.T) (*View, map[string]string) {
 	for key, content := range files {
 		writeKey(t, session, key, content)
 	}
-	view, _ := publish(t, store, session)
+	view := publish(t, store, session)
 	return view, files
 }
 
@@ -83,17 +84,30 @@ func TestTarFailsOnDamagedObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Same size, different bytes: only the hash can tell.
-	if err := os.WriteFile(object, []byte("file CONTENT"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	archive, err := view.Tar("backup")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer archive.Close()
-	if _, err := io.ReadAll(archive); !errors.Is(err, ErrIntegrity) {
-		t.Fatalf("read error = %v, want a hash mismatch", err)
+	// A whole read and a download resumed mid-file both catch it and set it aside.
+	for _, resume := range []bool{false, true} {
+		// Same size, different bytes: only the hash can tell.
+		if err := os.WriteFile(object, []byte("file CONTENT"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		archive, err := view.Tar("backup")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resume {
+			index := slices.Index(archive.paths, "ab/abcdef012")
+			size := int64(len(files["ab/abcdef012"]))
+			contentStart := archive.offsets[index+1] - tarPadding(size) - size
+			if _, err := archive.Seek(contentStart+5, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := io.ReadAll(archive); !errors.Is(err, ErrIntegrity) {
+			t.Fatalf("resume %v: read error = %v, want a hash mismatch", resume, err)
+		}
+		archive.Close()
+		requirePath(t, object, false)
+		requirePath(t, object+damagedSuffix, true)
 	}
 }
 

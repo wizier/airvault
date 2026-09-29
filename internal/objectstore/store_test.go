@@ -111,7 +111,7 @@ func TestSourcePathRefusesASubtreeReachedThroughASymlink(t *testing.T) {
 		{
 			name:    "collection",
 			link:    func(source string) string { return filepath.Join(source, "objects") },
-			operate: func(store *Store, source string) error { return store.CollectLive(source, &LiveSet{}) },
+			operate: func(store *Store, source string) error { return store.Sweep(source, &Scan{}) },
 		},
 		{
 			name:    "staging reconcile",

@@ -42,7 +42,6 @@ type Session struct {
 	tree    *tree
 	failure error
 	writers int
-	written map[string]bool // objects this run added to the pool
 	shards  map[string]string
 }
 
@@ -77,7 +76,7 @@ func (s *Store) BeginSnapshot(source, snapshotID string, base *View) (*Session, 
 		return nil, fmt.Errorf("create staging: %w", err)
 	}
 	return &Session{store: s, source: source, snapshotID: snapshotID, staging: staging, tree: tree,
-		written: map[string]bool{}, shards: map[string]string{}}, nil
+		shards: map[string]string{}}, nil
 }
 
 // Session is a read-only session over the snapshot, for serving a restore.
@@ -203,17 +202,13 @@ func (w *Writer) Commit() error {
 		return err
 	}
 	ref := hex.EncodeToString(w.digest.Sum(nil))
-	created, err := w.session.pool(w.temp.Name(), ref, w.size)
-	if err != nil {
+	if err := w.session.pool(w.temp.Name(), ref, w.size); err != nil {
 		_ = os.Remove(w.temp.Name())
 		return w.session.fail(err)
 	}
 	s := w.session
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if created {
-		s.written[ref] = true
-	}
 	if err := s.tree.insertFile(w.key, ref, w.size, time.Now().Unix()); err != nil {
 		err = fmt.Errorf("%w: %v", ErrIntegrity, err)
 		if s.failure == nil {
@@ -238,18 +233,19 @@ func (w *Writer) done() {
 
 // pool keeps a stored copy of the right length: renaming this unsynced file
 // over it could lose bytes if power fails. A wrong length is damage it heals.
-func (s *Session) pool(temp, ref string, size int64) (created bool, err error) {
+func (s *Session) pool(temp, ref string, size int64) error {
 	shard := ref[:objectPrefixLength]
 	s.mu.Lock()
 	dir, ready := s.shards[shard]
 	s.mu.Unlock()
 	if !ready {
 		// Resolved once per shard: the symlink walk is not paid per object.
+		var err error
 		if dir, err = s.store.sourcePath(s.source, "objects", shard); err != nil {
-			return false, err
+			return err
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return false, err
+			return err
 		}
 		s.mu.Lock()
 		s.shards[shard] = dir
@@ -259,15 +255,14 @@ func (s *Session) pool(temp, ref string, size int64) (created bool, err error) {
 	info, err := os.Lstat(target)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return true, os.Rename(temp, target)
 	case err != nil:
-		return false, err
+		return err
 	case !info.Mode().IsRegular():
-		return false, fmt.Errorf("%w: pool object %s is not a regular file", ErrIntegrity, ref)
+		return fmt.Errorf("%w: pool object %s is not a regular file", ErrIntegrity, ref)
 	case info.Size() == size:
-		return false, os.Remove(temp)
+		return os.Remove(temp)
 	}
-	return false, os.Rename(temp, target)
+	return os.Rename(temp, target)
 }
 
 func (s *Session) MakeDirAll(key string) error {
@@ -324,23 +319,21 @@ func (s *Session) Copy(src, dst string) error {
 	return nil
 }
 
-// Seal writes the staging manifest and returns the snapshot for Publish and
-// the bytes this backup added to the pool.
-func (s *Session) Seal(ctx context.Context) (*StagingView, int64, error) {
+// Seal writes the staging manifest and returns the snapshot for Publish.
+func (s *Session) Seal(ctx context.Context) (*StagingView, error) {
 	if s.staging == "" {
-		return nil, 0, errReadOnly
+		return nil, errReadOnly
 	}
 	s.mu.Lock()
 	failure, writers := s.failure, s.writers
 	s.tree.remove(ProtocolDir)
-	entries, written := s.tree.entries(), s.written
-	s.written = map[string]bool{} // Seal owns these now
+	entries := s.tree.entries()
 	s.mu.Unlock()
 	switch {
 	case failure != nil:
-		return nil, 0, failure
+		return nil, failure
 	case writers != 0:
-		return nil, 0, fmt.Errorf("%w: %d files still being written", ErrIntegrity, writers)
+		return nil, fmt.Errorf("%w: %d files still being written", ErrIntegrity, writers)
 	}
 	manifest := &manifestProjection{
 		Version:    formatVersion,
@@ -351,55 +344,20 @@ func (s *Session) Seal(ctx context.Context) (*StagingView, int64, error) {
 	relative := stagingManifestRelative(s.source, s.snapshotID)
 	facts, err := inspectManifestEntries(relative, manifest)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: %v", ErrIntegrity, err)
+		return nil, fmt.Errorf("%w: %v", ErrIntegrity, err)
 	}
 	manifest.SizeBytes, manifest.EntriesSHA256 = facts.sizeBytes, facts.entriesSHA256
-	added, err := s.prune(ctx, entries, written)
-	if err != nil {
-		return nil, 0, err
-	}
 	manifest.CreatedUnix = time.Now().Unix()
 	if err := validateManifestHeader(relative, manifest); err != nil {
-		return nil, 0, fmt.Errorf("%w: %v", ErrIntegrity, err)
+		return nil, fmt.Errorf("%w: %v", ErrIntegrity, err)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	if err := writeManifest(filepath.Join(s.staging, "manifest.json"), manifest); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return &StagingView{View{store: s.store, relative: relative, manifest: manifest}}, added, nil
-}
-
-// prune deletes what this run wrote but the tree dropped, with no pool scan.
-func (s *Session) prune(ctx context.Context, entries map[string]manifestEntry, written map[string]bool) (int64, error) {
-	var added int64
-	referenced := map[string]bool{}
-	for _, entry := range entries {
-		if entry.Kind != entryFile || referenced[entry.ObjectRef] {
-			continue
-		}
-		referenced[entry.ObjectRef] = true
-		if written[entry.ObjectRef] {
-			added += entry.Size
-		}
-	}
-	for ref := range written {
-		if referenced[ref] {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		path, err := s.store.resolveObjectRef(s.source, ref)
-		if err == nil {
-			err = os.Remove(path)
-		}
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return 0, fmt.Errorf("remove superseded object %s: %w", ref, err)
-		}
-	}
-	return added, nil
+	return &StagingView{View{store: s.store, relative: relative, manifest: manifest}}, nil
 }
 
 func writeManifest(path string, manifest *manifestProjection) error {

@@ -3,6 +3,7 @@ package objectstore
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -116,10 +117,21 @@ func (t *Tar) readContent(index int, offset int64, buffer []byte) (int, error) {
 		t.file = &tarFile{index: index, file: file, check: newContentCheck(entry.ObjectRef, entry.Size)}
 	}
 	f := t.file
-	read, err := f.file.ReadAt(buffer, offset)
-	// A resumed download starts mid-file; only in-order reads can be verified.
+	var read int
+	var err error
+	// A resumed download starts mid-file: hash the part it skips first, so the
+	// file is still verified by the time its last byte goes out.
+	if f.check.fed < offset {
+		_, err = io.Copy(checkWriter{f.check}, io.NewSectionReader(f.file, f.check.fed, offset-f.check.fed))
+	}
+	if err == nil {
+		read, err = f.file.ReadAt(buffer, offset)
+	}
 	if err == nil && f.check.fed == offset {
 		err = f.check.feed(buffer[:read])
+	}
+	if errors.Is(err, ErrIntegrity) {
+		err = errors.Join(err, setAside(f.file.Name()))
 	}
 	if err != nil {
 		return read, fmt.Errorf("pack %q: %w", t.paths[index], err)

@@ -62,6 +62,10 @@ type RestorePoint struct {
 	Encrypted        bool       `json:"encrypted,omitempty"`
 	IOSVersion       string     `json:"iosVersion,omitempty"`
 	DeviceName       string     `json:"deviceName,omitempty"`
+	// Damage is why the backup can be neither restored nor downloaded.
+	Damage       string     `json:"damage,omitempty"`
+	DamagedFiles int        `json:"damagedFiles,omitempty"`
+	VerifiedAt   *time.Time `json:"verifiedAt,omitempty"`
 }
 
 func restorePoint(row *model.Backup) RestorePoint {
@@ -70,6 +74,7 @@ func restorePoint(row *model.Backup) RestorePoint {
 		TransferredBytes: row.TransferredBytes,
 		StartedAt:        optionalTime(row.StartedAt), CreatedAt: time.Unix(row.CreatedAt, 0).UTC(),
 		Encrypted: row.Encrypted, IOSVersion: row.IOSVersion, DeviceName: row.DeviceName,
+		Damage: row.Damage, DamagedFiles: row.DamagedFiles, VerifiedAt: optionalTime(row.VerifiedAt),
 	}
 }
 

@@ -13,25 +13,40 @@ import (
 // collectAll sweeps a source and reports the size of what survived.
 func collectAll(t *testing.T, store *Store, source string) (int64, error) {
 	t.Helper()
-	live, err := store.LiveObjects(context.Background(), source, nil)
+	scan, err := store.Scan(context.Background(), source)
 	if err != nil {
 		return 0, err
 	}
-	if err := store.CollectLive(source, live); err != nil {
+	if err := store.Sweep(source, scan); err != nil {
 		return 0, err
 	}
-	return live.Footprint(), nil
+	return scan.Footprint(), nil
+}
+
+func requireObjects(t *testing.T, store *Store, source string, present bool, objectRefs ...string) {
+	t.Helper()
+	for _, objectRef := range objectRefs {
+		path, _ := store.resolveObjectRef(source, objectRef)
+		requirePath(t, path, present)
+	}
+}
+
+func requirePath(t *testing.T, path string, present bool) {
+	t.Helper()
+	if _, err := os.Stat(path); (err == nil) != present {
+		t.Fatalf("%s: present = %v, want %v", path, err == nil, present)
+	}
 }
 
 func manifestFileBytes(t *testing.T, store *Store, source string, snapshotIDs ...string) int64 {
 	t.Helper()
 	var total int64
 	for _, snapshotID := range snapshotIDs {
-		size, err := store.SnapshotManifestBytes(source, snapshotID)
+		manifest, err := store.SnapshotManifestInfo(source, snapshotID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		total += size
+		total += manifest.Size()
 	}
 	return total
 }
@@ -85,9 +100,9 @@ func TestCollectAllowsEmptyLiveSet(t *testing.T) {
 	}
 }
 
-// Pool damage — a truncated or missing live object — is reported, never a
-// wedge: the sweep still reclaims garbage and keeps damaged objects on disk
-// for partial recovery.
+// Pool damage never wedges the sweep or costs a snapshot its objects. A lost
+// object marks its snapshot damaged, as does a truncated one once a read sets
+// it aside, and whole copies coming back make the snapshot whole again.
 func TestCollectSurvivesDamagedLiveObjects(t *testing.T) {
 	store, source := newTestStore(t)
 	truncated, err := store.resolveObjectRef(source, obj4)
@@ -97,26 +112,52 @@ func TestCollectSurvivesDamagedLiveObjects(t *testing.T) {
 	if err := os.Truncate(truncated, 1); err != nil {
 		t.Fatal(err)
 	}
-	missing, err := store.resolveObjectRef(source, obj5)
+	lost, err := store.resolveObjectRef(source, obj5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(missing); err != nil {
+	if err := os.Rename(lost, lost+damagedSuffix); err != nil { // as Verify sets it aside
 		t.Fatal(err)
 	}
 	orphanRef := "9999999999999999999999999999999999999999999999999999999999999999"
 	writeTestObject(t, store.root, source, orphanRef, 7)
-	orphan, _ := store.resolveObjectRef(source, orphanRef)
 
-	if _, err := collectAll(t, store, source); err != nil {
-		t.Fatalf("Collect wedged on pool damage: %v", err)
+	scan, err := store.Scan(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("garbage survived a sweep with pool damage: %v", err)
+	want := []SnapshotHealth{{ID: genA}, {ID: genB, Damage: DamageFilesMissing, DamagedFiles: 1}}
+	if !slices.Equal(scan.Snapshots, want) {
+		t.Fatalf("health = %+v, want %+v", scan.Snapshots, want)
 	}
-	if _, err := os.Stat(truncated); err != nil {
-		t.Fatalf("damaged live object was deleted: %v", err)
+	if err := store.Sweep(source, scan); err != nil {
+		t.Fatalf("sweep wedged on pool damage: %v", err)
 	}
+	requireObjects(t, store, source, false, orphanRef)
+	requireObjects(t, store, source, true, obj4)
+	requirePath(t, lost+damagedSuffix, true)
+
+	viewB, err := store.OpenSnapshot(source, genB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := viewB.Open("photo.jpg"); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("open truncated object = %v, want ErrIntegrity", err)
+	}
+	if scan, err = store.Scan(context.Background(), source); err != nil || scan.Snapshots[1].DamagedFiles != 2 {
+		t.Fatalf("health with the truncated object read = %+v, %v; want 2 damaged files", scan.Snapshots, err)
+	}
+
+	writeTestObject(t, store.root, source, obj4, 70)
+	writeTestObject(t, store.root, source, obj5, 30)
+	if scan, err = store.Scan(context.Background(), source); err != nil || scan.Snapshots[1].Damage != "" {
+		t.Fatalf("health with the objects back = %+v, %v; want whole", scan.Snapshots, err)
+	}
+	if err := store.Sweep(source, scan); err != nil {
+		t.Fatal(err)
+	}
+	requirePath(t, lost+damagedSuffix, false)
+	requirePath(t, truncated+damagedSuffix, false)
 }
 
 func TestCollectRefusesMutableStaging(t *testing.T) {

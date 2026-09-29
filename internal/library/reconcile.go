@@ -96,36 +96,31 @@ func (l *Library) reconcileCatalog(ctx context.Context) ([]string, error) {
 	return diskSources, nil
 }
 
-// A provably corrupt manifest is unlinked; an otherwise invalid one is
-// skipped, never advertised.
+// Every manifest becomes a row, so nothing on disk is out of sight. An
+// unreadable one is admitted damaged; one whose backup files do not read is
+// admitted with what its manifest says, for an integrity check to judge.
 func (l *Library) projectNew(ctx context.Context, source, id string) (model.Backup, bool) {
 	view, err := l.objects.OpenSnapshot(source, id)
-	if err != nil {
-		if !l.removeIfCorrupt(ctx, source, id, err) {
-			slog.WarnContext(ctx, "catalog reconcile: invalid snapshot",
-				"source", source, "snapshot_id", id, "error", err)
+	if errors.Is(err, objectstore.ErrManifestCorrupt) {
+		slog.ErrorContext(ctx, "catalog reconcile: manifest unreadable",
+			"source", source, "snapshot_id", id, "error", err)
+		row := model.Backup{ID: id, SourceUDID: source, Damage: objectstore.DamageManifestUnreadable}
+		if manifest, err := l.objects.SnapshotManifestInfo(source, id); err == nil {
+			row.CreatedAt = manifest.ModTime().Unix()
 		}
+		return row, true
+	}
+	if err != nil {
+		// A newer format or a failed read says nothing about the backup.
+		slog.WarnContext(ctx, "catalog reconcile: snapshot skipped",
+			"source", source, "snapshot_id", id, "error", err)
 		return model.Backup{}, false
 	}
 	row, err := Project(view)
 	if err != nil {
-		slog.WarnContext(ctx, "catalog reconcile: snapshot is not valid",
+		slog.WarnContext(ctx, "catalog reconcile: backup files unreadable",
 			"source", source, "snapshot_id", id, "error", err)
-		return model.Backup{}, false
+		row = model.Backup{ID: id, SourceUDID: source, SizeBytes: view.SizeBytes(), CreatedAt: view.CreatedUnix()}
 	}
 	return row, true
-}
-
-func (l *Library) removeIfCorrupt(ctx context.Context, source, id string, openErr error) bool {
-	if !errors.Is(openErr, objectstore.ErrManifestCorrupt) {
-		return false
-	}
-	if err := l.objects.RemoveSnapshot(source, id); err != nil {
-		slog.WarnContext(ctx, "drop corrupt manifest failed",
-			"source", source, "snapshot_id", id, "error", errors.Join(openErr, err))
-		return false
-	}
-	slog.ErrorContext(ctx, "corrupt restore point removed",
-		"source", source, "snapshot_id", id, "error", openErr)
-	return true
 }

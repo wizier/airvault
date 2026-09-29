@@ -31,7 +31,7 @@ func (s *Service) progressSink(run *runReservation, idleStage, activeStage RunSt
 			percent = min(int(transferred*100/total), 100)
 		}
 		progress := RunProgress{RunID: run.id, UDID: run.udid, Restore: run.kind == runKindRestore,
-			Auto: run.auto, Percent: percent, Transferred: transferred}
+			Verify: run.kind == runKindVerify, Auto: run.auto, Percent: percent, Transferred: transferred}
 		emit := finalizing || time.Since(lastEmit) >= emitEvery
 		if emit && !lastEmit.IsZero() {
 			speed = int64(float64(transferred-emitted) / time.Since(lastEmit).Seconds())
@@ -85,6 +85,8 @@ const (
 	StageRestoring         RunStage = "restoring"
 	StageCancellingBackup  RunStage = "cancelling_backup"
 	StageCancellingRestore RunStage = "cancelling_restore"
+	StageVerifying         RunStage = "verifying"
+	StageCancellingVerify  RunStage = "cancelling_verify"
 )
 
 func (s *Service) setRunStage(run *runReservation, stage RunStage) {

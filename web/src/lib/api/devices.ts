@@ -17,7 +17,7 @@ export interface Device {
   lastBackup?: string;
   /** Per-kind code of the most recent failed run; the displayed status is
    *  derived client-side. */
-  lastRunErrors?: { backup?: string; restore?: string };
+  lastRunErrors?: { backup?: string; restore?: string; verify?: string };
   /** Unique object payload referenced by all restore points. */
   diskBytes?: number;
   restorePoints?: number;

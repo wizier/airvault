@@ -15,6 +15,7 @@
   import EmptyState from './EmptyState.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
+  import Pill from './Pill.svelte';
 
   let {
     device,
@@ -90,6 +91,12 @@
     stopSelecting();
   }
 
+  function damageText(point: RestorePoint): string {
+    return point.damage === 'manifest_unreadable'
+      ? 'Its list of files no longer reads; it can only be deleted'
+      : `${point.damagedFiles ?? 0} of its files no longer read from disk; it can only be deleted`;
+  }
+
   async function download(snapshotId: string): Promise<void> {
     downloading = snapshotId;
     downloadError = null;
@@ -114,7 +121,7 @@
             class="btn btn-error btn-xs"
             disabled={isRunning || selectedPoints.length === 0}
             onclick={() => askDelete(selectedPoints)}
-            title={isRunning ? 'A backup or restore is running' : 'Delete the selected restore points'}
+            title={isRunning ? 'Another operation is running on this phone' : 'Delete the selected restore points'}
           >
             <Icon name="trash" size={13} />
             Delete selected ({selectedPoints.length})
@@ -180,6 +187,11 @@
               {/if}
               <td title={formatDateTime(point.created)}>
                 {relativeTime(point.created, $now)}
+                {#if point.damage}
+                  <span class="tooltip tooltip-error ml-1" data-tip={damageText(point)}>
+                    <Pill tone="red" dot>Damaged</Pill>
+                  </span>
+                {/if}
               </td>
               <td class="hidden text-base-content/60 sm:table-cell">{formatDuration(point.started, point.created)}</td>
               <td class="font-mono text-xs text-base-content/60">
@@ -195,9 +207,11 @@
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs"
-                    disabled={!!restoreBlocked}
+                    disabled={!!restoreBlocked || !!point.damage}
                     onclick={() => onrestore(point.snapshotId)}
-                    title={restoreBlocked ?? 'Restore this snapshot onto the phone'}
+                    title={point.damage
+                      ? "A damaged restore point can't be restored"
+                      : (restoreBlocked ?? 'Restore this snapshot onto the phone')}
                     aria-label="Restore this snapshot"
                   >
                     <Icon name="backup" size={13} />
@@ -205,9 +219,11 @@
                   <button
                     type="button"
                     class="btn btn-ghost btn-xs"
-                    disabled={downloading !== null}
+                    disabled={downloading !== null || !!point.damage}
                     onclick={() => download(point.snapshotId)}
-                    title={`Download as a Finder backup (≈ ${formatBytes(point.sizeBytes)})`}
+                    title={point.damage
+                      ? "A damaged restore point can't be downloaded"
+                      : `Download as a Finder backup (≈ ${formatBytes(point.sizeBytes)})`}
                     aria-label="Download this snapshot as a Finder backup"
                   >
                     {#if downloading === point.snapshotId}
@@ -221,7 +237,7 @@
                     class="btn btn-ghost btn-xs text-error"
                     disabled={isRunning}
                     onclick={() => askDelete([point])}
-                    title={isRunning ? 'A backup or restore is running' : 'Delete this restore point'}
+                    title={isRunning ? 'Another operation is running on this phone' : 'Delete this restore point'}
                     aria-label="Delete restore point"
                   >
                     <Icon name="trash" size={13} />

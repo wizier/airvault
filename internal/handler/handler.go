@@ -91,6 +91,7 @@ func (h *Handler) Router() *echo.Echo {
 	device := api.Group("/devices/:udid", udidGuard)
 	device.GET("/backups", h.listBackups)
 	device.POST("/backup", h.startBackup)
+	device.POST("/verify", h.startVerify)
 	device.DELETE("/backups", h.deleteBackups)
 	device.GET("/backups/reclaimable", h.snapshotsReclaimable)
 	device.POST("/restore", h.startRestore)

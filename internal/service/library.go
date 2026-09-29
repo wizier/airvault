@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/library"
 )
 
@@ -80,6 +82,30 @@ func (s *Service) SnapshotsReclaimable(ctx context.Context, udid string, snapsho
 
 func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*BackupExport, error) {
 	return s.library.Export(ctx, snapshotID)
+}
+
+// StartVerify checks that every object the source's restore points need still
+// hashes to its name. The phone need not be connected; the source's backups
+// wait until the check ends.
+func (s *Service) StartVerify(ctx context.Context, udid string) (string, error) {
+	if domain.ValidateSource(udid) != nil {
+		return "", &domain.ValidationError{Code: "invalid_udid", Message: "a valid udid is required"}
+	}
+	run, err := s.reserveRun(runKindVerify, udid, snapshotWriteResource(udid))
+	if err != nil {
+		return "", err
+	}
+	if err := s.announceRun(run, StageVerifying); err != nil {
+		s.discardRun(run)
+		return "", err
+	}
+	s.bus.Emit(runStarted(run, ""))
+	return s.launchRun(run, func() (runOutcome, error) {
+		sink := s.progressSink(run, "", StageVerifying, 0)
+		return runOutcome{}, s.library.Verify(run.ctx, udid, func(done, total int64) {
+			sink(engine.Progress{BytesDone: done, Percent: int(done * 100 / max(total, 1))})
+		})
+	}), nil
 }
 
 func (s *Service) catalogChanged(source string) { s.bus.Emit(backupCatalogChanged(source)) }

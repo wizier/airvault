@@ -34,8 +34,8 @@ const (
 )
 
 // ErrManifestCorrupt marks a manifest read in full whose content is not a
-// valid sealed manifest — a judgment about content, never about I/O. Startup
-// reconciliation deletes these so they cannot wedge object collection.
+// valid sealed manifest — a judgment about content, never about I/O. Its
+// restore point is marked damaged, and the objects it still names are kept.
 var ErrManifestCorrupt = errors.New("corrupt manifest")
 
 func corrupt(err error) error {

@@ -72,6 +72,7 @@ func (s *Service) executeRestore(run *runReservation, plan *restorePlan) (runOut
 	fctx := context.WithoutCancel(ctx)
 	if restoreErr != nil {
 		slog.DebugContext(fctx, "restore: engine failed", "device", dev.Name, "error", restoreErr)
+		s.library.NoticeDamage(fctx, plan.backup.Source(), restoreErr)
 		return runOutcome{errorCode: engineErrorCode(restoreErr)}, fmt.Errorf("restore failed: %w", restoreErr)
 	}
 	// A restore the engine reports as done is already applied and irreversible,

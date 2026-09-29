@@ -100,7 +100,10 @@ const english = {
   invalid_backup_password: 'The backup password is incorrect',
   operation_outcome_unknown: 'The iPhone may have applied the password change, but its final state could not be confirmed',
   storage_full: 'The backup disk is full; free up space and try again',
-  backup_integrity_failed: 'Stored backup data failed an integrity check; check disk health and the AirVault log',
+  backup_integrity_failed: 'Stored backup data failed to read back; the affected restore points are marked damaged. Check disk health',
+  backup_damaged: 'This restore point is damaged; run an integrity check or delete it',
+  verify_start_failed: 'The integrity check could not be started',
+  verify_failed: 'The integrity check failed; check disk health and the AirVault log',
 } as const satisfies Record<string, string>;
 
 /** Keys owned by the UI. API codes remain strings because a newer backend can

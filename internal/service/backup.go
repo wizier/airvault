@@ -93,7 +93,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 		return runOutcome{}, err
 	}
 	slog.DebugContext(ctx, "backup: starting", "device", device.Name, "udid", udid)
-	staged, added, err := s.buildSnapshot(ctx, run, id, base)
+	staged, err := s.buildSnapshot(ctx, run, id, base)
 	finalCtx := context.WithoutCancel(ctx)
 	var row model.Backup
 	if err == nil && ctx.Err() == nil {
@@ -104,7 +104,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	// beginCommit is the cancellation boundary: past it the backup is published.
 	if err == nil && s.beginCommit(run) {
 		row.StartedAt, row.TransferredBytes = &startedAt, new(s.transferredBytes(run))
-		if err := s.library.Publish(finalCtx, staged, row, added); err != nil {
+		if err := s.library.Publish(finalCtx, staged, row); err != nil {
 			return runOutcome{}, fmt.Errorf("publish backup: %w", err)
 		}
 		slog.DebugContext(finalCtx, "backup: done", "device", device.Name, "size_bytes", row.SizeBytes)
@@ -122,14 +122,14 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 // buildSnapshot backs the device up into a new snapshot on top of base, nil
 // for a full backup. Only an incremental backup pauses on the phone long
 // enough to name: it diffs against the previous manifest first.
-func (s *Service) buildSnapshot(ctx context.Context, run *runReservation, id string, base *iosbackup.Backup) (*objectstore.StagingView, int64, error) {
+func (s *Service) buildSnapshot(ctx context.Context, run *runReservation, id string, base *iosbackup.Backup) (*objectstore.StagingView, error) {
 	var idleStage RunStage
 	if base != nil {
 		idleStage = StageCalculating
 	}
 	session, err := s.library.Begin(run.udid, id, base)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	return s.engine.BuildSnapshot(ctx, engine.DeviceID(run.udid), session, s.progressSink(run, idleStage, StageBackingUp, 0))
 }

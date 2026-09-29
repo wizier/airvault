@@ -2,48 +2,84 @@ package library
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// Collect drops the source's corrupt restore points and every object no
-// restore point reaches, then records the source's measured footprint. The
-// caller holds the source's write lease.
+// Collect records each restore point's health and the source's footprint,
+// then deletes every object no restore point needs. The caller holds the
+// source's write lease.
 func (l *Library) Collect(ctx context.Context, source string) error {
-	live, corrupt, err := l.objects.ScanLive(ctx, source, nil)
+	scan, err := l.recordScan(ctx, source)
 	if err != nil {
-		return fmt.Errorf("scan source manifests: %w", err)
+		return err
 	}
-	for _, id := range corrupt {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := l.dropCorrupt(ctx, source, id); err != nil {
-			return err
-		}
-	}
-	if err := l.objects.CollectLive(source, live); err != nil {
+	if err := l.objects.Sweep(source, scan); err != nil {
 		return fmt.Errorf("collect source objects: %w", err)
 	}
-	l.cacheFootprint(ctx, source, live.Footprint())
 	l.changed(source)
 	return nil
 }
 
-func (l *Library) dropCorrupt(ctx context.Context, source, id string) error {
-	// Catalog first: if the unlink then fails, the manifest is rediscovered on
-	// the next pass and the incomplete live set never reaches the sweep.
-	if err := l.forgetSnapshot(context.WithoutCancel(ctx), source, id); err != nil {
-		return fmt.Errorf("drop corrupt catalog row: %w", err)
+// recordScan scans the source and records each restore point's health with
+// the source's footprint; the scan it returns is ready to sweep. Any lease on
+// the source will do.
+func (l *Library) recordScan(ctx context.Context, source string) (*objectstore.Scan, error) {
+	scan, err := l.objects.Scan(ctx, source)
+	if err != nil {
+		return nil, fmt.Errorf("scan source: %w", err)
 	}
-	if err := l.objects.RemoveSnapshot(source, id); err != nil {
-		return fmt.Errorf("drop corrupt manifest: %w", err)
+	changed, err := l.recordHealth(ctx, source, scan)
+	if err != nil {
+		return nil, fmt.Errorf("record restore point health: %w", err)
 	}
-	slog.ErrorContext(ctx, "scrub: corrupt restore point removed", "source", source, "snapshot_id", id)
-	return nil
+	for _, snapshot := range changed {
+		if snapshot.Damage == "" {
+			slog.InfoContext(ctx, "health: restore point whole again", "source", source, "snapshot_id", snapshot.ID)
+		} else {
+			slog.WarnContext(ctx, "health: restore point damaged", "source", source,
+				"snapshot_id", snapshot.ID, "damage", snapshot.Damage, "files", snapshot.DamagedFiles)
+		}
+	}
+	return scan, nil
+}
+
+// NoticeDamage rescans the source when err is a read that proved stored data
+// damaged: the read set the object aside, the scan marks who needs it. The
+// caller holds a lease on the source.
+func (l *Library) NoticeDamage(ctx context.Context, source string, err error) {
+	if !errors.Is(err, objectstore.ErrIntegrity) && !errors.Is(err, objectstore.ErrManifestCorrupt) {
+		return
+	}
+	if _, err := l.recordScan(context.WithoutCancel(ctx), source); err != nil {
+		slog.WarnContext(ctx, "health: rescan left to the next collection", "source", source, "error", err)
+		return
+	}
+	l.changed(source)
+}
+
+// Verify hashes every object the source's restore points need and records
+// the result, even when stopped early. The caller holds the write lease.
+func (l *Library) Verify(ctx context.Context, source string, progress func(done, total int64)) error {
+	scan, err := l.objects.Scan(ctx, source)
+	if err != nil {
+		return fmt.Errorf("scan source: %w", err)
+	}
+	started := time.Now().Unix()
+	setAside, verifyErr := l.objects.Verify(ctx, source, scan, progress)
+	if setAside > 0 {
+		slog.ErrorContext(ctx, "verify: objects failed their hash", "source", source, "objects", setAside)
+	}
+	finalCtx := context.WithoutCancel(ctx)
+	if verifyErr == nil {
+		verifyErr = l.catalog.Backup.MarkVerified(finalCtx, source, started)
+	}
+	return errors.Join(verifyErr, l.Collect(finalCtx, source))
 }
 
 // DeleteSnapshots removes restore points of source. Manifests, catalog rows
@@ -85,16 +121,20 @@ func (l *Library) DeleteSnapshots(ctx context.Context, source string, ids []stri
 	}
 	// Recount from the surviving manifests before answering, so the dashboard
 	// never shows an unknown size. The sweep then reclaims the space against the
-	// very set this recount built.
-	live := l.recountFootprint(finalCtx, source)
+	// very scan this recount read.
+	scan, err := l.recordScan(finalCtx, source)
+	if err != nil {
+		slog.WarnContext(ctx, "snapshot deletion: footprint recount left to collection",
+			"source", source, "error", err)
+	}
 	l.changed(source)
 	handedOff = true
 	l.reclaimInBackground(finalCtx, release, source, func() error {
-		// A failed recount left no live set, so the collection reads its own.
-		if live == nil {
+		// A failed recount left no scan, so the collection reads its own.
+		if scan == nil {
 			return l.Collect(finalCtx, source)
 		}
-		return l.objects.CollectLive(source, live)
+		return l.objects.Sweep(source, scan)
 	})
 	return deleteErr
 }
@@ -139,27 +179,6 @@ func (l *Library) requireSnapshots(ctx context.Context, source string, ids []str
 			return domain.ErrNotFound
 		}
 	}
-	return nil
-}
-
-// A failed cache write leaves the size stale until the next collection, which
-// is never worth failing the caller for.
-func (l *Library) cacheFootprint(ctx context.Context, source string, diskBytes int64) {
-	if err := l.catalog.Backup.SetSourceFootprint(ctx, source, diskBytes); err != nil {
-		slog.WarnContext(ctx, "source usage cache update failed", "source", source, "error", err)
-	}
-}
-
-// The live set is handed back so the sweep needs no second traversal; nil
-// means the read failed and the sweep has to do its own.
-func (l *Library) recountFootprint(ctx context.Context, source string) *objectstore.LiveSet {
-	live, err := l.objects.LiveObjects(ctx, source, nil)
-	if err == nil {
-		l.cacheFootprint(ctx, source, live.Footprint())
-		return live
-	}
-	slog.WarnContext(ctx, "snapshot deletion: footprint recount left to collection",
-		"source", source, "error", err)
 	return nil
 }
 

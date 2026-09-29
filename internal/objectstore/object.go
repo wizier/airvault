@@ -3,9 +3,11 @@ package objectstore
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 )
 
@@ -20,14 +22,29 @@ func (s *Store) openObject(source, ref string, size int64) (*os.File, error) {
 		return nil, err
 	}
 	info, err := file.Stat()
-	if err == nil && (!info.Mode().IsRegular() || info.Size() != size) {
-		err = fmt.Errorf("object %s is %d bytes, the manifest says %d", ref, info.Size(), size)
+	switch {
+	case err != nil:
+	case !info.Mode().IsRegular():
+		err = fmt.Errorf("object %s is not a regular file", ref)
+	case info.Size() != size:
+		err = errors.Join(fmt.Errorf("object %s is %d bytes, the manifest says %d", ref, info.Size(), size),
+			setAside(path))
 	}
 	if err != nil {
 		_ = file.Close()
 		return nil, err
 	}
 	return file, nil
+}
+
+// setAside takes an object that proved not to be what its name says out of
+// the pool: the next scan marks the snapshots needing it damaged, and Verify
+// puts it back should it read right again.
+func setAside(path string) error {
+	if err := os.Rename(path, path+damagedSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("set damaged object aside: %w", err)
+	}
+	return nil
 }
 
 // contentCheck hashes an object's bytes, fed in order from its start, and
@@ -59,6 +76,11 @@ func (c *contentCheck) feed(p []byte) error {
 	return nil
 }
 
+// checkWriter feeds what is written to it into a content check.
+type checkWriter struct{ check *contentCheck }
+
+func (w checkWriter) Write(p []byte) (int, error) { return len(p), w.check.feed(p) }
+
 // objectReader reads exactly an object's size and fails with ErrIntegrity
 // when the content is short or does not hash to its address.
 type objectReader struct {
@@ -89,7 +111,7 @@ func (r *objectReader) Read(p []byte) (int, error) {
 	}
 	if r.remaining == 0 {
 		if err := r.check.feed(nil); err != nil {
-			return 0, r.failed(fmt.Errorf("%q: %w", r.key, err))
+			return 0, r.failed(fmt.Errorf("%q: %w", r.key, errors.Join(err, setAside(r.file.Name()))))
 		}
 		return 0, io.EOF
 	}
@@ -102,7 +124,7 @@ func (r *objectReader) Read(p []byte) (int, error) {
 	case n == 0 && err == io.EOF:
 		return 0, r.failed(fmt.Errorf("%w: %q ended before its manifest size", ErrIntegrity, r.key))
 	case checkErr != nil:
-		return n, r.failed(fmt.Errorf("%q: %w", r.key, checkErr))
+		return n, r.failed(fmt.Errorf("%q: %w", r.key, errors.Join(checkErr, setAside(r.file.Name()))))
 	}
 	return n, nil
 }

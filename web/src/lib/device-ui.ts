@@ -15,7 +15,7 @@ export function lastBackupFailure(device: Device, live: RunningProgress | null):
 /** Why a device action that needs the phone to itself is disabled, if it is. */
 export function blockedReason(device: Device, live: RunningProgress | null): string | null {
   if (device.connection === 'offline') return 'Device is offline';
-  return live ? 'A backup or restore is running' : null;
+  return live ? 'Another operation is running on this phone' : null;
 }
 
 /** The IANA zone this browser runs in; automatic-backup windows are saved in it. */
@@ -368,6 +368,8 @@ const STAGE_LABELS: Record<RunStage, string> = {
   restoring: 'Restoring',
   cancelling_backup: 'Cancelling…',
   cancelling_restore: 'Cancelling…',
+  verifying: 'Checking the stored backups',
+  cancelling_verify: 'Cancelling…',
 };
 
 /** A server ahead of this client can name a stage it has no label for. */

@@ -16,12 +16,33 @@ func (r *BackupRepo) InsertSnapshot(ctx context.Context, backup model.Backup) er
 	_, err := sqlx.NamedExecContext(ctx, r.s.ext(), `
 		INSERT INTO backups
 			(id, source_udid, size_bytes, transferred_bytes,
-			 encrypted, ios_version, device_name, product_type, created_at, started_at)
+			 encrypted, ios_version, device_name, product_type, created_at, started_at,
+			 damage, damaged_files)
 		VALUES
 			(:id, :source_udid, :size_bytes, :transferred_bytes,
-			 :encrypted, :ios_version, :device_name, :product_type, :created_at, :started_at)`,
+			 :encrypted, :ios_version, :device_name, :product_type, :created_at, :started_at,
+			 :damage, :damaged_files)`,
 		backup)
 	return wrap(err, "insert backup snapshot")
+}
+
+// SetDamage reports whether the row's damage changed.
+func (r *BackupRepo) SetDamage(ctx context.Context, source, id, damage string, damagedFiles int) (bool, error) {
+	result, err := r.s.ext().ExecContext(ctx, `
+		UPDATE backups SET damage = ?, damaged_files = ?
+		WHERE id = ? AND source_udid = ? AND (damage != ? OR damaged_files != ?)`,
+		damage, damagedFiles, id, source, damage, damagedFiles)
+	if err != nil {
+		return false, wrap(err, "set backup damage")
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, wrap(err, "set backup damage")
+}
+
+func (r *BackupRepo) MarkVerified(ctx context.Context, source string, at int64) error {
+	_, err := r.s.ext().ExecContext(ctx,
+		`UPDATE backups SET verified_at = ? WHERE source_udid = ?`, at, source)
+	return wrap(err, "mark source verified")
 }
 
 func (r *BackupRepo) DeleteSnapshot(ctx context.Context, source, id string) error {
@@ -39,15 +60,6 @@ func (r *BackupRepo) DeleteSourceSnapshots(ctx context.Context, source string) e
 func (r *BackupRepo) Get(ctx context.Context, id string) (*model.Backup, error) {
 	return getOne[model.Backup](ctx, r.s.ext(),
 		`SELECT * FROM backups WHERE id = ?`, id)
-}
-
-func (r *BackupRepo) SourceHasSnapshots(ctx context.Context, source string) (bool, error) {
-	var exists bool
-	if err := sqlx.GetContext(ctx, r.s.ext(), &exists,
-		`SELECT EXISTS(SELECT 1 FROM backups WHERE source_udid = ?)`, source); err != nil {
-		return false, wrap(err, "check source snapshots")
-	}
-	return exists, nil
 }
 
 func (r *BackupRepo) LatestCreated(ctx context.Context, source string) (*int64, error) {
@@ -139,15 +151,6 @@ func (r *BackupRepo) SetSourceFootprint(ctx context.Context, source string, disk
 		ON CONFLICT(source_udid) DO UPDATE SET disk_bytes = excluded.disk_bytes`,
 		source, diskBytes)
 	return wrap(err, "set source footprint")
-}
-
-// A delta means nothing without a measured base, so an unknown size stays
-// unknown instead of being seeded from one.
-func (r *BackupRepo) AddSourceFootprint(ctx context.Context, source string, delta int64) error {
-	_, err := r.s.ext().ExecContext(ctx, `
-		UPDATE backup_sources SET disk_bytes = disk_bytes + ?
-		WHERE source_udid = ?`, delta, source)
-	return wrap(err, "add source footprint")
 }
 
 // For a change whose effect on disk the caller cannot price; the next

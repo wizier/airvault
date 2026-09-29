@@ -35,6 +35,7 @@ type RunProgress struct {
 	Percent     int      `json:"progress"`
 	Stage       RunStage `json:"stage"`
 	Restore     bool     `json:"restore,omitempty"`
+	Verify      bool     `json:"verify,omitempty"`
 	Auto        bool     `json:"auto,omitempty"` // started by the automatic-backup trigger
 	Cancelling  bool     `json:"cancelling,omitempty"`
 	Transferred int64    `json:"transferred"`
@@ -123,10 +124,10 @@ func (s *Service) lastRunErrors(udid string) map[string]string {
 	s.runMu.RLock()
 	defer s.runMu.RUnlock()
 	var out map[string]string
-	for _, kind := range []string{runKindBackup, runKindRestore} {
+	for _, kind := range []string{runKindBackup, runKindRestore, runKindVerify} {
 		if code, ok := s.lastRunError[runIdentity{udid, kind}]; ok {
 			if out == nil {
-				out = make(map[string]string, 2)
+				out = make(map[string]string, 3)
 			}
 			out[kind] = code
 		}
@@ -176,9 +177,12 @@ func (s *Service) CancelRun(runID string) error {
 		}
 		if active.phase != runPhaseCancelling {
 			active.phase = runPhaseCancelling
-			if active.run.kind == runKindRestore {
+			switch active.run.kind {
+			case runKindRestore:
 				active.progress.Stage = StageCancellingRestore
-			} else {
+			case runKindVerify:
+				active.progress.Stage = StageCancellingVerify
+			default:
 				active.progress.Stage = StageCancellingBackup
 			}
 			active.progress.Cancelling = true

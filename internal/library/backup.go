@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"slices"
 
 	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/model"
@@ -15,13 +16,17 @@ import (
 // A backup enters the library in three steps: Begin a snapshot on top of
 // LatestBase, let the device fill and seal it, then Publish it or Discard it.
 
-// LatestBase is the newest restore point usable as an incremental base, nil
-// before the first backup. A damaged newest one is skipped, but when none is
-// usable the backup fails rather than silently start over with a full copy.
+// LatestBase is the newest undamaged restore point that opens, nil for a full
+// backup when none is undamaged: the device never resends what it believes the
+// base holds. When none opens the backup fails rather than silently go full.
 func (l *Library) LatestBase(ctx context.Context, source string) (*iosbackup.Backup, error) {
 	snapshots, err := l.catalog.Backup.ListCompleteBySource(ctx, source)
-	if err != nil || len(snapshots) == 0 {
+	if err != nil {
 		return nil, err
+	}
+	snapshots = slices.DeleteFunc(snapshots, func(snapshot model.Backup) bool { return snapshot.Damage != "" })
+	if len(snapshots) == 0 {
+		return nil, nil
 	}
 	for _, snapshot := range snapshots {
 		view, err := l.objects.OpenSnapshot(source, snapshot.ID)
@@ -33,6 +38,7 @@ func (l *Library) LatestBase(ctx context.Context, source string) (*iosbackup.Bac
 		}
 		slog.WarnContext(ctx, "backup snapshot is not usable as an incremental base",
 			"snapshot_id", snapshot.ID, "source", source, "error", err)
+		l.NoticeDamage(ctx, source, err)
 	}
 	return nil, errors.New("no complete backup snapshot is usable as an incremental base")
 }
@@ -47,9 +53,9 @@ func (l *Library) Begin(source, id string, base *iosbackup.Backup) (*objectstore
 }
 
 // Publish makes a sealed snapshot a restore point with row as its catalog
-// entry; added is what it pooled. A failure past the manifest's rename still
+// entry, then collects the source. A failure past the manifest's rename still
 // leaves a restore point, so it is recovered instead of discarded.
-func (l *Library) Publish(ctx context.Context, staged *objectstore.StagingView, row model.Backup, added int64) error {
+func (l *Library) Publish(ctx context.Context, staged *objectstore.StagingView, row model.Backup) error {
 	if _, err := l.objects.Publish(staged); err != nil {
 		recovered, settleErr := l.settle(ctx, row)
 		if recovered && settleErr == nil {
@@ -58,12 +64,7 @@ func (l *Library) Publish(ctx context.Context, staged *objectstore.StagingView, 
 		}
 		return errors.Join(err, settleErr)
 	}
-	// The footprint grows by the pooled payload plus the manifest itself.
-	var delta *int64
-	if manifestBytes, err := l.objects.SnapshotManifestBytes(row.SourceUDID, row.ID); err == nil {
-		delta = new(added + manifestBytes)
-	}
-	if err := l.recordSnapshot(ctx, row, delta); err != nil {
+	if err := l.recordSnapshot(ctx, row); err != nil {
 		if _, getErr := l.catalog.Backup.Get(ctx, row.ID); getErr != nil {
 			// The published manifest is the durable commit: its objects are never
 			// discarded because SQLite failed, and startup rebuilds the catalog.
@@ -71,7 +72,17 @@ func (l *Library) Publish(ctx context.Context, staged *objectstore.StagingView, 
 		}
 		slog.WarnContext(ctx, "backup: catalog commit returned an error but is durable", "snapshot_id", row.ID, "error", err)
 	}
+	l.collectPublished(ctx, row.SourceUDID)
 	return nil
+}
+
+// collectPublished measures the source a publication grew, marks what it
+// finds damaged and drops what the backup wrote but no restore point needs.
+// A failure is left to the next collection, never failing the publication.
+func (l *Library) collectPublished(ctx context.Context, source string) {
+	if err := l.Collect(ctx, source); err != nil {
+		slog.WarnContext(ctx, "backup: object collection deferred", "source", source, "error", err)
+	}
 }
 
 // Discard drops an unpublished snapshot; what it pooled goes with the next
@@ -103,14 +114,10 @@ func (l *Library) settle(ctx context.Context, row model.Backup) (bool, error) {
 		}
 		fctx := context.WithoutCancel(ctx)
 		recovered.StartedAt, recovered.TransferredBytes = row.StartedAt, row.TransferredBytes
-		// Its delta is unknown, so the collection below measures the source.
-		if err := l.recordSnapshot(fctx, recovered, nil); err != nil {
+		if err := l.recordSnapshot(fctx, recovered); err != nil {
 			return false, fmt.Errorf("recover published snapshot: %w", err)
 		}
-		if err := l.Collect(fctx, row.SourceUDID); err != nil {
-			slog.WarnContext(fctx, "recovered snapshot: object collection deferred",
-				"source", row.SourceUDID, "error", err)
-		}
+		l.collectPublished(fctx, row.SourceUDID)
 		return true, nil
 	}
 	if !errors.Is(openErr, fs.ErrNotExist) {

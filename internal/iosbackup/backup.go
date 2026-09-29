@@ -113,12 +113,18 @@ func Open(view *objectstore.View) (*Backup, error) {
 	if size, ok := view.FileSize("Manifest.db"); !ok || size == 0 {
 		return nil, errors.New("backup Manifest.db is not a non-empty regular file")
 	}
+	// Read through: a damaged database fails here, not when the device
+	// downloads it from the base mid-backup.
 	file, err := view.Open("Manifest.db")
 	if err != nil {
 		return nil, fmt.Errorf("open Manifest.db: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("close Manifest.db: %w", err)
+	_, err = io.Copy(io.Discard, file)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read Manifest.db: %w", err)
 	}
 	return backup, nil
 }

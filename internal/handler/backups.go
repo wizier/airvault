@@ -21,6 +21,14 @@ func (h *Handler) startBackup(c *echo.Context) error {
 	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
 }
 
+func (h *Handler) startVerify(c *echo.Context) error {
+	runID, err := h.svc.StartVerify(c.Request().Context(), c.Param("udid"))
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
+}
+
 func (h *Handler) listBackups(c *echo.Context) error {
 	points, err := h.svc.RestorePoints(c.Request().Context(), c.Param("udid"))
 	if err != nil {

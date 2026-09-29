@@ -23,6 +23,7 @@ const (
 	runKindPairing   = "pairing"
 	runKindPassword  = "password"
 	runKindPower     = "power"
+	runKindVerify    = "verify"
 
 	runStateRunning   = "running"
 	runStateCompleted = "completed"
@@ -92,7 +93,8 @@ func (s *Service) announceRun(run *runReservation, stage RunStage) error {
 			fmt.Errorf("%w: a run is already active for this device", domain.ErrBusy))
 	}
 	s.runs[run.udid] = &activeRun{run: run, progress: RunProgress{
-		RunID: run.id, UDID: run.udid, Stage: stage, Restore: run.kind == runKindRestore, Auto: run.auto,
+		RunID: run.id, UDID: run.udid, Stage: stage, Restore: run.kind == runKindRestore,
+		Verify: run.kind == runKindVerify, Auto: run.auto,
 	}}
 	s.runMu.Unlock()
 	logOperationStarted(run.ctx, run.kind, run.udid, run.logAttrs()...)

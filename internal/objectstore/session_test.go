@@ -53,9 +53,9 @@ func refOf(content string) string {
 }
 
 // publish seals a session and publishes it the way the service does.
-func publish(t *testing.T, store *Store, session *Session) (*View, int64) {
+func publish(t *testing.T, store *Store, session *Session) *View {
 	t.Helper()
-	staged, added, err := session.Seal(context.Background())
+	staged, err := session.Seal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func publish(t *testing.T, store *Store, session *Session) (*View, int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return published, added
+	return published
 }
 
 func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
@@ -92,9 +92,7 @@ func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
 		t.Fatalf("List = %+v, %v", entries, err)
 	}
 
-	if _, added := publish(t, store, session); added != int64(len("same bytes")+len("database")) {
-		t.Fatalf("added = %d: duplicates count once, protocol files not at all", added)
-	}
+	publish(t, store, session)
 	view, err := store.OpenSnapshot(sessionSource, snapFull)
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +111,8 @@ func TestSessionWritesAndPublishesASnapshot(t *testing.T) {
 	}
 }
 
-// An incremental backup inherits its base; objects it wrote and then
-// dropped are pruned, and only surviving new content counts as added.
+// An incremental backup inherits its base; objects it wrote and then dropped
+// go with the collection that follows its publication.
 func TestIncrementalSessionInheritsAndPrunes(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
@@ -126,7 +124,7 @@ func TestIncrementalSessionInheritsAndPrunes(t *testing.T) {
 	}
 	writeKey(t, base, "Manifest.db", "v1")
 	writeKey(t, base, "photo", "picture")
-	published, _ := publish(t, store, base)
+	published := publish(t, store, base)
 
 	next, err := store.BeginSnapshot(sessionSource, snapNext, published)
 	if err != nil {
@@ -137,21 +135,23 @@ func TestIncrementalSessionInheritsAndPrunes(t *testing.T) {
 	}
 	writeKey(t, next, "Manifest.db", "v2-draft")
 	writeKey(t, next, "Manifest.db", "v2")
-	if _, added := publish(t, store, next); added != int64(len("v2")) {
-		t.Fatalf("added = %d, want only the surviving new object", added)
+	publish(t, store, next)
+	if _, err := collectAll(t, store, sessionSource); err != nil {
+		t.Fatal(err)
 	}
 	draft, _ := store.resolveObjectRef(sessionSource, refOf("v2-draft"))
 	if _, err := os.Stat(draft); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("an object the snapshot dropped was not pruned")
+		t.Fatal("an object the snapshot dropped was not collected")
 	}
 	old, _ := store.resolveObjectRef(sessionSource, refOf("v1"))
 	if _, err := os.Stat(old); err != nil {
-		t.Fatal("prune touched an object the base snapshot still uses")
+		t.Fatal("collection touched an object the base snapshot still uses")
 	}
 }
 
-// Same-length damage is caught by the hash at the last byte and latched;
-// a writer of the same content heals a truncated object.
+// Same-length damage a read's hash catches is latched and set aside, as Verify
+// sets aside what no one read and puts back what reads right again. A writer
+// of the same content puts a whole copy back, as it heals a truncated one.
 func TestSessionVerifiesAndHealsObjects(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
@@ -162,7 +162,7 @@ func TestSessionVerifiesAndHealsObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeKey(t, base, "file", "original")
-	published, _ := publish(t, store, base)
+	published := publish(t, store, base)
 	path, _ := store.resolveObjectRef(sessionSource, refOf("original"))
 
 	if err := os.WriteFile(path, []byte("damaged!"), 0o644); err != nil {
@@ -176,15 +176,45 @@ func TestSessionVerifiesAndHealsObjects(t *testing.T) {
 	if _, err := restore.Create("x"); !errors.Is(err, errReadOnly) {
 		t.Fatalf("restore write: %v, want errReadOnly", err)
 	}
+	requirePath(t, path+damagedSuffix, true)
 
-	if err := os.WriteFile(path, []byte("orig"), 0o644); err != nil {
+	verify := func(wantSetAside int, wantDamage string) {
+		t.Helper()
+		ctx := context.Background()
+		scan, err := store.Scan(ctx, sessionSource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if setAside, err := store.Verify(ctx, sessionSource, scan, func(int64, int64) {}); setAside != wantSetAside || err != nil {
+			t.Fatalf("Verify = %d, %v; want %d set aside", setAside, err, wantSetAside)
+		}
+		if scan, err = store.Scan(ctx, sessionSource); err != nil || scan.Snapshots[0].Damage != wantDamage {
+			t.Fatalf("health = %+v, %v; want damage %q", scan.Snapshots, err, wantDamage)
+		}
+	}
+	verify(0, DamageFilesMissing)
+	if err := os.WriteFile(path+damagedSuffix, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	verify(0, "")
+	if err := os.WriteFile(path, []byte("damaged!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	verify(1, DamageFilesMissing)
+
+	// The object set aside comes back with a writer of the same content.
 	next, err := store.BeginSnapshot(sessionSource, snapNext, published)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeKey(t, next, "again", "original")
+	if data, _ := os.ReadFile(path); string(data) != "original" {
+		t.Fatalf("lost object = %q, want a whole copy back", data)
+	}
+	if err := os.WriteFile(path, []byte("orig"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeKey(t, next, "once more", "original")
 	if data, _ := os.ReadFile(path); string(data) != "original" {
 		t.Fatalf("truncated object = %q, want it healed", data)
 	}
@@ -210,7 +240,7 @@ func TestSessionAbortAndOpenWriters(t *testing.T) {
 		t.Fatalf("an aborted file left %v", temps)
 	}
 	open, _ := session.Create("open")
-	if _, _, err := session.Seal(context.Background()); !errors.Is(err, ErrIntegrity) {
+	if _, err := session.Seal(context.Background()); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("Seal with an open writer: %v", err)
 	}
 	open.Abort()
@@ -303,7 +333,7 @@ func TestBeginSnapshotRefusesAnotherSourcesBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	published, _ := publish(t, store, base)
+	published := publish(t, store, base)
 	if _, err := store.BeginSnapshot("otherphoneudid0001", snapNext, published); err == nil {
 		t.Fatal("a snapshot began from another source's base")
 	}

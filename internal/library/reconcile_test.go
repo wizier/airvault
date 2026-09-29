@@ -1,11 +1,14 @@
 package library
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wizier/airvault/internal/objectstore"
 )
 
 // An attempt cut short before publication is gone after startup; the next
@@ -157,31 +160,40 @@ func TestStartupSkipsASourceItCannotRead(t *testing.T) {
 	}
 }
 
-// Reconcile opens only manifests new to the catalog: a corrupt newcomer is
-// never advertised and is unlinked, while bit rot in an admitted one is left
-// for the scrub, which re-verifies seals and drops it so it stops pinning objects.
-func TestCorruptManifestIsDroppedAtAdmissionOrByScrub(t *testing.T) {
+// A corrupt manifest is marked, never removed: a newcomer is admitted damaged,
+// and bit rot in an admitted one is found by the scrub, which keeps every
+// object the damaged manifest still names.
+func TestCorruptManifestIsMarkedAtAdmissionOrByScrub(t *testing.T) {
 	lib, root := newTestLibrary(t)
 	const source = "testphoneudid0009"
 	const newcomerID = "dddddddd-0000-4000-8000-000000000004"
+	ctx := context.Background()
 	paths := publishFixture(t, lib, root, source, testSnapshot)
 	admittedPath := paths[len(paths)-1]
 	reconcile(t, lib)
+	requireDamage := func(id, want string) {
+		t.Helper()
+		if row, err := lib.catalog.Backup.Get(ctx, id); err != nil || row.Damage != want {
+			t.Fatalf("snapshot %s = %+v, %v; want damage %q", id, row, err, want)
+		}
+	}
 
 	newcomerPath := filepath.Join(root, source, "snapshots", newcomerID+".json")
 	writeTestFile(t, newcomerPath, brokenManifest)
-	writeTestFile(t, admittedPath, brokenManifest)
-	reconcile(t, lib)
-	requireNotCataloged(t, lib, newcomerID)
-	requireAbsent(t, newcomerPath)
-	if _, err := lib.catalog.Backup.Get(context.Background(), testSnapshot); err != nil {
-		t.Fatalf("admitted snapshot dropped on trusted reconcile: %v", err)
+	manifest, err := os.ReadFile(admittedPath)
+	if err != nil {
+		t.Fatal(err)
 	}
+	writeTestFile(t, admittedPath, bytes.Replace(manifest, []byte("Status.plist"), []byte("Status.plisT"), 1))
+	reconcile(t, lib)
+	requireDamage(newcomerID, objectstore.DamageManifestUnreadable)
+	requireDamage(testSnapshot, "") // an admitted row is trusted until the scrub
 
-	_ = lib.Collect(context.Background(), source)
-	lib.Wait()
-	requireNotCataloged(t, lib, testSnapshot)
-	requireAbsent(t, admittedPath)
+	if err := lib.Collect(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	requireDamage(testSnapshot, objectstore.DamageManifestUnreadable)
+	requirePresent(t, append(paths, newcomerPath)...)
 }
 
 // A newer format's manifest belongs to a newer AirVault: it is neither admitted
@@ -231,30 +243,34 @@ func TestCatalogReconcileMovesStaleSnapshotOwnershipToManifestSource(t *testing.
 	}
 }
 
-// Recovery collects through the same corrupt-tolerant pass as startup: a
-// bit-rotted sibling is dropped instead of deferring collection. The runtime
-// facts it records survive a later reconcile of the unchanged snapshot.
-func TestPublishedRecoveryDropsCorruptSiblingAndKeepsRuntimeFacts(t *testing.T) {
+// Recovery collects through the same pass as startup: a bit-rotted sibling is
+// kept and admitted as damaged, not left to wedge collection, and the runtime
+// facts recovery records survive a later reconcile.
+func TestPublishedRecoveryKeepsCorruptSiblingAndRuntimeFacts(t *testing.T) {
 	lib, root := newTestLibrary(t)
 	const source = "testphoneudid0007"
+	const siblingID = "dddddddd-0000-4000-8000-000000000004"
 	transferred := int64(1234)
 	row := pendingRow(source)
 	row.TransferredBytes = &transferred
 	publishFixture(t, lib, root, source, testSnapshot)
-	corruptPath := filepath.Join(root, source, "snapshots", "dddddddd-0000-4000-8000-000000000004.json")
+	corruptPath := filepath.Join(root, source, "snapshots", siblingID+".json")
 	writeTestFile(t, corruptPath, brokenManifest)
 
 	recovered, err := lib.settle(context.Background(), row)
 	if err != nil || !recovered {
 		t.Fatalf("recover published snapshot: recovered=%v error=%v", recovered, err)
 	}
-	requireAbsent(t, corruptPath)
+	requirePresent(t, corruptPath)
 	if got := sourceFootprint(t, lib, source); got == nil {
 		t.Fatal("source usage should be refreshed by recovery")
 	}
 
 	if _, err := lib.reconcileCatalog(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if sibling, err := lib.catalog.Backup.Get(context.Background(), siblingID); err != nil || sibling.Damage != objectstore.DamageManifestUnreadable {
+		t.Fatalf("sibling = %+v, %v; want it admitted as damaged", sibling, err)
 	}
 	backup, err := lib.catalog.Backup.Get(context.Background(), testSnapshot)
 	if err != nil {

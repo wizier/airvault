@@ -23,11 +23,11 @@ const (
 )
 
 // BuildSnapshot backs the device up into session and seals it; the snapshot
-// comes back ready to publish, with the bytes it added to the object pool.
-func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, session *objectstore.Session, onProgress func(Progress)) (*objectstore.StagingView, int64, error) {
+// comes back ready to publish.
+func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, session *objectstore.Session, onProgress func(Progress)) (*objectstore.StagingView, error) {
 	udid := string(device)
 	if err := validateUDID(udid); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	progress := newTransferProgress(onProgress)
 	defer progress.close()
@@ -35,17 +35,17 @@ func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, session *ob
 	defer cancel()
 	t := &transfer{engine: e, udid: udid, session: session, progress: progress}
 	if err := t.run(ctx, cancel); err != nil {
-		return nil, 0, transferResult(ctx, "backup", err)
+		return nil, transferResult(ctx, "backup", err)
 	}
 	progress.submit(ProgressPhaseSealing, -1, 0)
-	staged, added, err := session.Seal(ctx)
+	staged, err := session.Seal(ctx)
 	if err == nil {
 		err = ctx.Err() // a cancel racing the seal discards the backup
 	}
 	if err != nil {
-		return nil, 0, transferResult(ctx, "backup", storeFailure("seal backup", err))
+		return nil, transferResult(ctx, "backup", storeFailure("seal backup", err))
 	}
-	return staged, added, nil
+	return staged, nil
 }
 
 type RestoreOptions struct {

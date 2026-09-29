@@ -74,6 +74,10 @@ func snapshotNotFound() error {
 	return &domain.ValidationError{Code: "snapshot_not_found", Message: "the selected backup snapshot no longer exists"}
 }
 
+func snapshotDamaged() error {
+	return &domain.ValidationError{Code: "backup_damaged", Message: "the selected backup is damaged; run an integrity check or delete it"}
+}
+
 // Open reads a restore point as an iOS backup; one that is not complete is
 // ErrIncomplete.
 func (l *Library) Open(ctx context.Context, id string) (*iosbackup.Backup, error) {
@@ -81,16 +85,21 @@ func (l *Library) Open(ctx context.Context, id string) (*iosbackup.Backup, error
 	if err != nil {
 		return nil, err
 	}
+	if snapshot.Damage != "" {
+		return nil, snapshotDamaged()
+	}
 	view, err := l.objects.OpenSnapshot(snapshot.SourceUDID, snapshot.ID)
 	if errors.Is(err, fs.ErrNotExist) {
 		// A deletion won the race: the row outlived its manifest.
 		return nil, snapshotNotFound()
 	}
 	if err != nil {
+		l.NoticeDamage(ctx, snapshot.SourceUDID, err)
 		return nil, fmt.Errorf("open snapshot: %w", err)
 	}
 	backup, err := iosbackup.Open(view)
 	if err != nil {
+		l.NoticeDamage(ctx, snapshot.SourceUDID, err)
 		return nil, fmt.Errorf("%w: %w", ErrIncomplete, err)
 	}
 	return backup, nil
@@ -124,6 +133,9 @@ func (l *Library) Export(ctx context.Context, id string) (*Export, error) {
 	snapshot, err := l.catalog.Backup.Get(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if snapshot.Damage != "" {
+		return nil, snapshotDamaged()
 	}
 	view, err := l.objects.OpenSnapshot(snapshot.SourceUDID, snapshot.ID)
 	if errors.Is(err, fs.ErrNotExist) {

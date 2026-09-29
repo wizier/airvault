@@ -36,4 +36,9 @@ type Backup struct {
 	IOSVersion       string `db:"ios_version"`
 	CreatedAt        int64  `db:"created_at"`
 	StartedAt        *int64 `db:"started_at"`
+	// Damage is why the backup cannot be restored ("" when it can), as the last
+	// collection pass found it.
+	Damage       string `db:"damage"`
+	DamagedFiles int    `db:"damaged_files"`
+	VerifiedAt   *int64 `db:"verified_at"`
 }

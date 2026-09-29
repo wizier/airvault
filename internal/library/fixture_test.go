@@ -88,7 +88,7 @@ func sealFiles(t *testing.T, lib *Library, source, id string, files map[string]s
 			t.Fatal(err)
 		}
 	}
-	staged, _, err := session.Seal(context.Background())
+	staged, err := session.Seal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

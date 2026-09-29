@@ -47,6 +47,7 @@ interface RunEvent {
   runId: string;
   udid: string;
   restore?: boolean;
+  verify?: boolean;
   /** Set on a terminal event of a run the automatic-backup trigger started. */
   auto?: boolean;
 }
@@ -116,7 +117,7 @@ function dropRun(udid: string): void {
 /** The failed patch is instant feel only; the server folds the last failed run
  *  into the device overview. */
 function backupFinished(
-  d: { udid: string; restore?: boolean; auto?: boolean; errorCode?: string },
+  d: { udid: string; restore?: boolean; verify?: boolean; auto?: boolean; errorCode?: string },
   state: 'completed' | 'failed' | 'cancelled',
 ): void {
   dropRun(d.udid);
@@ -127,7 +128,7 @@ function backupFinished(
     // Optimistic projection of the server's per-kind last-run error; the
     // refetch below confirms it. An unanswered automatic prompt is not one:
     // it only pauses the trigger.
-    const kind = d.restore ? 'restore' : 'backup';
+    const kind = d.restore ? 'restore' : d.verify ? 'verify' : 'backup';
     devicesStore.mutate((devices) =>
       devices.map((device) =>
         device.udid === d.udid
@@ -213,8 +214,9 @@ class EventsClient {
             runId: d.runId,
             udid: d.udid,
             progress: 0,
-            stage: d.restore ? 'restoring' : 'waiting_for_device',
+            stage: d.restore ? 'restoring' : d.verify ? 'verifying' : 'waiting_for_device',
             restore: d.restore,
+            verify: d.verify,
             transferred: 0,
             speed: 0,
           },

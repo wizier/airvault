@@ -31,9 +31,10 @@
   } = $props();
 
   let dialog: HTMLDialogElement;
-  // Every on-disk backup that could be applied (own + other phones'), newest first.
+  // Every on-disk backup that could be applied (own + other phones'), newest
+  // first; a damaged one never can.
   $effect(() => restoreSourcesStore.start());
-  const sources = $derived(restoreSourcesStore.data ?? []);
+  const sources = $derived((restoreSourcesStore.data ?? []).filter((source) => !source.damage));
   // Preselected snapshot or this phone's newest; never auto-pick a foreign phone.
   // Mount-time snapshot — `sources` refreshes while open must not clobber picks.
   // svelte-ignore state_referenced_locally

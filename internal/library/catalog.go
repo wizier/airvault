@@ -4,33 +4,40 @@ import (
 	"context"
 
 	"github.com/wizier/airvault/internal/model"
+	"github.com/wizier/airvault/internal/objectstore"
 	"github.com/wizier/airvault/internal/storage"
 )
 
 // The catalog's transactional writes. Each pairs a change to the restore points
 // with what it does to the source's footprint cache, so the two never disagree.
 
-// added is the publication's footprint delta, or nil when it cannot be priced.
-func (l *Library) recordSnapshot(ctx context.Context, row model.Backup, added *int64) error {
-	source := row.SourceUDID
+// The collection that follows a publication measures the footprint.
+func (l *Library) recordSnapshot(ctx context.Context, row model.Backup) error {
 	return l.catalog.WithTx(ctx, func(tx *storage.Store) error {
-		hadSnapshots, err := tx.Backup.SourceHasSnapshots(ctx, source)
-		if err != nil {
-			return err
-		}
 		if err := tx.Backup.InsertSnapshot(ctx, row); err != nil {
 			return err
 		}
-		switch {
-		case added == nil:
-			return tx.Backup.ForgetSourceFootprint(ctx, source)
-		case !hadSnapshots:
-			// Nothing was reachable before, so this delta is the whole size.
-			return tx.Backup.SetSourceFootprint(ctx, source, *added)
-		default:
-			return tx.Backup.AddSourceFootprint(ctx, source, *added)
-		}
+		return tx.Backup.ForgetSourceFootprint(ctx, row.SourceUDID)
 	})
+}
+
+// recordHealth stores what a scan found, each restore point's damage and the
+// source's footprint, and returns the restore points whose damage changed.
+func (l *Library) recordHealth(ctx context.Context, source string, scan *objectstore.Scan) ([]objectstore.SnapshotHealth, error) {
+	var changed []objectstore.SnapshotHealth
+	err := l.catalog.WithTx(ctx, func(tx *storage.Store) error {
+		for _, snapshot := range scan.Snapshots {
+			updated, err := tx.Backup.SetDamage(ctx, source, snapshot.ID, snapshot.Damage, snapshot.DamagedFiles)
+			if err != nil {
+				return err
+			}
+			if updated {
+				changed = append(changed, snapshot)
+			}
+		}
+		return tx.Backup.SetSourceFootprint(ctx, source, scan.Footprint())
+	})
+	return changed, err
 }
 
 // What this frees depends on which objects the survivors still share, so the

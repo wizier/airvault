@@ -127,10 +127,10 @@ func browseApps(apps ...map[string]any) iostest.Handler {
 	}
 }
 
-func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (*objectstore.StagingView, int64, error) {
+func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (*objectstore.StagingView, error) {
 	session, err := f.objects.BeginSnapshot(string(f.udid), uuid.New().String(), nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	return f.engine.BuildSnapshot(ctx, f.udid, session, onProgress)
 }
@@ -168,7 +168,7 @@ func (f *transferFixture) publish(t *testing.T, source string, files map[string]
 			t.Fatal(err)
 		}
 	}
-	staged, _, err := session.Seal(t.Context())
+	staged, err := session.Seal(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,16 +230,13 @@ func TestBuildSnapshot(t *testing.T) {
 
 	var mu sync.Mutex
 	var last Progress
-	staged, added, err := f.backup(context.Background(), func(p Progress) {
+	staged, err := f.backup(context.Background(), func(p Progress) {
 		mu.Lock()
 		defer mu.Unlock()
 		last = p
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if added < int64(len(manifest)) {
-		t.Errorf("added = %d, want at least the manifest's %d bytes", added, len(manifest))
 	}
 	if posted, want := f.syncEnded(t), []string{syncWillStart, syncLockRequest, syncDidStart, syncDidFinish}; !reflect.DeepEqual(posted, want) {
 		t.Errorf("posted %v, want %v", posted, want)
@@ -290,7 +287,7 @@ func TestBuildSnapshotConfinesTheDevice(t *testing.T) {
 		}
 		dl.Finish(0, "")
 	})
-	if _, _, err := f.backup(context.Background(), nil); kindOf(err) != ErrorIntegrity {
+	if _, err := f.backup(context.Background(), nil); kindOf(err) != ErrorIntegrity {
 		t.Fatalf("err = %v, want an integrity failure", err)
 	}
 }
@@ -314,7 +311,7 @@ func TestBuildSnapshotOutcomes(t *testing.T) {
 				dl.Request()
 				c.device(dl)
 			})
-			if _, _, err := f.backup(context.Background(), nil); kindOf(err) != c.want {
+			if _, err := f.backup(context.Background(), nil); kindOf(err) != c.want {
 				t.Fatalf("err = %v, want kind %d", err, c.want)
 			}
 			f.syncEnded(t)
@@ -339,7 +336,7 @@ func TestBuildSnapshotCancel(t *testing.T) {
 					t.Error("the host left without DLMessageDisconnect")
 				}
 			})
-			if _, _, err := f.backup(ctx, nil); kindOf(err) != ErrorCancelled {
+			if _, err := f.backup(ctx, nil); kindOf(err) != ErrorCancelled {
 				t.Fatalf("err = %v", err)
 			}
 			if posted := f.syncEnded(t); posted[len(posted)-1] != syncDidFinish || f.media.OpenHandles() != 0 {
@@ -359,7 +356,7 @@ func TestBuildSnapshotWaitsForTheSyncLock(t *testing.T) {
 	})
 	f.media.Lock(syncLockFile, true)
 	time.AfterFunc(300*time.Millisecond, func() { f.media.Lock(syncLockFile, false) })
-	if _, _, err := f.backup(context.Background(), nil); err != nil {
+	if _, err := f.backup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +364,7 @@ func TestBuildSnapshotWaitsForTheSyncLock(t *testing.T) {
 	waiting.media.Lock(syncLockFile, true)
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(300*time.Millisecond, cancel)
-	if _, _, err := waiting.backup(ctx, nil); kindOf(err) != ErrorCancelled {
+	if _, err := waiting.backup(ctx, nil); kindOf(err) != ErrorCancelled {
 		t.Fatalf("err = %v", err)
 	}
 	if posted := waiting.syncEnded(t); posted[len(posted)-1] != syncFailed || slices.Contains(posted, syncDidStart) {

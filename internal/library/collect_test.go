@@ -2,9 +2,16 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/objectstore"
 )
 
 func TestDeleteSnapshotsRecountsUsageThenEmptiesTheSource(t *testing.T) {
@@ -76,48 +83,6 @@ func TestDeleteSourceRemovesWhateverItLeftBehind(t *testing.T) {
 	}
 }
 
-// recordSnapshot chooses between seeding the size, shifting it and leaving it
-// unknown. Seeding one that was merely unknown would report less than what is
-// really on disk, and nothing downstream would notice.
-func TestRecordingSeedsThenShiftsButNeverInventsAFootprint(t *testing.T) {
-	lib, root := newTestLibrary(t)
-	const source = "testphoneudid0021"
-	first, second := int64(1000), int64(250)
-	publish := func(snapshotID string, added int64) {
-		t.Helper()
-		publishFixture(t, lib, root, source, snapshotID)
-		view, err := lib.objects.OpenSnapshot(source, snapshotID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		projection, err := Project(view)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := lib.recordSnapshot(context.Background(), projection, &added); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	publish("dddddddd-0000-4000-8000-00000000000a", first)
-	if got := sourceFootprint(t, lib, source); got == nil || *got != first {
-		t.Fatalf("seeded footprint = %v, want %d", got, first)
-	}
-
-	publish("dddddddd-0000-4000-8000-00000000000b", second)
-	if got := sourceFootprint(t, lib, source); got == nil || *got != first+second {
-		t.Fatalf("shifted footprint = %v, want %d", got, first+second)
-	}
-
-	if err := lib.catalog.Backup.ForgetSourceFootprint(context.Background(), source); err != nil {
-		t.Fatal(err)
-	}
-	publish("dddddddd-0000-4000-8000-00000000000c", second)
-	if got := sourceFootprint(t, lib, source); got != nil {
-		t.Fatalf("footprint on an unknown base = %d, want unknown", *got)
-	}
-}
-
 // Reconcile drops an abandoned envelope but leaves what it pooled: the ids in
 // the catalog and on disk then agree, and only collection finds the orphan.
 func TestCollectReclaimsWhatAnAbandonedSnapshotPooled(t *testing.T) {
@@ -146,7 +111,9 @@ func TestCollectReclaimsWhatAnAbandonedSnapshotPooled(t *testing.T) {
 	requireAbsent(t, pooled)
 }
 
-func TestReclaimStopsWhenCorruptManifestCannotBeRemoved(t *testing.T) {
+// A manifest name that is not a file cannot be read or judged, so collection
+// stops instead of sweeping what that snapshot might reach.
+func TestCollectStopsAtAManifestThatIsNotAFile(t *testing.T) {
 	lib, root := newTestLibrary(t)
 	const source = "testphoneudid0019"
 	paths := publishFixture(t, lib, root, source, testSnapshot)
@@ -155,13 +122,90 @@ func TestReclaimStopsWhenCorruptManifestCannotBeRemoved(t *testing.T) {
 	if err := os.Remove(manifestPath); err != nil {
 		t.Fatal(err)
 	}
-	// A directory is provably not a valid manifest, but RemoveSnapshot refuses
-	// to unlink it. The incomplete live set must never reach CollectLive.
 	if err := os.Mkdir(manifestPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := lib.Collect(context.Background(), source); err == nil {
-		t.Fatal("reclaim succeeded without removing the corrupt manifest")
+		t.Fatal("collection went past a manifest it could not read")
 	}
 	requirePresent(t, paths[:len(paths)-1]...)
+}
+
+// A restore point that lost an object is marked damaged, never removed: it
+// can't be opened or serve as a base, and is whole again once the object is
+// back. With every one damaged, the next backup has no base: a full one.
+func TestCollectMarksRestorePointsMissingObjects(t *testing.T) {
+	lib, root := newTestLibrary(t)
+	const source = "testphoneudid0022"
+	const newerID = "dddddddd-0000-4000-8000-000000000004"
+	ctx := context.Background()
+	older := maps.Clone(fixtureFiles)
+	older["notes.txt"] = "in both restore points"
+	newer := maps.Clone(older)
+	newer["photo.jpg"] = "only in the newer restore point"
+	publishFiles(t, lib, root, source, testSnapshot, older)
+	newerPaths := publishFiles(t, lib, root, source, newerID, newer)
+	reconcile(t, lib)
+	collect := func() {
+		t.Helper()
+		if err := lib.Collect(ctx, source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireBase := func(want string) {
+		t.Helper()
+		base, err := lib.LatestBase(ctx, source)
+		if err != nil || (base == nil) != (want == "") || (base != nil && base.ID() != want) {
+			t.Fatalf("LatestBase = %v, %v; want %q", base, err, want)
+		}
+	}
+
+	removeObject(t, root, source, newer["photo.jpg"])
+	collect()
+	if row, err := lib.catalog.Backup.Get(ctx, newerID); err != nil || row.Damage != objectstore.DamageFilesMissing || row.DamagedFiles != 1 {
+		t.Fatalf("newer row = %+v, %v; want one file missing", row, err)
+	}
+	requirePresent(t, newerPaths[len(newerPaths)-1])
+	// Finding the same damage again changes nothing, so nothing is logged again.
+	scan, err := lib.objects.Scan(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := lib.recordHealth(ctx, source, scan); err != nil || len(changed) != 0 {
+		t.Fatalf("recorded again = %+v, %v; want no change", changed, err)
+	}
+	_, err = lib.Open(ctx, newerID)
+	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "backup_damaged" {
+		t.Fatalf("Open damaged = %v, want backup_damaged", err)
+	}
+	requireBase(testSnapshot)
+
+	writeTestFile(t, objectPath(root, source, newer["photo.jpg"]), []byte(newer["photo.jpg"]))
+	collect()
+	requireBase(newerID)
+
+	if err := lib.Verify(ctx, source, func(int64, int64) {}); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := lib.catalog.Backup.Get(ctx, newerID); err != nil || row.Damage != "" || row.VerifiedAt == nil {
+		t.Fatalf("verified row = %+v, %v; want whole and verified", row, err)
+	}
+
+	removeObject(t, root, source, older["notes.txt"])
+	collect()
+	requireBase("")
+	requirePresent(t, objectPath(root, source, older["Manifest.db"]))
+}
+
+func objectPath(root, source, content string) string {
+	sum := sha256.Sum256([]byte(content))
+	objectRef := hex.EncodeToString(sum[:])
+	return filepath.Join(root, source, "objects", objectRef[:2], objectRef)
+}
+
+func removeObject(t *testing.T, root, source, content string) {
+	t.Helper()
+	if err := os.Remove(objectPath(root, source, content)); err != nil {
+		t.Fatal(err)
+	}
 }

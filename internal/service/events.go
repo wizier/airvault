@@ -71,13 +71,14 @@ type runStartEvent struct {
 	RunID      string `json:"runId"`
 	UDID       string `json:"udid"`
 	Restore    bool   `json:"restore,omitempty"`
+	Verify     bool   `json:"verify,omitempty"`
 	SnapshotID string `json:"snapshotId,omitempty"`
 }
 
 // runStarted announces a backup, or a restore from snapshotID.
 func runStarted(run *runReservation, snapshotID string) events.Event {
 	return events.Event{Type: "backup.started", Data: runStartEvent{RunID: run.id, UDID: run.udid,
-		Restore: run.kind == runKindRestore, SnapshotID: snapshotID}}
+		Restore: run.kind == runKindRestore, Verify: run.kind == runKindVerify, SnapshotID: snapshotID}}
 }
 
 // runProgressed is transient: the next frame supersedes it.
@@ -91,6 +92,7 @@ type runEndEvent struct {
 	UDID      string `json:"udid"`
 	State     string `json:"state"`
 	Restore   bool   `json:"restore,omitempty"`
+	Verify    bool   `json:"verify,omitempty"`
 	Auto      bool   `json:"auto,omitempty"`
 	ErrorCode string `json:"errorCode,omitempty"`
 	SizeBytes int64  `json:"sizeBytes,omitempty"`
@@ -104,7 +106,8 @@ var runEndTypes = map[string]string{
 
 func runEnded(run *runReservation, state, errorCode string, sizeBytes int64) events.Event {
 	return events.Event{Type: runEndTypes[state], Data: runEndEvent{RunID: run.id, UDID: run.udid, State: state,
-		Restore: run.kind == runKindRestore, Auto: run.auto, ErrorCode: errorCode, SizeBytes: sizeBytes}}
+		Restore: run.kind == runKindRestore, Verify: run.kind == runKindVerify, Auto: run.auto,
+		ErrorCode: errorCode, SizeBytes: sizeBytes}}
 }
 
 func muxerChanged(status MuxerStatus) events.Event {

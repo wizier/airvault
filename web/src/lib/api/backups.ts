@@ -12,7 +12,9 @@ export type RunStage =
   | 'finalizing'
   | 'restoring'
   | 'cancelling_backup'
-  | 'cancelling_restore';
+  | 'cancelling_restore'
+  | 'verifying'
+  | 'cancelling_verify';
 
 export interface RunningProgress {
   runId: string;
@@ -20,6 +22,8 @@ export interface RunningProgress {
   progress: number;
   stage: RunStage;
   restore?: boolean;
+  /** An integrity check of the stored backups, not a transfer. */
+  verify?: boolean;
   /** Started by the automatic-backup trigger, not from the UI. */
   auto?: boolean;
   /** A cancel was accepted; the run is winding down. */
@@ -41,6 +45,11 @@ export interface RestorePoint {
   encrypted?: boolean;
   iosVersion?: string;
   deviceName?: string;
+  /** Why it can be neither restored nor downloaded; absent when it can. */
+  damage?: 'files_missing' | 'manifest_unreadable';
+  damagedFiles?: number;
+  /** When an integrity check last read everything it needs. */
+  verifiedAt?: string;
 }
 
 export type RestoreSource = RestorePoint & { udid: string };
@@ -60,6 +69,12 @@ interface RestoreRequest {
 
 export function startBackup(udid: string): Promise<AcceptedRun> {
   return request<AcceptedRun>(`${devicePath(udid)}/backup`, { method: 'POST' });
+}
+
+/** Reads every stored object of the phone's backups and marks the restore
+ *  points whose data no longer reads right. */
+export function startVerify(udid: string): Promise<AcceptedRun> {
+  return request<AcceptedRun>(`${devicePath(udid)}/verify`, { method: 'POST' });
 }
 
 export async function listRestorePoints(udid: string, signal?: AbortSignal): Promise<RestorePoint[]> {
