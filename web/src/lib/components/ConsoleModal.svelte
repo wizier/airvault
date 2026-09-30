@@ -1,6 +1,7 @@
 <script lang="ts">
-  // The level filter gates capture into the capped ring; the text filter shapes
-  // the view and shields matches from eviction.
+  // Capture fills a capped ring; the level and text filters decide what the view
+  // shows and what eviction spares. As in Console.app and Logcat, Pause stops the
+  // stream, and scrolling up stops following the tail until Latest.
   import { consoleUrl, type ConsoleLevel, type ConsoleLine } from '../api/console';
   import { errorText } from '../error-text';
   import Icon from './Icon.svelte';
@@ -15,23 +16,21 @@
   /** A stable identity, so the keyed {#each} only touches appended/dropped rows. */
   type Row = ConsoleLine & { seq: number };
 
-  let lines = $state<Row[]>([]);
+  let lines = $state.raw<Row[]>([]);
+  /** Closes the stream, so the phone stops sending; Resume opens a new session. */
+  let paused = $state(false);
   let filter = $state('');
   let minLevel = $state<'all' | 'notice' | 'errors'>('all');
-  // Streaming pause: on = records flow and the view auto-follows the tail; off =
-  // incoming records are dropped and the view freezes so it can be read. The
-  // EventSource stays connected either way, so resuming is instant.
-  let streaming = $state(true);
   let streamError = $state<string | null>(null);
   let connected = $state(false);
   let logEl = $state<HTMLElement | null>(null);
   /** Bumped by Reconnect: reopens the stream, deliberately keeping the
    *  buffered rows — what happened right before a drop is worth reading. */
   let streamNonce = $state(0);
-  let atBottom = $state(true);
+  let following = $state(true);
 
-  /** Monotonic row id — component-scoped so rows retained across a reconnect
-   *  never collide with the resumed stream's new ones. */
+  /** Monotonic row id — component-scoped so rows retained across a reconnect or
+   *  pause never collide with the resumed stream's new ones. */
   let seq = 0;
 
   let dialog: HTMLDialogElement;
@@ -44,6 +43,7 @@
   // reactive state on a timer — one render per flush, never one per record.
   $effect(() => {
     void streamNonce; // dependency: Reconnect re-runs this effect
+    if (paused) return;
     streamError = null;
 
     let pending: Row[] = [];
@@ -51,17 +51,8 @@
 
     function flush() {
       flushTimer = null;
-      // Re-check the level gate: it may have narrowed between capture and
-      // flush (a ≤FLUSH_MS window) — without this, a few now-hidden rows
-      // would slip into the buffer and sit there permanently.
-      const hidden = HIDDEN_BY_LEVEL[minLevel];
-      if (hidden.length > 0) pending = pending.filter((r) => !hidden.includes(r.level));
-      if (pending.length === 0) return;
-      // Append then trim: the eviction order (non-matching rows first) is
-      // trimToBudget's job, even for a flush larger than MAX_LINES.
-      for (const r of pending) lines.push(r);
+      lines = trimToBudget([...lines, ...pending]);
       pending = [];
-      trimToBudget();
     }
 
     const es = new EventSource(url);
@@ -70,12 +61,8 @@
       streamError = null;
     };
     es.onmessage = (e) => {
-      if (!streaming) return; // paused: drop live records, freeze the view
       try {
         const row = JSON.parse(e.data) as Row;
-        // The level gates capture (reads inside an event handler are not
-        // effect dependencies, so changing it never reconnects the stream).
-        if (HIDDEN_BY_LEVEL[minLevel].includes(row.level)) return;
         row.seq = ++seq;
         pending.push(row);
       } catch {
@@ -101,6 +88,7 @@
       }
       connected = false;
     });
+    // Closing drops the batch not yet shown: a pause leaves the view as it was.
     return () => {
       es.close();
       if (flushTimer !== null) clearTimeout(flushTimer);
@@ -114,13 +102,6 @@
     errors: ['debug', 'info', 'notice'],
   };
 
-  /** Narrowing the level drops already-captured rows below it; widening just
-   *  captures more from now on (what was never captured can't be shown). */
-  function pruneToLevel() {
-    const hidden = HIDDEN_BY_LEVEL[minLevel];
-    if (hidden.length > 0) lines = lines.filter((l) => !hidden.includes(l.level));
-  }
-
   function matchesFilter(l: ConsoleLine, needle: string): boolean {
     return (
       l.message.toLowerCase().includes(needle) ||
@@ -129,33 +110,27 @@
     );
   }
 
-  /** Ring budget: drop the oldest non-matching rows first so a filtered view
-   *  keeps scrolling; matches yield only once they alone exceed MAX_LINES. */
-  function trimToBudget() {
-    let overflow = lines.length - MAX_LINES;
-    if (overflow <= 0) return;
+  const filtered = $derived(filter !== '' || minLevel !== 'all');
+  const shown = $derived.by(() => {
+    const hidden = HIDDEN_BY_LEVEL[minLevel];
     const needle = filter.toLowerCase();
-    if (needle) {
-      // One pass: skip the oldest `overflow` non-matching rows, keep the rest.
-      const kept: Row[] = [];
-      for (const r of lines) {
-        if (overflow > 0 && !matchesFilter(r, needle)) overflow--;
-        else kept.push(r);
-      }
-      lines = kept;
-      overflow = lines.length - MAX_LINES;
-      if (overflow <= 0) return;
+    return (l: ConsoleLine) => !hidden.includes(l.level) && (!needle || matchesFilter(l, needle));
+  });
+
+  /** Ring budget: the oldest rows the filters hide go first, so a filtered view
+   *  keeps scrolling; shown rows yield only once they alone exceed MAX_LINES. */
+  function trimToBudget(rows: Row[]): Row[] {
+    let overflow = rows.length - MAX_LINES;
+    if (overflow <= 0) return rows;
+    const kept: Row[] = [];
+    for (const r of rows) {
+      if (overflow > 0 && !shown(r)) overflow--;
+      else kept.push(r);
     }
-    lines.splice(0, overflow); // matches alone still exceed the cap: drop the oldest
+    return kept.slice(-MAX_LINES);
   }
 
-  // The buffer is level-clean by construction (gated at capture, pruned on
-  // narrowing) — the view only applies the text query.
-  const visible = $derived.by(() => {
-    const needle = filter.toLowerCase();
-    if (!needle) return lines;
-    return lines.filter((l) => matchesFilter(l, needle));
-  });
+  const visible = $derived(filtered ? lines.filter(shown) : lines);
 
   const LEVEL_CLASS: Record<ConsoleLevel, string> = {
     fault: 'text-error font-semibold',
@@ -165,25 +140,24 @@
     debug: 'text-base-content/40',
   };
 
-  // Follow the tail as lines arrive — but only while the view is pinned to the
-  // bottom; scrolling up to read holds position. Pausing freezes everything.
   $effect(() => {
-    void visible.length;
-    if (streaming && atBottom && logEl) logEl.scrollTop = logEl.scrollHeight;
+    void visible;
+    if (following && logEl) logEl.scrollTop = logEl.scrollHeight;
   });
 
   function onLogScroll() {
     if (!logEl) return;
-    atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
+    following = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
   }
 
-  /** Resuming re-pins to the tail — the frozen view is stale by definition. */
-  function toggleStreaming() {
-    streaming = !streaming;
-    if (streaming) {
-      atBottom = true;
-      if (logEl) logEl.scrollTop = logEl.scrollHeight;
-    }
+  function togglePause() {
+    paused = !paused;
+    if (!paused) following = true;
+  }
+
+  function clear() {
+    lines = [];
+    following = true;
   }
 </script>
 
@@ -196,10 +170,10 @@
         <h3 class="flex items-center gap-2 text-lg font-bold">
           <Icon name="terminal" size={18} />
           Console
-          {#if connected}
+          {#if connected || paused}
             <span
-              class={`status ${streaming ? 'status-success' : 'status-warning'}`}
-              title={streaming ? 'Streaming' : 'Paused'}
+              class={`status ${paused ? 'status-warning' : 'status-success'}`}
+              title={paused ? 'Paused' : 'Streaming'}
             ></span>
           {/if}
         </h3>
@@ -221,27 +195,21 @@
           </button>
         {/if}
       </label>
-      <select
-        class="select select-sm w-32 sm:w-36"
-        bind:value={minLevel}
-        onchange={pruneToLevel}
-        aria-label="Level filter"
-        title="Applies to records as they arrive"
-      >
+      <select class="select select-sm w-32 sm:w-36" bind:value={minLevel} aria-label="Level filter">
         <option value="all">All levels</option>
         <option value="notice">Notice &amp; up</option>
         <option value="errors">Errors only</option>
       </select>
       <button
         type="button"
-        class={`btn btn-sm ${streaming ? 'btn-ghost' : 'btn-warning'}`}
-        onclick={toggleStreaming}
-        title={streaming ? 'Pause the stream to read the current output' : 'Resume live streaming'}
+        class={`btn btn-sm ${paused ? 'btn-warning' : 'btn-ghost'}`}
+        onclick={togglePause}
+        title={paused ? 'Resume the log stream from the phone' : 'Stop the log stream from the phone'}
       >
-        <Icon name={streaming ? 'pause' : 'play'} size={13} />
-        <span class="hidden sm:inline">{streaming ? 'Pause' : 'Resume'}</span>
+        <Icon name={paused ? 'play' : 'pause'} size={13} />
+        <span class="hidden sm:inline">{paused ? 'Resume' : 'Pause'}</span>
       </button>
-      <button type="button" class="btn btn-ghost btn-sm" title="Clear the buffered output" onclick={() => (lines = [])}>
+      <button type="button" class="btn btn-ghost btn-sm" title="Clear the buffered output" onclick={clear}>
         <Icon name="trash" size={13} /> <span class="hidden sm:inline">Clear</span>
       </button>
     </div>
@@ -257,33 +225,50 @@
       </div>
     {/if}
 
-    <div
-      bind:this={logEl}
-      onscroll={onLogScroll}
-      class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200 p-3 font-mono text-[11px] leading-relaxed"
-    >
-      {#if visible.length === 0}
-        <p class="flex items-center gap-2 font-sans text-sm text-base-content/50">
-          <span class="loading loading-dots loading-xs"></span>
-          {filter || minLevel !== 'all' ? 'No records match the filters.' : 'Waiting for log output…'}
-        </p>
-      {:else}
-        {#each visible as l (l.seq)}
-          <div class={`whitespace-pre-wrap break-all ${LEVEL_CLASS[l.level]}`}>
-            <span class="text-base-content/40">{l.ts}</span>
-            <span class="text-base-content/60">{l.image}[{l.pid}]</span>
-            {l.message}
-          </div>
-        {/each}
+    <div class="relative min-h-0 flex-1">
+      <div
+        bind:this={logEl}
+        onscroll={onLogScroll}
+        class="h-full overflow-auto rounded-box bg-base-200 p-3 font-mono text-[11px] leading-relaxed"
+      >
+        {#if visible.length === 0}
+          <p class="flex items-center gap-2 font-sans text-sm text-base-content/50">
+            {#if filtered}
+              No records match the filters.
+            {:else if paused}
+              Paused.
+            {:else}
+              <span class="loading loading-dots loading-xs"></span>
+              Waiting for log output…
+            {/if}
+          </p>
+        {:else}
+          {#each visible as l (l.seq)}
+            <div class={`whitespace-pre-wrap break-all ${LEVEL_CLASS[l.level]}`}>
+              <span class="text-base-content/40">{l.ts}</span>
+              <span class="text-base-content/60">{l.image}[{l.pid}]</span>
+              {l.message}
+            </div>
+          {/each}
+        {/if}
+      </div>
+      {#if !following}
+        <button
+          type="button"
+          class="btn btn-neutral btn-sm absolute bottom-3 right-5 shadow"
+          onclick={() => (following = true)}
+        >
+          <Icon name="arrowDown" size={13} /> Latest
+        </button>
       {/if}
     </div>
 
     <p class="text-xs text-base-content/40">
-      {#if filter}
-        {visible.length.toLocaleString()} of {lines.length.toLocaleString()} buffered records match — matching
-        records are kept longest, unmatched noise is dropped first.
+      {#if filtered}
+        {visible.length.toLocaleString()} of {lines.length.toLocaleString()} buffered records match —
+        matching records are kept longest, the rest are dropped first.
       {:else}
-        Keeps the last {MAX_LINES.toLocaleString()} records passing the level filter; older output is dropped.
+        Keeps the last {MAX_LINES.toLocaleString()} records; older output is dropped.
       {/if}
     </p>
   </div>

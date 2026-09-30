@@ -1,5 +1,6 @@
 // One barrel import: Vite tree-shakes it down to these icons.
 import {
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
   BatteryCharging,
@@ -69,6 +70,7 @@ export const ICONS = {
   more: EllipsisVertical,
   moon: Moon,
   sun: Sun,
+  arrowDown: ArrowDown,
   arrowLeft: ArrowLeft,
   arrowRight: ArrowRight,
   chevronLeft: ChevronLeft,
