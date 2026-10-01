@@ -8,11 +8,17 @@ import (
 	"github.com/wizier/airvault/internal/ios"
 )
 
-// DevicePresence is a device the muxer lists, by the transport it prefers:
-// "usb" or "wifi".
+// Connection is the transport the muxer prefers for a device.
+type Connection string
+
+const (
+	ConnectionUSB  Connection = "usb"
+	ConnectionWiFi Connection = "wifi"
+)
+
 type DevicePresence struct {
 	DeviceID   DeviceID
-	Connection string
+	Connection Connection
 }
 
 // PresenceState is the muxer's complete state; Err says why it is down.
@@ -75,7 +81,7 @@ func (w *presenceWatch) step(ctx context.Context) (PresenceState, bool) {
 		return PresenceState{}, false
 	case err != nil:
 		return w.lost(ctx, err)
-	case event.Type == "Attached" || event.Type == "Detached" || event.Type == "Paired":
+	case event.Type == ios.ListenAttached || event.Type == ios.ListenDetached || event.Type == ios.ListenPaired:
 		return w.snapshot(ctx)
 	}
 	return PresenceState{}, false
@@ -91,9 +97,9 @@ func (w *presenceWatch) snapshot(ctx context.Context) (PresenceState, bool) {
 	w.up = true
 	presence := make([]DevicePresence, len(devices))
 	for i, device := range devices {
-		presence[i] = DevicePresence{DeviceID: DeviceID(device.UDID), Connection: "usb"}
+		presence[i] = DevicePresence{DeviceID: DeviceID(device.UDID), Connection: ConnectionUSB}
 		if device.Connection == ios.ConnectionNetwork {
-			presence[i].Connection = "wifi"
+			presence[i].Connection = ConnectionWiFi
 		}
 	}
 	return PresenceState{MuxUp: true, Devices: presence}, true

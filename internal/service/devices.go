@@ -29,7 +29,7 @@ type DeviceOverview struct {
 	LastBackup      *time.Time `json:"lastBackup,omitempty"`
 	// Run kind ("backup"/"restore") to the stable error code of its most recent
 	// failed run; the client localizes it.
-	LastRunErrors map[string]string `json:"lastRunErrors,omitempty"`
+	LastRunErrors map[runKind]string `json:"lastRunErrors,omitempty"`
 	// Live objects plus published manifests; nil means unknown.
 	DiskBytes     *int64 `json:"diskBytes,omitempty"`
 	RestorePoints int    `json:"restorePoints,omitempty"`
@@ -44,7 +44,7 @@ func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOv
 	r := rt[d.UDID]
 	return DeviceOverview{
 		UDID: d.UDID, Name: d.Name, ProductType: d.ProductType, IOSVersion: d.IOSVersion,
-		Connection: cmp.Or(r.presence, "offline"), Paired: d.Paired, Encrypted: d.Encrypted,
+		Connection: cmp.Or(string(r.presence), "offline"), Paired: d.Paired, Encrypted: d.Encrypted,
 		LastSeen: optionalTime(d.LastSeenAt), LockScreen: r.presence != "" && r.lockScreen(),
 		ActivationState: r.activation, LastRunErrors: s.runs.lastErrors(d.UDID),
 	}

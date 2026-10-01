@@ -45,13 +45,13 @@ type runRegistry struct {
 	mu          sync.RWMutex
 	bus         *events.Bus
 	active      map[string]*activeRun
-	lastError   map[string]map[string]string
+	lastError   map[string]map[runKind]string
 	autoHistory map[string]autoHistory
 }
 
 func newRunRegistry(bus *events.Bus) *runRegistry {
 	return &runRegistry{bus: bus, active: map[string]*activeRun{},
-		lastError: map[string]map[string]string{}, autoHistory: map[string]autoHistory{}}
+		lastError: map[string]map[runKind]string{}, autoHistory: map[string]autoHistory{}}
 }
 
 // From here the run is visible to Running(), progress and cancellation, and it
@@ -74,7 +74,7 @@ func (r *runRegistry) announce(run *runReservation, stage RunStage) error {
 
 // Removing the run and recording its outcome share one critical section, so a
 // refetch can never see them disagree.
-func (r *runRegistry) hide(run *runReservation, state, errorCode string) {
+func (r *runRegistry) hide(run *runReservation, state runState, errorCode string) {
 	r.mu.Lock()
 	delete(r.active, run.udid)
 	failures := r.lastError[run.udid]
@@ -83,7 +83,7 @@ func (r *runRegistry) hide(run *runReservation, state, errorCode string) {
 		// An unanswered automatic prompt is expected, not a failure to flag: the
 		// automatic-backup status shows the pause it caused.
 	case state == runStateFailed && failures == nil:
-		r.lastError[run.udid] = map[string]string{run.kind: errorCode}
+		r.lastError[run.udid] = map[runKind]string{run.kind: errorCode}
 	case state == runStateFailed:
 		failures[run.kind] = errorCode
 	default:
@@ -105,7 +105,7 @@ func (r *runRegistry) list() []RunProgress {
 	return out
 }
 
-func (r *runRegistry) lastErrors(udid string) map[string]string {
+func (r *runRegistry) lastErrors(udid string) map[runKind]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return maps.Clone(r.lastError[udid])

@@ -3,11 +3,13 @@ package handler
 import (
 	"net/http"
 
+	"github.com/wizier/airvault/internal/service"
+
 	"github.com/labstack/echo/v5"
 )
 
 type powerRequest struct {
-	Action string `json:"action"`
+	Action service.PowerAction `json:"action"`
 }
 
 func (h *Handler) controlPower(c *echo.Context) error {

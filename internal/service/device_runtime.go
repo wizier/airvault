@@ -18,7 +18,7 @@ const (
 )
 
 type deviceRuntime struct {
-	presence   string
+	presence   engine.Connection // "" while the muxer does not list the device
 	screen     screenLockState
 	lockedAt   time.Time
 	unlockedAt time.Time // when the current unlock began; meaningful while screenUnlocked
@@ -30,8 +30,8 @@ func (r *deviceRuntime) lockScreen() bool { return r.screen != screenUnlocked }
 
 type connectionTransition struct {
 	udid string
-	from string
-	to   string
+	from engine.Connection
+	to   engine.Connection
 }
 
 // MuxerStatus is what netmuxd last proved: whether it answers, the devices
@@ -61,7 +61,7 @@ func newDeviceRuntimeStore() *deviceRuntimeStore {
 	}
 }
 
-func (s *deviceRuntimeStore) connection(udid string) string {
+func (s *deviceRuntimeStore) connection(udid string) engine.Connection {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if r := s.devices[udid]; r != nil {
@@ -87,7 +87,7 @@ func (s *deviceRuntimeStore) snapshot() map[string]deviceRuntime {
 	return out
 }
 
-func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connectionTransition {
+func (s *deviceRuntimeStore) applyPresence(presence map[string]engine.Connection) []connectionTransition {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var transitions []connectionTransition
@@ -107,7 +107,7 @@ func (s *deviceRuntimeStore) applyPresence(presence map[string]string) []connect
 		}
 		if r.presence != transport {
 			transitions = append(transitions, connectionTransition{udid: udid, from: r.presence, to: transport})
-			if r.presence == "wifi" {
+			if r.presence == engine.ConnectionWiFi {
 				// Lock signals only arrive over Wi-Fi: what was seen there goes stale.
 				r.screen, r.lockedAt, r.unlockedAt = screenLockUnknown, time.Time{}, time.Time{}
 			}
@@ -137,9 +137,9 @@ func (s *deviceRuntimeStore) applyMuxer(state engine.PresenceState) (status Muxe
 	next := MuxerStatus{Up: state.MuxUp}
 	for _, device := range state.Devices {
 		switch device.Connection {
-		case "usb":
+		case engine.ConnectionUSB:
 			next.USB++
-		case "wifi":
+		case engine.ConnectionWiFi:
 			next.WiFi++
 		}
 	}
@@ -164,7 +164,7 @@ func (s *deviceRuntimeStore) applyScreenLock(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r := s.devices[udid]
-	if r == nil || r.presence != "wifi" {
+	if r == nil || r.presence != engine.ConnectionWiFi {
 		return false, false, false
 	}
 	wasLockScreen := r.lockScreen()

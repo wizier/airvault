@@ -5,6 +5,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/wizier/airvault/internal/engine"
 )
 
 // A backup launched for an unlisted phone waits for its next presence signal.
@@ -13,7 +15,7 @@ func TestAwaitReachableWakesOnPresence(t *testing.T) {
 		s := &Service{live: newDeviceRuntimeStore()}
 		go func() {
 			time.Sleep(10 * time.Millisecond)
-			s.live.applyPresence(map[string]string{"phone": "wifi"})
+			s.live.applyPresence(map[string]engine.Connection{"phone": engine.ConnectionWiFi})
 		}()
 		if !s.awaitReachable(context.Background(), "phone") {
 			t.Fatal("awaitReachable missed the phone coming online")

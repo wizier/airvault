@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/model"
 	"github.com/wizier/airvault/internal/storage"
 )
@@ -121,7 +122,7 @@ func autoBackupEvery(days int) time.Duration {
 // A success clears the history. A failed or cancelled automatic attempt counts
 // toward the limit and pauses the trigger; an unanswered prompt also pauses it.
 // hide calls this under the lock, so a run gone from the registry was recorded.
-func (r *runRegistry) recordAutoBackup(run *runReservation, state, errorCode string, now time.Time) {
+func (r *runRegistry) recordAutoBackup(run *runReservation, state runState, errorCode string, now time.Time) {
 	switch {
 	case state == runStateCompleted:
 		delete(r.autoHistory, run.udid)
@@ -158,7 +159,7 @@ func (s *Service) runAutoBackupTrigger(ctx context.Context, fire func(ctx contex
 		now := time.Now()
 		var next time.Time
 		for udid, r := range s.live.snapshot() {
-			if r.presence != "wifi" || r.lockScreen() || fired[udid].Equal(r.unlockedAt) {
+			if r.presence != engine.ConnectionWiFi || r.lockScreen() || fired[udid].Equal(r.unlockedAt) {
 				continue
 			}
 			if deadline := r.unlockedAt.Add(autoBackupDwell); deadline.After(now) {

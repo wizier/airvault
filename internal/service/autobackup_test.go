@@ -143,7 +143,7 @@ func TestRecordAutoBackup(t *testing.T) {
 func TestAutoBackupTriggerDwell(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := &Service{live: newDeviceRuntimeStore(), autoBackupKick: make(chan struct{}, 1)}
-		s.live.applyPresence(map[string]string{"phone": "wifi"})
+		s.live.applyPresence(map[string]engine.Connection{"phone": engine.ConnectionWiFi})
 		fired := make(chan string, 4)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -188,7 +188,7 @@ func TestAutoBackupTriggerDwell(t *testing.T) {
 		s.live.applyPresence(nil)
 		firedAfter(autoBackupDwell, "an offline phone", 0)
 
-		s.live.applyPresence(map[string]string{"phone": "wifi"})
+		s.live.applyPresence(map[string]engine.Connection{"phone": engine.ConnectionWiFi})
 		unlock()
 		cancel()
 		<-done

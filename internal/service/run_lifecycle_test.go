@@ -32,18 +32,18 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 // automatic prompt counts as a failure. Forgetting the device clears them all.
 func TestLastRunErrorLifecycle(t *testing.T) {
 	s := newTestService()
-	s.runs.lastError["udid-1"] = map[string]string{runKindRestore: "restore_failed"}
+	s.runs.lastError["udid-1"] = map[runKind]string{runKindRestore: "restore_failed"}
 
 	run := registerRun(s)
 	s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("device failure"))
-	want := map[string]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
+	want := map[runKind]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
 	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after failure lastRunErrors = %v, want %v", got, want)
 	}
 
 	run = registerRun(s)
 	s.completeRun(run, runOutcome{}, nil)
-	want = map[string]string{runKindRestore: "restore_failed"}
+	want = map[runKind]string{runKindRestore: "restore_failed"}
 	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after success lastRunErrors = %v, want %v", got, want)
 	}

@@ -44,13 +44,13 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 	case runErr == nil:
 		// A verified success: a cancel arriving just after cannot turn a published
 		// snapshot or completed restore into a cancelled run.
-	case s.app.Err() == nil && (run.ctx.Err() != nil || engineErrorCode(runErr) == "operation_cancelled"):
+	case s.app.Err() == nil && (run.ctx.Err() != nil || isEngineError(runErr, engine.ErrorCancelled)):
 		state = runStateCancelled
 		eventErrorCode = "operation_cancelled"
 	default:
 		state = runStateFailed
 		if eventErrorCode == "" {
-			eventErrorCode = run.kind + "_failed"
+			eventErrorCode = string(run.kind) + "_failed"
 		}
 	}
 
@@ -96,6 +96,11 @@ func (s *Service) launchRun(run *runReservation, execute func() (runOutcome, err
 		s.completeRun(run, outcome, err)
 	})
 	return run.id
+}
+
+func isEngineError(err error, kind engine.ErrorKind) bool {
+	engineErr, ok := errors.AsType[*engine.Error](err)
+	return ok && engineErr.Kind == kind
 }
 
 // engineErrorCode maps an engine error to a transfer's public code, "" for none.

@@ -30,7 +30,7 @@ func (h *Handler) getDeviceBattery(c *echo.Context) error {
 
 func (h *Handler) getWallpaper(c *echo.Context) error {
 	png, err := h.svc.Wallpaper(
-		c.Request().Context(), c.Param("udid"), c.QueryParam("screen") == "lock",
+		c.Request().Context(), c.Param("udid"), service.WallpaperScreen(c.QueryParam("screen")),
 	)
 	if err != nil {
 		return err

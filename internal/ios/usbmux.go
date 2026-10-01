@@ -170,8 +170,16 @@ func (m Mux) Connect(ctx context.Context, device Device, port uint16) (net.Conn,
 	return conn, nil
 }
 
+type ListenEventType string
+
+const (
+	ListenAttached ListenEventType = "Attached"
+	ListenDetached ListenEventType = "Detached"
+	ListenPaired   ListenEventType = "Paired"
+)
+
 type ListenEvent struct {
-	Type     string // "Attached", "Detached" or "Paired"
+	Type     ListenEventType
 	DeviceID uint32
 }
 
@@ -201,7 +209,7 @@ func (l *Listener) Next(ctx context.Context) (ListenEvent, error) {
 	if _, err := Guard(ctx, l.conn, func() error { return readMux(l.conn, &event) }); err != nil {
 		return ListenEvent{}, err
 	}
-	return ListenEvent{Type: event.MessageType, DeviceID: event.DeviceID}, nil
+	return ListenEvent{Type: ListenEventType(event.MessageType), DeviceID: event.DeviceID}, nil
 }
 
 func (l *Listener) Close() error { return l.conn.Close() }

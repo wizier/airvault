@@ -20,7 +20,7 @@ func (s *Service) applySnapshot(ctx context.Context, items []engine.DevicePresen
 	s.deviceTransitionMu.Lock()
 	defer s.deviceTransitionMu.Unlock()
 
-	presence := make(map[string]string, len(items))
+	presence := make(map[string]engine.Connection, len(items))
 	wantRefresh := false
 	// pairable = devices the wizard may offer: unknown ones AND registered ones
 	// whose pairing is broken — their presence changes emit pair.changed.
@@ -84,7 +84,7 @@ func (s *Service) publishConnections(ctx context.Context, transitions []connecti
 		// The lock observer lives while a PAIRED device is online over Wi-Fi:
 		// an unknown or broken-pairing phone would only feed a lockdown-refusal
 		// retry loop. Lock state is Wi-Fi-only anyway.
-		if current == "wifi" && !pairable[udid] {
+		if current == engine.ConnectionWiFi && !pairable[udid] {
 			s.lockObs.setOnline(udid)
 		} else {
 			s.lockObs.setOffline(udid)

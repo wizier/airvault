@@ -12,10 +12,10 @@ import (
 // over either transport. netmuxd's heartbeat removes a slept or dropped Wi-Fi
 // device from the list.
 func TestPresenceFollowsMuxerList(t *testing.T) {
-	for _, transport := range []string{"wifi", "usb"} {
-		t.Run(transport, func(t *testing.T) {
+	for _, transport := range []engine.Connection{engine.ConnectionWiFi, engine.ConnectionUSB} {
+		t.Run(string(transport), func(t *testing.T) {
 			live := newDeviceRuntimeStore()
-			presence := map[string]string{"phone": transport}
+			presence := map[string]engine.Connection{"phone": transport}
 			if transitions := live.applyPresence(presence); len(transitions) != 1 || transitions[0].to != transport {
 				t.Fatalf("attach transitions = %#v, want offline→%s", transitions, transport)
 			}
@@ -39,13 +39,13 @@ func TestPresenceFollowsMuxerList(t *testing.T) {
 
 func TestScreenLockDoesNotGateConnection(t *testing.T) {
 	live := newDeviceRuntimeStore()
-	presence := map[string]string{"phone": "wifi"}
+	presence := map[string]engine.Connection{"phone": engine.ConnectionWiFi}
 	live.applyPresence(presence)
 	if _, lockScreen, applied := live.applyScreenLock("phone", engine.ScreenLockComplete, time.Now(), screenLockPairWindow); !applied || !lockScreen {
 		t.Fatalf("lock signal not applied: applied=%v lockScreen=%v", applied, lockScreen)
 	}
 	// Screen lock is a UI fact, never a reachability gate.
-	if got := live.connection("phone"); got != "wifi" {
+	if got := live.connection("phone"); got != engine.ConnectionWiFi {
 		t.Fatalf("screen lock must not gate connection, got %q", got)
 	}
 }
@@ -55,7 +55,7 @@ func TestScreenLockDoesNotGateConnection(t *testing.T) {
 // not an unlock. An unlock seen before a USB hop is forgotten.
 func TestScreenLockProjection(t *testing.T) {
 	live := newDeviceRuntimeStore()
-	live.applyPresence(map[string]string{"phone": "wifi"})
+	live.applyPresence(map[string]engine.Connection{"phone": engine.ConnectionWiFi})
 	start := time.Now()
 	unlockedAt := func() time.Time { return live.snapshot()["phone"].unlockedAt }
 
@@ -79,8 +79,8 @@ func TestScreenLockProjection(t *testing.T) {
 	}
 
 	live.applyScreenLock("phone", engine.ScreenLockChanged, lockAt.Add(time.Minute), screenLockPairWindow)
-	live.applyPresence(map[string]string{"phone": "usb"})
-	live.applyPresence(map[string]string{"phone": "wifi"})
+	live.applyPresence(map[string]engine.Connection{"phone": engine.ConnectionUSB})
+	live.applyPresence(map[string]engine.Connection{"phone": engine.ConnectionWiFi})
 	if r := live.snapshot()["phone"]; !r.lockScreen() || !r.unlockedAt.IsZero() {
 		t.Fatalf("after a USB hop = %+v, want the lock screen", r)
 	}
@@ -89,7 +89,7 @@ func TestScreenLockProjection(t *testing.T) {
 // A lockdown read failure must not erase the last known activation state.
 func TestApplyActivationKeepsLastKnownOnFailedRead(t *testing.T) {
 	store := newDeviceRuntimeStore()
-	store.applyPresence(map[string]string{"udid-1": "wifi"})
+	store.applyPresence(map[string]engine.Connection{"udid-1": engine.ConnectionWiFi})
 
 	if !store.applyActivation("udid-1", "Unactivated") {
 		t.Fatal("first real state should register as a change")

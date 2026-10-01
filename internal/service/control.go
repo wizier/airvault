@@ -11,16 +11,24 @@ import (
 	"github.com/wizier/airvault/internal/engine"
 )
 
+type PowerAction string
+
+const (
+	PowerRestart  PowerAction = "restart"
+	PowerShutdown PowerAction = "shutdown"
+	PowerSleep    PowerAction = "sleep"
+)
+
 // No event is emitted: the watcher reports the resulting detach/reattach as
 // ordinary presence changes.
-func (s *Service) Power(ctx context.Context, udid, action string) error {
+func (s *Service) Power(ctx context.Context, udid string, action PowerAction) error {
 	var engineAction engine.PowerAction
 	switch action {
-	case "restart":
+	case PowerRestart:
 		engineAction = engine.PowerRestart
-	case "shutdown":
+	case PowerShutdown:
 		engineAction = engine.PowerShutdown
-	case "sleep":
+	case PowerSleep:
 		engineAction = engine.PowerSleep
 	default:
 		return &domain.ValidationError{Code: "invalid_power_action", Message: "action must be restart, shutdown or sleep"}
@@ -80,12 +88,22 @@ func (s *Service) LiveBattery(ctx context.Context, udid string) (Battery, error)
 	return battery, nil
 }
 
-func (s *Service) Wallpaper(ctx context.Context, udid string, lockScreen bool) ([]byte, error) {
+type WallpaperScreen string
+
+const (
+	WallpaperHome WallpaperScreen = "home"
+	WallpaperLock WallpaperScreen = "lock"
+)
+
+func (s *Service) Wallpaper(ctx context.Context, udid string, screen WallpaperScreen) ([]byte, error) {
+	if screen != WallpaperHome && screen != WallpaperLock {
+		return nil, &domain.ValidationError{Code: "invalid_wallpaper_screen", Message: "screen must be home or lock"}
+	}
 	// Loaded automatically by device cards; never wakes the phone.
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
 	}
-	png, err := s.engine.Wallpaper(ctx, engine.DeviceID(udid), lockScreen)
+	png, err := s.engine.Wallpaper(ctx, engine.DeviceID(udid), screen == WallpaperLock)
 	if err != nil {
 		slog.DebugContext(ctx, "wallpaper: engine", "udid", udid, "error", err)
 		return nil, domain.ErrNotFound
