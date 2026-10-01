@@ -134,12 +134,12 @@ func browseApps(apps ...map[string]any) iostest.Handler {
 	}
 }
 
-func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (*objectstore.StagingView, error) {
-	session, err := f.objects.BeginSnapshot(string(f.udid), uuid.New().String(), nil)
+func (f *transferFixture) backup(ctx context.Context, onProgress func(Progress)) (*objectstore.StagedSnapshot, error) {
+	draft, err := f.objects.BeginSnapshot(string(f.udid), uuid.New().String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	return f.engine.BuildSnapshot(ctx, f.udid, session, onProgress)
+	return f.engine.BuildSnapshot(ctx, f.udid, draft, onProgress)
 }
 
 // publish stores a complete backup of source holding files besides the
@@ -190,7 +190,7 @@ func (f *transferFixture) publish(t *testing.T, source string, files map[string]
 	return backup
 }
 
-func readSnapshotFile(t *testing.T, view *objectstore.View, name string) []byte {
+func readSnapshotFile(t *testing.T, view *objectstore.Snapshot, name string) []byte {
 	t.Helper()
 	file, err := view.Open(name)
 	if err != nil {
@@ -257,11 +257,11 @@ func TestBuildSnapshot(t *testing.T) {
 	}
 	mu.Unlock()
 
-	view := &staged.View
+	view := &staged.Snapshot
 	if !bytes.Equal(readSnapshotFile(t, view, "Manifest.db"), manifest) || string(readSnapshotFile(t, view, "Status.plist")) != "status" {
 		t.Error("the snapshot does not hold what the phone sent")
 	}
-	if _, found := view.FileSize(objectstore.ProtocolDir + "/.b/2/scratch"); found {
+	if _, found := view.FileSize(protocolDir + "/.b/2/scratch"); found {
 		t.Error("the device's scratch space reached the snapshot")
 	}
 	var info map[string]any

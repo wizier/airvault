@@ -62,16 +62,16 @@ func writeTestManifest(t *testing.T, root, source, snapshotID string, entries ma
 			sizeBytes += entry.Size
 		}
 	}
-	manifest := manifestProjection{
+	m := manifest{
 		Version: formatVersion, SourceUDID: source,
 		SnapshotID: snapshotID, CreatedUnix: 1, SizeBytes: sizeBytes, Entries: entries,
 	}
-	manifest.EntriesSHA256 = entriesChecksum(entries)
+	m.EntriesSHA256 = entriesChecksum(entries)
 	dir := filepath.Join(root, source, "snapshots")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(manifest)
+	data, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,19 +104,19 @@ func TestSourcePathRefusesASubtreeReachedThroughASymlink(t *testing.T) {
 			name: "manifest listing",
 			link: func(source string) string { return filepath.Join(source, "snapshots") },
 			operate: func(store *Store, source string) error {
-				_, err := store.ListSnapshotIDs(source)
+				_, err := store.ListSnapshots(source)
 				return err
 			},
 		},
 		{
 			name:    "collection",
 			link:    func(source string) string { return filepath.Join(source, "objects") },
-			operate: func(store *Store, source string) error { return store.Sweep(source, &Scan{}) },
+			operate: func(store *Store, source string) error { return store.Sweep(&Scan{source: source}) },
 		},
 		{
-			name:    "staging reconcile",
+			name:    "staging recovery",
 			link:    func(source string) string { return filepath.Join(source, "staging") },
-			operate: func(store *Store, source string) error { return store.ReconcileSourceStaging(source) },
+			operate: func(store *Store, source string) error { return store.RecoverSource(source) },
 		},
 		{
 			name:    "source unpublish",
@@ -169,13 +169,13 @@ func stageTestManifest(t *testing.T, store *Store, source, snapshotID string, en
 	return stagingPath, finalPath
 }
 
-func openTestStaging(t *testing.T, store *Store, source, snapshotID string) *StagingView {
+func openTestStaging(t *testing.T, store *Store, source, snapshotID string) *StagedSnapshot {
 	t.Helper()
-	view, err := store.openManifest(source, snapshotID, stagingManifestRelative(source, snapshotID))
+	snapshot, err := store.openManifest(source, snapshotID, stagingManifestRelative(source, snapshotID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &StagingView{View: *view}
+	return &StagedSnapshot{Snapshot{store: snapshot.store, relative: snapshot.relative, manifest: snapshot.manifest}}
 }
 
 func TestPublishCommitsStagedManifestOverSharedPool(t *testing.T) {
@@ -195,15 +195,15 @@ func TestPublishCommitsStagedManifestOverSharedPool(t *testing.T) {
 		t.Fatalf("open published snapshot: %v", err)
 	}
 	if published.CreatedUnix() != reopened.CreatedUnix() || published.SizeBytes() != reopened.SizeBytes() {
-		t.Fatalf("published view diverges from final manifest: (%d,%d) vs (%d,%d)",
+		t.Fatalf("published snapshot diverges from final manifest: (%d,%d) vs (%d,%d)",
 			published.CreatedUnix(), published.SizeBytes(), reopened.CreatedUnix(), reopened.SizeBytes())
 	}
 	if _, err := os.Stat(filepath.Dir(stagingPath)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("staging directory survived publication: %v", err)
 	}
-	// Completing an already-completed publication is a safe no-op (recovery).
-	if err := store.FinishPublication(published); err != nil {
-		t.Fatal(err)
+	// Recovering an already-completed publication is a safe no-op.
+	if recovered, err := store.Recover(source, genC); err != nil || recovered == nil {
+		t.Fatalf("Recover = %v, %v; want the published snapshot", recovered, err)
 	}
 }
 
@@ -225,7 +225,7 @@ func TestPublishSyncsContentsBeforeFinalRename(t *testing.T) {
 	}
 }
 
-func TestFinishPublicationCompletesDurabilityAfterFinalRename(t *testing.T) {
+func TestRecoverCompletesDurabilityAfterFinalRename(t *testing.T) {
 	store, source := newTestStore(t)
 	entries := map[string]manifestEntry{"inherited": {Kind: entryFile, ObjectRef: obj1, Size: 100}}
 	stageTestManifest(t, store, source, genC, entries)
@@ -246,12 +246,8 @@ func TestFinishPublicationCompletesDurabilityAfterFinalRename(t *testing.T) {
 	}
 	// The rename crossed before the injected failure: recovery reopens the
 	// published manifest and completes the same directory commit.
-	published, err := store.OpenSnapshot(source, genC)
-	if err != nil {
-		t.Fatalf("rename did not precede injected failure: %v", err)
-	}
-	if err := store.FinishPublication(published); err != nil {
-		t.Fatalf("FinishPublication: %v", err)
+	if published, err := store.Recover(source, genC); err != nil || published == nil {
+		t.Fatalf("Recover = %v, %v; want the snapshot published before the failure", published, err)
 	}
 	if snapshotSyncs != 2 {
 		t.Fatalf("snapshot directory syncs = %d, want retry after rename", snapshotSyncs)
@@ -269,16 +265,12 @@ func TestRemoveSnapshotDropsReachabilityRootIdempotently(t *testing.T) {
 	if err := store.RemoveSnapshot(source, genA); err != nil {
 		t.Fatalf("repeated RemoveSnapshot: %v", err)
 	}
-	ids, err := store.ListSnapshotIDs(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 1 || ids[0] != genB {
-		t.Fatalf("ListSnapshotIDs = %v, want [%s]", ids, genB)
+	if ids := listedIDs(t, store, source); !slices.Equal(ids, []string{genB}) {
+		t.Fatalf("listed snapshots = %v, want [%s]", ids, genB)
 	}
 }
 
-func TestDiscardStagingLeavesPooledOrphanForMarkAndSweep(t *testing.T) {
+func TestDiscardLeavesPooledOrphanForMarkAndSweep(t *testing.T) {
 	store, source := newTestStore(t)
 	writeTestObject(t, store.root, source, obj3, 40)
 	pooled, err := store.resolveObjectRef(source, obj3)
@@ -293,7 +285,7 @@ func TestDiscardStagingLeavesPooledOrphanForMarkAndSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.DiscardStaging(source, genC); err != nil {
+	if err := store.Discard(source, genC); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(staged); !errors.Is(err, fs.ErrNotExist) {
@@ -313,7 +305,7 @@ func TestDiscardStagingLeavesPooledOrphanForMarkAndSweep(t *testing.T) {
 // A manifest that no longer decodes is the catalog reconciler's problem. It
 // must not keep the store from starting, and its envelope must not survive to
 // block collection.
-func TestReconcileStagingClearsEnvelopeOfUnreadableManifest(t *testing.T) {
+func TestRecoverSourceClearsEnvelopeOfUnreadableManifest(t *testing.T) {
 	store, source := newTestStore(t)
 	stagingDir := filepath.Join(store.root, source, "staging", genA)
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
@@ -324,8 +316,8 @@ func TestReconcileStagingClearsEnvelopeOfUnreadableManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.ReconcileSourceStaging(source); err != nil {
-		t.Fatalf("unreadable manifest blocked staging reconciliation: %v", err)
+	if err := store.RecoverSource(source); err != nil {
+		t.Fatalf("unreadable manifest blocked staging recovery: %v", err)
 	}
 	if _, err := os.Stat(stagingDir); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("staging envelope survived: %v", err)
@@ -361,11 +353,11 @@ func TestForeignEntriesAreSkippedAndKept(t *testing.T) {
 		}
 	}
 
-	if err := store.ReconcileSourceStaging(source); err != nil {
-		t.Fatalf("staging reconcile: %v", err)
+	if err := store.RecoverSource(source); err != nil {
+		t.Fatalf("staging recovery: %v", err)
 	}
-	if ids, err := store.ListSnapshotIDs(source); err != nil || !slices.Equal(ids, []string{genA, genB}) {
-		t.Fatalf("ListSnapshotIDs = %v, %v; want [%s %s]", ids, err, genA, genB)
+	if ids := listedIDs(t, store, source); !slices.Equal(ids, []string{genA, genB}) {
+		t.Fatalf("listed snapshots = %v; want [%s %s]", ids, genA, genB)
 	}
 	if _, err := collectAll(t, store, source); err != nil {
 		t.Fatalf("collection: %v", err)
@@ -375,4 +367,17 @@ func TestForeignEntriesAreSkippedAndKept(t *testing.T) {
 			t.Fatalf("foreign entry %s was removed: %v", path, err)
 		}
 	}
+}
+
+func listedIDs(t *testing.T, store *Store, source string) []string {
+	t.Helper()
+	snapshots, err := store.ListSnapshots(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, snapshot := range snapshots {
+		ids = append(ids, snapshot.ID)
+	}
+	return ids
 }

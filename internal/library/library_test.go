@@ -83,7 +83,7 @@ func TestPublishListsTheRestorePoint(t *testing.T) {
 	staged := sealFiles(t, lib, source, testSnapshot, fixtureFiles)
 	dropped := objectPath(root, source, "written, then replaced")
 	writeTestFile(t, dropped, []byte("written, then replaced"))
-	row, err := Project(&staged.View)
+	row, err := Project(&staged.Snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestPublishListsTheRestorePoint(t *testing.T) {
 	if err != nil || *listed.StartedAt != started || *listed.TransferredBytes != transferred || listed.DeviceName != "Test iPhone" {
 		t.Fatalf("catalog row = %+v, %v", listed, err)
 	}
-	manifest, err := lib.objects.SnapshotManifestInfo(source, testSnapshot)
+	manifest, err := os.Stat(filepath.Join(root, source, "snapshots", testSnapshot+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,8 +3,6 @@ package engine
 import (
 	"bytes"
 	"testing"
-
-	"github.com/wizier/airvault/internal/objectstore"
 )
 
 func TestBackupKey(t *testing.T) {
@@ -12,7 +10,7 @@ func TestBackupKey(t *testing.T) {
 		"PHONE/Manifest.db":           "Manifest.db",
 		"/PHONE//ab/./abc":            "ab/abc",
 		"PHONE/../PHONE/Status.plist": "PHONE/Status.plist",
-		"/.b/6/x":                     objectstore.ProtocolDir + "/.b/6/x",
+		"/.b/6/x":                     protocolDir + "/.b/6/x",
 		"PHONE":                       "",
 	}
 	for devicePath, want := range cases {
@@ -21,7 +19,7 @@ func TestBackupKey(t *testing.T) {
 		}
 	}
 	for _, devicePath := range []string{
-		"", "/", "OTHER/Manifest.db", "../OTHER/x", "PHONE/" + objectstore.ProtocolDir + "/x",
+		"", "/", "OTHER/Manifest.db", "../OTHER/x", "PHONE/" + protocolDir + "/x",
 		"PHONE/a\\b", "PHONE/a\x00b", "PHONE/\u2028", "PHONE/\xff",
 		"PHONE/" + string(bytes.Repeat([]byte("a"), 256)),
 		"PHONE" + string(bytes.Repeat([]byte("/a"), 129)),

@@ -27,14 +27,14 @@ var iTunesFiles = []string{
 
 // writeBackupInfo records the device and its App Store apps in the
 // snapshot's Info.plist.
-func (e *Engine) writeBackupInfo(ctx context.Context, udid string, session *objectstore.Session) error {
+func (e *Engine) writeBackupInfo(ctx context.Context, udid string, draft *objectstore.Draft) error {
 	info, err := call(ctx, infoPlistTimeout, "backup Info.plist", func(ctx context.Context) (*iosbackup.Info, error) {
 		return e.backupInfo(ctx, udid)
 	})
 	if err != nil {
 		return err
 	}
-	return storeFailure("write Info.plist", iosbackup.WriteInfo(session, info))
+	return storeFailure("write Info.plist", iosbackup.WriteInfo(draft, info))
 }
 
 func (e *Engine) backupInfo(ctx context.Context, udid string) (*iosbackup.Info, error) {

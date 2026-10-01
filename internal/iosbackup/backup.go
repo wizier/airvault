@@ -55,12 +55,12 @@ type Application struct {
 }
 
 // WriteInfo records info as the snapshot's Info.plist.
-func WriteInfo(session *objectstore.Session, info *Info) error {
+func WriteInfo(draft *objectstore.Draft, info *Info) error {
 	data, err := plist.MarshalIndent(info, plist.XMLFormat, "\t")
 	if err != nil {
 		return fmt.Errorf("encode Info.plist: %w", err)
 	}
-	writer, err := session.Create(infoPlist)
+	writer, err := draft.Create(infoPlist)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func WriteInfo(session *objectstore.Session, info *Info) error {
 
 // Backup is an iOS backup stored in a snapshot, checked complete.
 type Backup struct {
-	*objectstore.View
+	*objectstore.Snapshot
 	Info       Info
 	Encrypted  bool
 	IOSVersion string
@@ -82,7 +82,7 @@ type Backup struct {
 
 // Open reads a snapshot's backup plists and checks the backup is complete
 // enough to restore.
-func Open(view *objectstore.View) (*Backup, error) {
+func Open(snapshot *objectstore.Snapshot) (*Backup, error) {
 	var manifest struct {
 		IsEncrypted  bool   `plist:"IsEncrypted"`
 		BackupKeyBag []byte `plist:"BackupKeyBag"`
@@ -90,32 +90,32 @@ func Open(view *objectstore.View) (*Backup, error) {
 			ProductVersion string `plist:"ProductVersion"`
 		} `plist:"Lockdown"`
 	}
-	if err := readPlist(view, "Manifest.plist", &manifest); err != nil {
+	if err := readPlist(snapshot, "Manifest.plist", &manifest); err != nil {
 		return nil, fmt.Errorf("read Manifest.plist: %w", err)
 	}
 	var status struct {
 		SnapshotState string `plist:"SnapshotState"`
 	}
-	if err := readPlist(view, "Status.plist", &status); err != nil {
+	if err := readPlist(snapshot, "Status.plist", &status); err != nil {
 		return nil, fmt.Errorf("read Status.plist: %w", err)
 	}
 	if status.SnapshotState != "finished" {
 		return nil, fmt.Errorf("backup Status.plist SnapshotState is %q, want %q", status.SnapshotState, "finished")
 	}
-	backup := &Backup{View: view, Encrypted: manifest.IsEncrypted, IOSVersion: manifest.Lockdown.ProductVersion,
+	backup := &Backup{Snapshot: snapshot, Encrypted: manifest.IsEncrypted, IOSVersion: manifest.Lockdown.ProductVersion,
 		keybag: manifest.BackupKeyBag}
-	if err := readPlist(view, infoPlist, &backup.Info); err != nil {
+	if err := readPlist(snapshot, infoPlist, &backup.Info); err != nil {
 		return nil, fmt.Errorf("read Info.plist: %w", err)
 	}
 	if backup.Info.TargetIdentifier == "" {
 		return nil, errors.New("backup Info.plist has no Target Identifier")
 	}
-	if size, ok := view.FileSize("Manifest.db"); !ok || size == 0 {
+	if size, ok := snapshot.FileSize("Manifest.db"); !ok || size == 0 {
 		return nil, errors.New("backup Manifest.db is not a non-empty regular file")
 	}
 	// Read through: a damaged database fails here, not when the device
 	// downloads it from the base mid-backup.
-	file, err := view.Open("Manifest.db")
+	file, err := snapshot.Open("Manifest.db")
 	if err != nil {
 		return nil, fmt.Errorf("open Manifest.db: %w", err)
 	}
@@ -138,8 +138,8 @@ func (b *Backup) RestoreApplications() ([]byte, error) {
 	return plist.MarshalIndent(b.Info.Applications, plist.XMLFormat, "\t")
 }
 
-func readPlist(view *objectstore.View, key string, value any) error {
-	file, err := view.Open(key)
+func readPlist(snapshot *objectstore.Snapshot, key string, value any) error {
+	file, err := snapshot.Open(key)
 	if err != nil {
 		return err
 	}

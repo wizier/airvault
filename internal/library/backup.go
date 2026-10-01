@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"slices"
 
@@ -44,10 +43,10 @@ func (l *Library) LatestBase(ctx context.Context, source string) (*iosbackup.Bac
 }
 
 // Begin starts snapshot id of source on top of base, nil for a full backup.
-func (l *Library) Begin(source, id string, base *iosbackup.Backup) (*objectstore.Session, error) {
-	var view *objectstore.View
+func (l *Library) Begin(source, id string, base *iosbackup.Backup) (*objectstore.Draft, error) {
+	var view *objectstore.Snapshot
 	if base != nil {
-		view = base.View
+		view = base.Snapshot
 	}
 	return l.objects.BeginSnapshot(source, id, view)
 }
@@ -55,7 +54,7 @@ func (l *Library) Begin(source, id string, base *iosbackup.Backup) (*objectstore
 // Publish makes a sealed snapshot a restore point with row as its catalog
 // entry, then collects the source. A failure past the manifest's rename still
 // leaves a restore point, so it is recovered instead of discarded.
-func (l *Library) Publish(ctx context.Context, staged *objectstore.StagingView, row model.Backup) error {
+func (l *Library) Publish(ctx context.Context, staged *objectstore.StagedSnapshot, row model.Backup) error {
 	if _, err := l.objects.Publish(staged); err != nil {
 		recovered, settleErr := l.settle(ctx, row)
 		if recovered && settleErr == nil {
@@ -72,65 +71,50 @@ func (l *Library) Publish(ctx context.Context, staged *objectstore.StagingView, 
 		}
 		slog.WarnContext(ctx, "backup: catalog commit returned an error but is durable", "snapshot_id", row.ID, "error", err)
 	}
-	l.collectPublished(ctx, row.SourceUDID)
+	l.collectDeferred(ctx, row.SourceUDID)
 	return nil
 }
 
-// collectPublished measures the source a publication grew, marks what it
-// finds damaged and drops what the backup wrote but no restore point needs.
-// A failure is left to the next collection, never failing the publication.
-func (l *Library) collectPublished(ctx context.Context, source string) {
-	if err := l.Collect(ctx, source); err != nil {
-		slog.WarnContext(ctx, "backup: object collection deferred", "source", source, "error", err)
+// collectDeferred measures the source a publication grew or a discard left,
+// marks what it finds damaged and drops what no restore point needs. A failure
+// is left to the next collection, never failing the caller.
+func (l *Library) collectDeferred(ctx context.Context, source string) {
+	if err := l.Collect(context.WithoutCancel(ctx), source); err != nil {
+		slog.WarnContext(ctx, "object collection deferred", "source", source, "error", err)
 	}
 }
 
 // Discard drops an unpublished snapshot; what it pooled goes with the next
 // collection if this one fails.
 func (l *Library) Discard(ctx context.Context, source, id string) error {
-	if err := l.objects.DiscardStaging(source, id); err != nil {
+	if err := l.objects.Discard(source, id); err != nil {
 		return err
 	}
-	if err := l.Collect(context.WithoutCancel(ctx), source); err != nil {
-		slog.WarnContext(ctx, "discard snapshot: orphan collection deferred", "source", source, "error", err)
-	}
+	l.collectDeferred(ctx, source)
 	return nil
 }
 
-// settle resolves an interrupted snapshot: a published manifest is the durable
-// commit and is recovered with row's run facts; anything else is discarded.
-// True only on a complete recovery.
+// settle resolves an interrupted snapshot: a published one is recovered with
+// row's run facts, anything else is discarded. True only on a complete
+// recovery.
 func (l *Library) settle(ctx context.Context, row model.Backup) (bool, error) {
-	published, openErr := l.objects.OpenSnapshot(row.SourceUDID, row.ID)
-	if openErr == nil {
-		recovered, err := Project(published)
-		if err != nil {
-			return false, fmt.Errorf("validate interrupted published snapshot: %w", err)
-		}
-		// The rename already committed; complete the durability boundary and
-		// clear the mutable envelope left by the crash.
-		if err := l.objects.FinishPublication(published); err != nil {
-			return false, fmt.Errorf("finish interrupted snapshot publication: %w", err)
-		}
-		fctx := context.WithoutCancel(ctx)
-		recovered.StartedAt, recovered.TransferredBytes = row.StartedAt, row.TransferredBytes
-		if err := l.recordSnapshot(fctx, recovered); err != nil {
-			return false, fmt.Errorf("recover published snapshot: %w", err)
-		}
-		l.collectPublished(fctx, row.SourceUDID)
-		return true, nil
+	published, err := l.objects.Recover(row.SourceUDID, row.ID)
+	if err != nil {
+		return false, fmt.Errorf("recover interrupted snapshot: %w", err)
 	}
-	if !errors.Is(openErr, fs.ErrNotExist) {
-		// The run is over either way, so the envelope goes whatever kept the
-		// manifest unreadable: a stranded one disables the source's collection.
-		inspectErr := fmt.Errorf("inspect interrupted snapshot: %w", openErr)
-		if err := l.objects.DiscardStaging(row.SourceUDID, row.ID); err != nil {
-			return false, errors.Join(inspectErr, fmt.Errorf("discard interrupted staging: %w", err))
-		}
-		return false, inspectErr
+	if published == nil {
+		l.collectDeferred(ctx, row.SourceUDID)
+		return false, nil
 	}
-	if err := l.Discard(ctx, row.SourceUDID, row.ID); err != nil {
-		return false, fmt.Errorf("discard interrupted snapshot: %w", err)
+	recovered, err := Project(published)
+	if err != nil {
+		return false, fmt.Errorf("validate interrupted published snapshot: %w", err)
 	}
-	return false, nil
+	fctx := context.WithoutCancel(ctx)
+	recovered.StartedAt, recovered.TransferredBytes = row.StartedAt, row.TransferredBytes
+	if err := l.recordSnapshot(fctx, recovered); err != nil {
+		return false, fmt.Errorf("recover published snapshot: %w", err)
+	}
+	l.collectDeferred(fctx, row.SourceUDID)
+	return true, nil
 }

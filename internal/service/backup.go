@@ -97,7 +97,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	finalCtx := context.WithoutCancel(ctx)
 	var row model.Backup
 	if err == nil && ctx.Err() == nil {
-		if row, err = library.Project(&staged.View); err != nil {
+		if row, err = library.Project(&staged.Snapshot); err != nil {
 			err = fmt.Errorf("backup snapshot validation failed: %w", err)
 		}
 	}
@@ -122,14 +122,14 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 // buildSnapshot backs the device up into a new snapshot on top of base, nil
 // for a full backup. Only an incremental backup pauses on the phone long
 // enough to name: it diffs against the previous manifest first.
-func (s *Service) buildSnapshot(ctx context.Context, run *runReservation, id string, base *iosbackup.Backup) (*objectstore.StagingView, error) {
+func (s *Service) buildSnapshot(ctx context.Context, run *runReservation, id string, base *iosbackup.Backup) (*objectstore.StagedSnapshot, error) {
 	var idleStage RunStage
 	if base != nil {
 		idleStage = StageCalculating
 	}
-	session, err := s.library.Begin(run.udid, id, base)
+	draft, err := s.library.Begin(run.udid, id, base)
 	if err != nil {
 		return nil, err
 	}
-	return s.engine.BuildSnapshot(ctx, engine.DeviceID(run.udid), session, s.runs.progressSink(run, idleStage, StageBackingUp, 0))
+	return s.engine.BuildSnapshot(ctx, engine.DeviceID(run.udid), draft, s.runs.progressSink(run, idleStage, StageBackingUp, 0))
 }

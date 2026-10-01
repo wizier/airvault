@@ -40,7 +40,7 @@ func (l *Library) Reconcile(ctx context.Context) ([]string, error) {
 // complete their publication, the rest are discarded. No operation may be in
 // flight on the source, so each of them is abandoned.
 func (l *Library) ReconcileStaging(source string) error {
-	return l.objects.ReconcileSourceStaging(source)
+	return l.objects.RecoverSource(source)
 }
 
 // Only manifests new to the catalog are opened: an admitted row was
@@ -58,17 +58,18 @@ func (l *Library) reconcileCatalog(ctx context.Context) ([]string, error) {
 	admit := make([]model.Backup, 0)
 	claimed := make(map[string]string, len(unaccounted))
 	for _, source := range diskSources {
-		ids, err := l.objects.ListSnapshotIDs(source)
+		snapshots, err := l.objects.ListSnapshots(source)
 		if err != nil {
 			// Without a listing none of this source's rows can be judged stale.
 			slog.ErrorContext(ctx, "catalog reconcile: source skipped", "source", source, "error", err)
 			maps.DeleteFunc(unaccounted, func(_, owner string) bool { return owner == source })
 			continue
 		}
-		for _, id := range ids {
+		for _, snapshot := range snapshots {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			id := snapshot.ID
 			if owner, taken := claimed[id]; taken {
 				// Sources arrive sorted, so the same copy wins every restart.
 				slog.ErrorContext(ctx, "catalog reconcile: snapshot id is published twice",
@@ -80,7 +81,7 @@ func (l *Library) reconcileCatalog(ctx context.Context) ([]string, error) {
 				delete(unaccounted, id)
 				continue
 			}
-			if row, ok := l.projectNew(ctx, source, id); ok {
+			if row, ok := l.projectNew(ctx, source, snapshot); ok {
 				admit = append(admit, row)
 			}
 		}
@@ -99,16 +100,14 @@ func (l *Library) reconcileCatalog(ctx context.Context) ([]string, error) {
 // Every manifest becomes a row, so nothing on disk is out of sight. An
 // unreadable one is admitted damaged; one whose backup files do not read is
 // admitted with what its manifest says, for an integrity check to judge.
-func (l *Library) projectNew(ctx context.Context, source, id string) (model.Backup, bool) {
+func (l *Library) projectNew(ctx context.Context, source string, snapshot objectstore.SnapshotFile) (model.Backup, bool) {
+	id := snapshot.ID
 	view, err := l.objects.OpenSnapshot(source, id)
 	if errors.Is(err, objectstore.ErrManifestCorrupt) {
 		slog.ErrorContext(ctx, "catalog reconcile: manifest unreadable",
 			"source", source, "snapshot_id", id, "error", err)
-		row := model.Backup{ID: id, SourceUDID: source, Damage: objectstore.DamageManifestUnreadable}
-		if manifest, err := l.objects.SnapshotManifestInfo(source, id); err == nil {
-			row.CreatedAt = manifest.ModTime().Unix()
-		}
-		return row, true
+		return model.Backup{ID: id, SourceUDID: source, Damage: objectstore.DamageManifestUnreadable,
+			CreatedAt: snapshot.Modified.Unix()}, true
 	}
 	if err != nil {
 		// A newer format or a failed read says nothing about the backup.

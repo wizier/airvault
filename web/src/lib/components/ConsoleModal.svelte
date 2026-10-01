@@ -234,9 +234,9 @@
         {#if visible.length === 0}
           <p class="flex items-center gap-2 font-sans text-sm text-base-content/50">
             {#if filtered}
-              No records match the filters.
+              No records match the filters
             {:else if paused}
-              Paused.
+              Paused
             {:else}
               <span class="loading loading-dots loading-xs"></span>
               Waiting for log output…

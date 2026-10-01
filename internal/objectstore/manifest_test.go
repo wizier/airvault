@@ -79,14 +79,14 @@ func TestOpenSnapshotReadsFormatOne(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	view, err := store.OpenSnapshot(source, genA)
+	snapshot, err := store.OpenSnapshot(source, genA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.CreatedUnix() != 1_700_000_000 || view.SizeBytes() != 5 {
-		t.Fatalf("created %d, size %d", view.CreatedUnix(), view.SizeBytes())
+	if snapshot.CreatedUnix() != 1_700_000_000 || snapshot.SizeBytes() != 5 {
+		t.Fatalf("created %d, size %d", snapshot.CreatedUnix(), snapshot.SizeBytes())
 	}
-	file, err := view.Open("Documents/note.txt")
+	file, err := snapshot.Open("Documents/note.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +117,8 @@ func TestManifestEntryValidation(t *testing.T) {
 		}, "invalid key"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			manifest := manifestProjection{SourceUDID: "testphoneudid0001", SnapshotID: genA, Entries: test.entries}
-			if _, err := inspectManifestEntries("manifest.json", &manifest); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+			m := manifest{SourceUDID: "testphoneudid0001", SnapshotID: genA, Entries: test.entries}
+			if _, err := inspectManifestEntries("manifest.json", &m); err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("validation error = %v, want %q", err, test.wantErr)
 			}
 		})
@@ -132,12 +132,12 @@ func TestOpenSnapshotRejectsSealedEntryMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifest manifestProjection
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	var m manifest
+	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
-	manifest.Entries["photo.jpg"] = manifestEntry{Kind: entryFile, ObjectRef: obj4, Size: 50}
-	if data, err = json.Marshal(manifest); err != nil {
+	m.Entries["photo.jpg"] = manifestEntry{Kind: entryFile, ObjectRef: obj4, Size: 50}
+	if data, err = json.Marshal(m); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {

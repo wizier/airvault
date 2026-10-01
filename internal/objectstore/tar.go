@@ -21,9 +21,9 @@ const tarBlockSize = 512
 // Range.
 type Tar struct {
 	*io.SectionReader
-	view  *View
-	root  string
-	paths []string // "" (the root folder) first, then sorted: parents precede children
+	snapshot *Snapshot
+	root     string
+	paths    []string // "" (the root folder) first, then sorted: parents precede children
 	// offsets[i] is where entry i (header, content, padding) starts; the extra
 	// last one is where the two-block trailer starts.
 	offsets []int64
@@ -40,9 +40,9 @@ type tarFile struct {
 	check *contentCheck
 }
 
-func (v *View) Tar(root string) (*Tar, error) {
-	t := &Tar{view: v, root: root,
-		paths: append([]string{""}, slices.Sorted(maps.Keys(v.manifest.Entries))...)}
+func (snap *Snapshot) Tar(root string) (*Tar, error) {
+	t := &Tar{snapshot: snap, root: root,
+		paths: append([]string{""}, slices.Sorted(maps.Keys(snap.manifest.Entries))...)}
 	t.offsets = make([]int64, 0, len(t.paths)+1)
 	var offset int64
 	var encoded bytes.Buffer
@@ -60,7 +60,7 @@ func (v *View) Tar(root string) (*Tar, error) {
 	return t, nil
 }
 
-func (t *Tar) ModTime() time.Time { return time.Unix(t.view.CreatedUnix(), 0) }
+func (t *Tar) ModTime() time.Time { return time.Unix(t.snapshot.CreatedUnix(), 0) }
 
 func (t *Tar) ReadAt(buffer []byte, off int64) (int, error) {
 	t.mu.Lock()
@@ -89,7 +89,7 @@ func (t *Tar) ReadAt(buffer []byte, off int64) (int, error) {
 }
 
 func (t *Tar) readEntry(index int, offset int64, buffer []byte) (int, error) {
-	size := t.view.manifest.Entries[t.paths[index]].Size // 0 for the root and directories
+	size := t.snapshot.manifest.Entries[t.paths[index]].Size // 0 for the root and directories
 	headerLen := t.offsets[index+1] - t.offsets[index] - size - tarPadding(size)
 	switch {
 	case offset < headerLen:
@@ -107,10 +107,10 @@ func (t *Tar) readEntry(index int, offset int64, buffer []byte) (int, error) {
 }
 
 func (t *Tar) readContent(index int, offset int64, buffer []byte) (int, error) {
-	entry := t.view.manifest.Entries[t.paths[index]]
+	entry := t.snapshot.manifest.Entries[t.paths[index]]
 	if t.file == nil || t.file.index != index {
 		t.closeFile()
-		file, err := t.view.store.openObject(t.view.Source(), entry.ObjectRef, entry.Size)
+		file, err := t.snapshot.store.openObject(t.snapshot.Source(), entry.ObjectRef, entry.Size)
 		if err != nil {
 			return 0, fmt.Errorf("%w: pack %q: %v", ErrIntegrity, t.paths[index], err)
 		}
@@ -160,7 +160,7 @@ func (t *Tar) header(logicalPath string) *tar.Header {
 	if logicalPath == "" {
 		return header
 	}
-	entry := t.view.manifest.Entries[logicalPath]
+	entry := t.snapshot.manifest.Entries[logicalPath]
 	header.Name += logicalPath
 	if entry.Kind == entryDirectory {
 		header.Name += "/"

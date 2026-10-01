@@ -101,7 +101,7 @@ func (l *Library) Open(ctx context.Context, id string) (*iosbackup.Backup, error
 }
 
 // Project is the catalog row of a snapshot that holds a complete backup.
-func Project(view *objectstore.View) (model.Backup, error) {
+func Project(view *objectstore.Snapshot) (model.Backup, error) {
 	backup, err := iosbackup.Open(view)
 	if err != nil {
 		return model.Backup{}, err

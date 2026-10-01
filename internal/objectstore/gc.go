@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 )
 
 // Why a snapshot cannot be restored. A scan judges it from the pool alone and
@@ -25,17 +24,6 @@ const (
 	DamageManifestUnreadable = "manifest_unreadable"
 )
 
-// An object a read or Verify caught not being what its name says is renamed
-// with this suffix: out of the pool, so the snapshots needing it read as
-// damaged, yet kept while any of them does.
-const damagedSuffix = ".damaged"
-
-type LiveSet struct {
-	objects       map[string]int64
-	objectBytes   int64
-	manifestBytes int64
-}
-
 // SnapshotHealth is a snapshot's standing in a scan; Damage is "" when every
 // file it lists can be read from the pool.
 type SnapshotHealth struct {
@@ -47,8 +35,9 @@ type SnapshotHealth struct {
 // Scan is one reading of a source: the health of each snapshot, the objects
 // they reach, and the pool as it was listed.
 type Scan struct {
-	LiveSet
+	liveSet
 	Snapshots []SnapshotHealth
+	source    string
 	pool      poolListing
 	// Every object an unreadable manifest names: which of them it references is
 	// unknown, so all are kept.
@@ -57,6 +46,11 @@ type Scan struct {
 
 // Scan reads the source's manifests against its pool.
 func (s *Store) Scan(ctx context.Context, source string) (*Scan, error) {
+	return s.scan(ctx, source, nil)
+}
+
+// scan reads the source as if the snapshots in skip were already gone.
+func (s *Store) scan(ctx context.Context, source string, skip map[string]struct{}) (*Scan, error) {
 	objectsRoot, err := s.sourcePath(source, "objects")
 	if err != nil {
 		return nil, err
@@ -65,33 +59,36 @@ func (s *Store) Scan(ctx context.Context, source string) (*Scan, error) {
 	if err != nil {
 		return nil, err
 	}
-	manifests, err := s.listSnapshotManifests(source)
+	files, err := s.ListSnapshots(source)
 	if err != nil {
 		return nil, err
 	}
-	scan := &Scan{pool: listed, mentioned: map[string]struct{}{}}
-	for _, manifest := range manifests {
+	scan := &Scan{source: source, pool: listed, mentioned: map[string]struct{}{}}
+	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		health := SnapshotHealth{ID: manifest.id}
-		view, err := s.OpenSnapshot(source, manifest.id)
+		if _, skipped := skip[file.ID]; skipped {
+			continue
+		}
+		health := SnapshotHealth{ID: file.ID}
+		snapshot, err := s.OpenSnapshot(source, file.ID)
 		switch {
 		case errors.Is(err, ErrManifestCorrupt):
 			health.Damage = DamageManifestUnreadable
-			if err := s.mentionObjects(source, manifest.id, scan.mentioned); err != nil {
+			if err := s.mentionObjects(source, file.ID, scan.mentioned); err != nil {
 				return nil, err
 			}
-			if scan.manifestBytes, err = addChecked(scan.manifestBytes, manifest.size); err != nil {
+			if scan.manifestBytes, err = addChecked(scan.manifestBytes, file.size); err != nil {
 				return nil, err
 			}
 		case err != nil:
-			return nil, fmt.Errorf("load published snapshot %q: %w", manifest.id, err)
+			return nil, fmt.Errorf("load published snapshot %q: %w", file.ID, err)
 		default:
-			if health.DamagedFiles = listed.lacking(view); health.DamagedFiles > 0 {
+			if health.DamagedFiles = listed.lacking(snapshot); health.DamagedFiles > 0 {
 				health.Damage = DamageFilesMissing
 			}
-			if err := scan.addSnapshot(view, manifest.size); err != nil {
+			if err := scan.addSnapshot(snapshot, file.size); err != nil {
 				return nil, err
 			}
 		}
@@ -147,11 +144,11 @@ func (s *Store) ensureCollectable(source string) error {
 
 // Sweep deletes every object the scan listed that no snapshot needs, and every
 // damaged copy nothing needs or a whole copy has replaced.
-func (s *Store) Sweep(source string, scan *Scan) error {
-	if err := s.ensureCollectable(source); err != nil {
+func (s *Store) Sweep(scan *Scan) error {
+	if err := s.ensureCollectable(scan.source); err != nil {
 		return err
 	}
-	objectsRoot, err := s.sourcePath(source, "objects")
+	objectsRoot, err := s.sourcePath(scan.source, "objects")
 	if err != nil {
 		return err
 	}
@@ -170,7 +167,7 @@ func (s *Store) Sweep(source string, scan *Scan) error {
 		return err
 	}
 	if scan.empty() {
-		return s.removeEmptySource(source)
+		return s.removeEmptySource(scan.source)
 	}
 	return nil
 }
@@ -189,7 +186,7 @@ func (s *Store) sweepObjects(paths []string) error {
 			return err
 		}
 	}
-	if err := s.Sync(); err != nil {
+	if err := s.syncFilesystem(); err != nil {
 		return fmt.Errorf("sync collected object storage: %w", err)
 	}
 	return nil
@@ -212,12 +209,93 @@ func (s *Store) removeEmptySource(source string) error {
 	return syncExistingDirectory(s.root)
 }
 
-func (live *LiveSet) empty() bool {
+// ReclaimableBytes is what deleting snapshotIDs would free: their objects that
+// the same scan Sweep relies on would no longer keep. An unreadable one adds
+// nothing, so the answer is then a floor.
+func (s *Store) ReclaimableBytes(ctx context.Context, source string, snapshotIDs []string) (int64, error) {
+	skip := make(map[string]struct{}, len(snapshotIDs))
+	for _, snapshotID := range snapshotIDs {
+		skip[snapshotID] = struct{}{}
+	}
+	survivors, err := s.scan(ctx, source, skip)
+	if err != nil {
+		return 0, err
+	}
+	targets := &liveSet{}
+	for _, snapshotID := range snapshotIDs {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		target, err := s.OpenSnapshot(source, snapshotID)
+		if errors.Is(err, ErrManifestCorrupt) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if err := targets.addObjects(target); err != nil {
+			return 0, err
+		}
+	}
+	var total int64
+	for objectRef, size := range targets.objects {
+		if !survivors.keeps(objectRef) {
+			if total, err = addChecked(total, size); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return total, nil
+}
+
+type liveSet struct {
+	objects       map[string]int64
+	objectBytes   int64
+	manifestBytes int64
+}
+
+func (live *liveSet) empty() bool {
 	return live.manifestBytes == 0 && len(live.objects) == 0
 }
 
-func (live *LiveSet) Footprint() int64 {
+func (live *liveSet) Footprint() int64 {
 	return live.objectBytes + live.manifestBytes
+}
+
+func (live *liveSet) addSnapshot(snapshot *Snapshot, manifestSize int64) error {
+	if err := live.addObjects(snapshot); err != nil {
+		return err
+	}
+	var err error
+	live.manifestBytes, err = addChecked(live.manifestBytes, manifestSize)
+	return err
+}
+
+func (live *liveSet) addObjects(snapshot *Snapshot) error {
+	if live.objects == nil {
+		live.objects = make(map[string]int64, len(snapshot.manifest.Entries))
+	}
+	for _, entry := range snapshot.manifest.Entries {
+		if entry.Kind != entryFile {
+			continue
+		}
+		if previous, exists := live.objects[entry.ObjectRef]; exists {
+			if previous != entry.Size {
+				return fmt.Errorf(
+					"manifests give object %q conflicting sizes",
+					entry.ObjectRef,
+				)
+			}
+			continue
+		}
+		var err error
+		live.objectBytes, err = addChecked(live.objectBytes, entry.Size)
+		if err != nil {
+			return err
+		}
+		live.objects[entry.ObjectRef] = entry.Size
+	}
+	return nil
 }
 
 func addChecked(total, size int64) (int64, error) {
@@ -227,32 +305,14 @@ func addChecked(total, size int64) (int64, error) {
 	return total + size, nil
 }
 
-func (s *Store) SnapshotManifestInfo(source, snapshotID string) (fs.FileInfo, error) {
-	if err := validateSnapshotIdentity(source, snapshotID); err != nil {
-		return nil, err
-	}
-	manifestPath, err := s.resolveManifest(snapshotManifestRelative(source, snapshotID))
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(manifestPath)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("published snapshot manifest is not a regular file: %s", manifestPath)
-	}
-	return info, nil
-}
-
 // poolListing is a source's objects as listed: those under their names, and
 // those set aside as damaged.
 type poolListing struct{ healthy, damaged map[string]struct{} }
 
-// lacking counts the files of view whose objects are not in the pool.
-func (listed poolListing) lacking(view *View) int {
+// lacking counts the files of snapshot whose objects are not in the pool.
+func (listed poolListing) lacking(snapshot *Snapshot) int {
 	lacking := 0
-	for _, entry := range view.manifest.Entries {
+	for _, entry := range snapshot.manifest.Entries {
 		if _, exists := listed.healthy[entry.ObjectRef]; !exists && entry.Kind == entryFile {
 			lacking++
 		}
@@ -301,108 +361,4 @@ func listPool(objectsRoot string) (poolListing, error) {
 		}
 	}
 	return listed, nil
-}
-
-// removeDirIfEmpty treats leftover content as success — hidden junk from SMB
-// clients may legitimately keep a directory alive.
-func removeDirIfEmpty(directory string) error {
-	err := os.Remove(directory)
-	if err == nil || errors.Is(err, fs.ErrNotExist) ||
-		errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
-		return nil
-	}
-	return err
-}
-
-func (s *Store) ReclaimableBytes(ctx context.Context, source string, snapshotIDs []string) (int64, error) {
-	skip := make(map[string]struct{}, len(snapshotIDs))
-	targetObjects := &LiveSet{}
-	for _, snapshotID := range snapshotIDs {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		skip[snapshotID] = struct{}{}
-		target, err := s.OpenSnapshot(source, snapshotID)
-		if err != nil {
-			return 0, err
-		}
-		if err := addViewObjects(target, targetObjects); err != nil {
-			return 0, err
-		}
-	}
-	keptObjects, err := s.liveObjects(ctx, source, skip)
-	if err != nil {
-		return 0, err
-	}
-	var total int64
-	for objectRef, size := range targetObjects.objects {
-		if _, kept := keptObjects.objects[objectRef]; !kept {
-			if total, err = addChecked(total, size); err != nil {
-				return 0, err
-			}
-		}
-	}
-	return total, nil
-}
-
-// liveObjects is what the source's snapshots reach, those in skip counted as
-// already deleted. A manifest it cannot read fails it.
-func (s *Store) liveObjects(ctx context.Context, source string, skip map[string]struct{}) (*LiveSet, error) {
-	manifests, err := s.listSnapshotManifests(source)
-	if err != nil {
-		return nil, err
-	}
-	live := &LiveSet{}
-	for _, manifest := range manifests {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if _, skipped := skip[manifest.id]; skipped {
-			continue
-		}
-		view, err := s.OpenSnapshot(source, manifest.id)
-		if err != nil {
-			return nil, fmt.Errorf("load published snapshot %q: %w", manifest.id, err)
-		}
-		if err := live.addSnapshot(view, manifest.size); err != nil {
-			return nil, err
-		}
-	}
-	return live, nil
-}
-
-func (live *LiveSet) addSnapshot(view *View, manifestSize int64) error {
-	if err := addViewObjects(view, live); err != nil {
-		return err
-	}
-	var err error
-	live.manifestBytes, err = addChecked(live.manifestBytes, manifestSize)
-	return err
-}
-
-func addViewObjects(view *View, live *LiveSet) error {
-	if live.objects == nil {
-		live.objects = make(map[string]int64, len(view.manifest.Entries))
-	}
-	for _, entry := range view.manifest.Entries {
-		if entry.Kind != entryFile {
-			continue
-		}
-		if previous, exists := live.objects[entry.ObjectRef]; exists {
-			if previous != entry.Size {
-				return fmt.Errorf(
-					"manifests give object %q conflicting sizes",
-					entry.ObjectRef,
-				)
-			}
-			continue
-		}
-		var err error
-		live.objectBytes, err = addChecked(live.objectBytes, entry.Size)
-		if err != nil {
-			return err
-		}
-		live.objects[entry.ObjectRef] = entry.Size
-	}
-	return nil
 }

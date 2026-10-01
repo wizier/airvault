@@ -14,13 +14,13 @@ import (
 // newTarTestSnapshot publishes a Finder-shaped snapshot — top-level files, a
 // two-hex folder, an empty file and a path long enough to need a PAX header —
 // and returns it with its file contents.
-func newTarTestSnapshot(t *testing.T) (*View, map[string]string) {
+func newTarTestSnapshot(t *testing.T) (*Snapshot, map[string]string) {
 	t.Helper()
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := store.BeginSnapshot(sessionSource, snapFull, nil)
+	session, err := store.BeginSnapshot(draftSource, snapFull, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,13 +33,13 @@ func newTarTestSnapshot(t *testing.T) (*View, map[string]string) {
 	for key, content := range files {
 		writeKey(t, session, key, content)
 	}
-	view := publish(t, store, session)
-	return view, files
+	snapshot := publish(t, store, session)
+	return snapshot, files
 }
 
 func TestTarPacksSnapshotUnderRootWithExactSize(t *testing.T) {
-	view, files := newTarTestSnapshot(t)
-	archive, err := view.Tar("backup")
+	snapshot, files := newTarTestSnapshot(t)
+	archive, err := snapshot.Tar("backup")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +79,8 @@ func TestTarPacksSnapshotUnderRootWithExactSize(t *testing.T) {
 }
 
 func TestTarFailsOnDamagedObject(t *testing.T) {
-	view, files := newTarTestSnapshot(t)
-	object, err := view.store.resolveObjectRef(view.Source(), refOf(files["ab/abcdef012"]))
+	snapshot, files := newTarTestSnapshot(t)
+	object, err := snapshot.store.resolveObjectRef(snapshot.Source(), refOf(files["ab/abcdef012"]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestTarFailsOnDamagedObject(t *testing.T) {
 		if err := os.WriteFile(object, []byte("file CONTENT"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		archive, err := view.Tar("backup")
+		archive, err := snapshot.Tar("backup")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,8 +114,8 @@ func TestTarFailsOnDamagedObject(t *testing.T) {
 // Every offset reads what a whole-archive read has there, so any Range a
 // resumed download asks for lands on the right bytes.
 func TestTarSeeksToAnyOffset(t *testing.T) {
-	view, _ := newTarTestSnapshot(t)
-	archive, err := view.Tar("backup")
+	snapshot, _ := newTarTestSnapshot(t)
+	archive, err := snapshot.Tar("backup")
 	if err != nil {
 		t.Fatal(err)
 	}

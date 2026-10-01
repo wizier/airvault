@@ -22,9 +22,9 @@ const (
 	syncCancelRequest = "com.apple.itunes-client.syncCancelRequest"
 )
 
-// BuildSnapshot backs the device up into session and seals it; the snapshot
+// BuildSnapshot backs the device up into draft and seals it; the snapshot
 // comes back ready to publish.
-func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, session *objectstore.Session, onProgress func(Progress)) (*objectstore.StagingView, error) {
+func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, draft *objectstore.Draft, onProgress func(Progress)) (*objectstore.StagedSnapshot, error) {
 	udid := string(device)
 	if err := validateUDID(udid); err != nil {
 		return nil, err
@@ -33,12 +33,12 @@ func (e *Engine) BuildSnapshot(ctx context.Context, device DeviceID, session *ob
 	defer progress.close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	t := &transfer{engine: e, udid: udid, session: session, progress: progress}
+	t := &transfer{engine: e, udid: udid, storage: newBackupStorage(draft), draft: draft, progress: progress}
 	if err := t.run(ctx, cancel); err != nil {
 		return nil, transferResult(ctx, "backup", err)
 	}
 	progress.submit(ProgressPhaseSealing, -1, 0)
-	staged, err := session.Seal(ctx)
+	staged, err := seal(ctx, draft)
 	if err == nil {
 		err = ctx.Err() // a cancel racing the seal discards the backup
 	}
@@ -71,7 +71,7 @@ func (e *Engine) RestoreSnapshot(ctx context.Context, device DeviceID, from *ios
 	defer progress.close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	t := &transfer{engine: e, udid: udid, session: from.Session(), progress: progress, from: from,
+	t := &transfer{engine: e, udid: udid, storage: newRestoreStorage(from.Snapshot), progress: progress, from: from,
 		options: backup2.RestoreOptions{
 			Reboot:                 options.Reboot,
 			PreserveSettings:       !options.SettingsFromBackup,
@@ -95,14 +95,15 @@ func transferResult(ctx context.Context, operation string, err error) error {
 	return err
 }
 
-// transfer is one mobilebackup2 backup or restore of udid; the session's
+// transfer is one mobilebackup2 backup or restore of udid; the storage's
 // source names the snapshots to the device.
 type transfer struct {
 	engine   *Engine
 	udid     string
-	session  *objectstore.Session
+	storage  transferStorage
 	progress *transferProgress
-	from     *iosbackup.Backup // what a restore applies; nil for a backup
+	draft    *objectstore.Draft // what a backup fills; nil for a restore
+	from     *iosbackup.Backup  // what a restore applies; nil for a backup
 	options  backup2.RestoreOptions
 }
 
@@ -137,7 +138,7 @@ func (t *transfer) run(ctx context.Context, cancel context.CancelFunc) error {
 // reinstall, and fails without them rather than restore none.
 func (t *transfer) prepare(ctx context.Context) (staged bool, err error) {
 	if t.from == nil {
-		return false, t.engine.writeBackupInfo(ctx, t.udid, t.session)
+		return false, t.engine.writeBackupInfo(ctx, t.udid, t.draft)
 	}
 	return t.engine.stageRestoreApplications(ctx, t.udid, t.from)
 }
@@ -145,7 +146,7 @@ func (t *transfer) prepare(ctx context.Context) (staged bool, err error) {
 // converse runs the mobilebackup2 conversation. A store failure outranks
 // what the device then reported: it is the root cause.
 func (t *transfer) converse(ctx context.Context, cancel context.CancelFunc) error {
-	if err := t.session.Err(); err != nil {
+	if err := t.storage.Failure(); err != nil {
 		return storeFailure(t.label(), err)
 	}
 	conn, err := t.engine.openBackup2(ctx, t.udid)
@@ -154,31 +155,30 @@ func (t *transfer) converse(ctx context.Context, cancel context.CancelFunc) erro
 	}
 	defer conn.Close()
 	stop := t.engine.guardTransfer(ctx, t.udid, t.label(), cancel)
-	storage := &backupStorage{session: t.session}
-	outcome, err := t.serve(ctx, conn, storage)
+	outcome, err := t.serve(ctx, conn)
 	stop()
 	switch {
-	case t.session.Err() != nil:
-		return storeFailure(t.label(), t.session.Err())
-	case storage.Violation() != nil:
-		return &Error{Kind: ErrorIntegrity, Detail: storage.Violation().Error()}
+	case t.storage.Failure() != nil:
+		return storeFailure(t.label(), t.storage.Failure())
+	case t.storage.Violation() != nil:
+		return &Error{Kind: ErrorIntegrity, Detail: t.storage.Violation().Error()}
 	case err != nil:
 		return failure(ctx, t.label()+" transfer", err)
 	}
 	return verdictFailure(backup2.Verdict(outcome), t.from == nil)
 }
 
-func (t *transfer) serve(ctx context.Context, conn *backup2.Conn, storage *backupStorage) (*backup2.Dict, error) {
+func (t *transfer) serve(ctx context.Context, conn *backup2.Conn) (*backup2.Dict, error) {
 	var err error
 	if t.from == nil {
-		err = conn.Backup(ctx, t.udid, t.session.Source())
+		err = conn.Backup(ctx, t.udid, t.storage.Source())
 	} else {
-		err = conn.Restore(ctx, t.udid, t.session.Source(), t.options)
+		err = conn.Restore(ctx, t.udid, t.storage.Source(), t.options)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return conn.Serve(ctx, storage, func(p backup2.Progress) {
+	return conn.Serve(ctx, t.storage, func(p backup2.Progress) {
 		t.progress.submit(ProgressPhaseTransfer, p.Percent, p.Bytes)
 	})
 }

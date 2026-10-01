@@ -72,7 +72,7 @@
       <h2 class="text-sm font-semibold">Hardware &amp; storage</h2>
       <button
         type="button"
-        class="btn btn-ghost btn-sm"
+        class="btn btn-outline btn-sm"
         disabled={!reachable || loading}
         onclick={() => res.refresh()}
         title={!reachable ? 'Device is offline' : 'Re-read from the device'}
@@ -189,7 +189,13 @@
         <div class="flex flex-col gap-1.5 border-t border-base-300 pt-3">
           <div class="flex items-center justify-between">
             <span class="text-sm font-medium">Identity</span>
-            <button type="button" class="btn btn-ghost btn-xs" onclick={() => (revealed = !revealed)}>
+            <button
+              type="button"
+              class="btn btn-outline btn-xs"
+              aria-pressed={revealed}
+              onclick={() => (revealed = !revealed)}
+            >
+              <Icon name={revealed ? 'eyeOff' : 'eye'} size={14} />
               {revealed ? 'Hide IDs' : 'Reveal IDs'}
             </button>
           </div>

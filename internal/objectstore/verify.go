@@ -13,8 +13,8 @@ import (
 // Verify hashes every object the scan's snapshots need: a bad one is set
 // aside, a set-aside one that reads right again is put back. It returns how
 // many it set aside; progress gets the bytes read of the total.
-func (s *Store) Verify(ctx context.Context, source string, scan *Scan, progress func(done, total int64)) (int, error) {
-	objectsRoot, err := s.sourcePath(source, "objects")
+func (s *Store) Verify(ctx context.Context, scan *Scan, progress func(done, total int64)) (int, error) {
+	objectsRoot, err := s.sourcePath(scan.source, "objects")
 	if err != nil {
 		return 0, err
 	}
@@ -36,7 +36,7 @@ func (s *Store) Verify(ctx context.Context, source string, scan *Scan, progress 
 			}
 		} else if _, damaged := scan.pool.damaged[objectRef]; damaged {
 			if intact, err = objectIntact(path+damagedSuffix, objectRef, size); err == nil && intact {
-				err = os.Rename(path+damagedSuffix, path)
+				err = putBack(path)
 			}
 		}
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {

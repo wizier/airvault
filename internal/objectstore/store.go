@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
-	"uuid"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/durable"
@@ -38,7 +36,7 @@ func New(root string) (*Store, error) {
 		return nil, err
 	}
 	store := &Store{root: absolute, lockFile: lockFile, syncDir: durable.SyncDir}
-	store.syncContents = store.Sync
+	store.syncContents = store.syncFilesystem
 	return store, nil
 }
 
@@ -62,85 +60,6 @@ func (s *Store) sourcePath(source string, parts ...string) (string, error) {
 		return "", err
 	}
 	return target, nil
-}
-
-func snapshotManifestRelative(source, snapshotID string) string {
-	return path.Join(source, "snapshots", snapshotID+".json")
-}
-
-func stagingManifestRelative(source, snapshotID string) string {
-	return path.Join(source, "staging", snapshotID, "manifest.json")
-}
-
-func validateSnapshotIdentity(source, snapshotID string) error {
-	if err := domain.ValidateSource(source); err != nil {
-		return err
-	}
-	return validateSnapshotID(snapshotID)
-}
-
-func validateSnapshotID(snapshotID string) error {
-	parsed, err := uuid.Parse(snapshotID)
-	if err != nil || parsed.String() != snapshotID {
-		return fmt.Errorf("snapshot id must be a canonical UUID")
-	}
-	return nil
-}
-
-// Publish atomically promotes a sealed staging view into the immutable
-// snapshot namespace: objects reach stable storage before the rename, and a
-// crash after it is completed by FinishPublication during recovery.
-func (s *Store) Publish(staging *StagingView) (*View, error) {
-	source, snapshotID := staging.manifest.SourceUDID, staging.manifest.SnapshotID
-	if err := s.syncContents(); err != nil {
-		return nil, fmt.Errorf("sync published snapshot contents: %w", err)
-	}
-	stagingPath, err := s.resolveManifest(staging.relative)
-	if err != nil {
-		return nil, err
-	}
-	finalRelative := snapshotManifestRelative(source, snapshotID)
-	finalPath, err := s.resolveManifest(finalRelative)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(stagingPath, finalPath); err != nil {
-		return nil, fmt.Errorf("publish object manifest: %w", err)
-	}
-	published := &View{store: s, relative: finalRelative, manifest: staging.manifest}
-	if err := s.FinishPublication(published); err != nil {
-		return nil, err
-	}
-	return published, nil
-}
-
-func (s *Store) RemoveSnapshot(source, snapshotID string) error {
-	if err := validateSnapshotIdentity(source, snapshotID); err != nil {
-		return err
-	}
-	manifestPath, err := s.resolveManifest(snapshotManifestRelative(source, snapshotID))
-	if err != nil {
-		return err
-	}
-	info, err := os.Lstat(manifestPath)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return syncExistingDirectory(filepath.Dir(manifestPath))
-	case err != nil:
-		return err
-	case !info.Mode().IsRegular():
-		return fmt.Errorf("published snapshot manifest is not a regular file: %s", manifestPath)
-	}
-	if err := os.Remove(manifestPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove snapshot manifest: %w", err)
-	}
-	if err := syncExistingDirectory(filepath.Dir(manifestPath)); err != nil {
-		return fmt.Errorf("sync snapshot manifest deletion: %w", err)
-	}
-	return nil
 }
 
 // Nothing in the source's tree is reachable once UnpublishSource returns.
@@ -169,74 +88,6 @@ func (s *Store) RemoveSourceTree(source string) error {
 	return syncExistingDirectory(s.root)
 }
 
-// FinishPublication is the post-rename tail of a publication: sync the
-// namespace, drop the staging envelope. Crash recovery calls it directly and
-// retrying resumes the same directory commit.
-func (s *Store) FinishPublication(published *View) error {
-	source := published.manifest.SourceUDID
-	sourceRoot, err := s.sourcePath(source)
-	if err != nil {
-		return err
-	}
-	if err := s.syncDir(filepath.Join(sourceRoot, "snapshots")); err != nil {
-		return fmt.Errorf("sync published object manifest: %w", err)
-	}
-	if err := s.syncDir(sourceRoot); err != nil {
-		return fmt.Errorf("sync published snapshot directory: %w", err)
-	}
-	if err := s.DiscardStaging(source, published.manifest.SnapshotID); err != nil {
-		return fmt.Errorf("remove published staging directory: %w", err)
-	}
-	return nil
-}
-
-// A stranded staging envelope blocks every later collection for the source.
-func (s *Store) DiscardStaging(source, snapshotID string) error {
-	if err := validateSnapshotID(snapshotID); err != nil {
-		return err
-	}
-	directory, err := s.sourcePath(source, "staging", snapshotID)
-	if err != nil {
-		return err
-	}
-	if err := os.RemoveAll(directory); err != nil {
-		return err
-	}
-	return syncExistingDirectory(filepath.Dir(directory))
-}
-
-// ReconcileSourceStaging resolves a device's filesystem transactions: published
-// manifests finish their durability boundary, unpublished ones are discarded.
-// Startup runs it per source, as does a run that dies without its own cleanup.
-func (s *Store) ReconcileSourceStaging(source string) error {
-	stagingRoot, err := s.sourcePath(source, "staging")
-	if err != nil {
-		return err
-	}
-	entries, err := readDirIfExists(stagingRoot)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		snapshotID := entry.Name()
-		if validateSnapshotID(snapshotID) != nil {
-			continue // not the store's
-		}
-		published, openErr := s.OpenSnapshot(source, snapshotID)
-		if openErr == nil {
-			if err := s.FinishPublication(published); err != nil {
-				return err
-			}
-		} else if err := s.DiscardStaging(source, snapshotID); err != nil {
-			return err
-		}
-	}
-	if err := removeDirIfEmpty(stagingRoot); err != nil {
-		return err
-	}
-	return syncExistingDirectory(filepath.Dir(stagingRoot))
-}
-
 func (s *Store) ListSources() ([]string, error) {
 	entries, err := readDirIfExists(s.root)
 	if err != nil {
@@ -249,61 +100,6 @@ func (s *Store) ListSources() ([]string, error) {
 		}
 	}
 	return sources, nil
-}
-
-func readDirIfExists(directory string) ([]os.DirEntry, error) {
-	entries, err := os.ReadDir(directory)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	return entries, err
-}
-
-type snapshotManifestFile struct {
-	id   string
-	size int64
-}
-
-// The single definition of a source's snapshots: catalog rebuild, object
-// liveness and the footprint must agree. Only names the store writes count;
-// Finder, SMB or NAS droppings are skipped and never removed.
-func (s *Store) listSnapshotManifests(source string) ([]snapshotManifestFile, error) {
-	dir, err := s.sourcePath(source, "snapshots")
-	if err != nil {
-		return nil, err
-	}
-	entries, err := readDirIfExists(dir)
-	if err != nil {
-		return nil, err
-	}
-	var manifests []snapshotManifestFile
-	for _, entry := range entries {
-		id, isManifest := strings.CutSuffix(entry.Name(), ".json")
-		if !isManifest || validateSnapshotID(id) != nil {
-			continue // not the store's
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, err
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("snapshot manifest %q is not a regular file", entry.Name())
-		}
-		manifests = append(manifests, snapshotManifestFile{id: id, size: info.Size()})
-	}
-	return manifests, nil
-}
-
-func (s *Store) ListSnapshotIDs(source string) ([]string, error) {
-	manifests, err := s.listSnapshotManifests(source)
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for _, manifest := range manifests {
-		ids = append(ids, manifest.id)
-	}
-	return ids, nil
 }
 
 func (s *Store) resolveManifest(relative string) (string, error) {
@@ -351,12 +147,4 @@ func rejectSymlinkTraversal(root, target string) error {
 		}
 	}
 	return nil
-}
-
-func syncExistingDirectory(directory string) error {
-	err := durable.SyncDir(directory)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	return err
 }

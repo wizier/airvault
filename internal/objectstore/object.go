@@ -11,6 +11,8 @@ import (
 	"os"
 )
 
+var ErrIntegrity = errors.New("backup data failed verification")
+
 // openObject opens a pooled object, checking it is a regular file of size bytes.
 func (s *Store) openObject(source, ref string, size int64) (*os.File, error) {
 	path, err := s.resolveObjectRef(source, ref)
@@ -37,6 +39,11 @@ func (s *Store) openObject(source, ref string, size int64) (*os.File, error) {
 	return file, nil
 }
 
+// An object a read or Verify caught not being what its name says is renamed
+// with this suffix: out of the pool, so the snapshots needing it read as
+// damaged, yet kept while any of them does.
+const damagedSuffix = ".damaged"
+
 // setAside takes an object that proved not to be what its name says out of
 // the pool: the next scan marks the snapshots needing it damaged, and Verify
 // puts it back should it read right again.
@@ -45,6 +52,11 @@ func setAside(path string) error {
 		return fmt.Errorf("set damaged object aside: %w", err)
 	}
 	return nil
+}
+
+// putBack returns a set-aside object that reads right again to the pool.
+func putBack(path string) error {
+	return os.Rename(path+damagedSuffix, path)
 }
 
 // contentCheck hashes an object's bytes, fed in order from its start, and

@@ -16,6 +16,8 @@ import {
   DatabaseBackup,
   Download,
   EllipsisVertical,
+  Eye,
+  EyeOff,
   File,
   Folder,
   Image,
@@ -86,6 +88,8 @@ export const ICONS = {
   pause: Pause,
   play: Play,
   upload: Upload,
+  eye: Eye,
+  eyeOff: EyeOff,
 } as const;
 
 export type IconName = keyof typeof ICONS;

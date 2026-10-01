@@ -14,10 +14,10 @@ func acquireStoreLock(root string) (*os.File, error) {
 
 func releaseStoreLock(file *os.File) error { return file.Close() }
 
-func (s *Store) Sync() error {
+func (s *Store) syncFilesystem() error {
 	return errors.New("durable object-store sync is unsupported on this platform")
 }
 
-func (s *Store) FreeSpace() (uint64, error) {
+func (s *Store) freeSpace() (uint64, error) {
 	return 0, errors.New("free space is unknown on this platform")
 }

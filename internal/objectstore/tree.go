@@ -1,10 +1,12 @@
 package objectstore
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
+	"time"
 )
 
 // node is a directory when children is non-nil, a file otherwise.
@@ -66,6 +68,30 @@ func (t *tree) get(key string) *node {
 		}
 	}
 	return current
+}
+
+type Entry struct {
+	Name     string
+	Dir      bool
+	Size     int64
+	Modified time.Time // zero when the snapshot never recorded it
+}
+
+func (t *tree) list(key string) ([]Entry, error) {
+	dir := t.get(key)
+	if dir == nil || !dir.isDir() {
+		return nil, fmt.Errorf("path %q is not a directory", key)
+	}
+	entries := make([]Entry, 0, len(dir.children))
+	for name, child := range dir.children {
+		entry := Entry{Name: name, Dir: child.isDir(), Size: child.size}
+		if child.modifiedUnix > 0 {
+			entry.Modified = time.Unix(child.modifiedUnix, 0)
+		}
+		entries = append(entries, entry)
+	}
+	slices.SortFunc(entries, func(a, b Entry) int { return cmp.Compare(a.Name, b.Name) })
+	return entries, nil
 }
 
 func (t *tree) ensureDir(key string, now int64) (*node, error) {

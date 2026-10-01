@@ -1,6 +1,7 @@
 package objectstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -10,13 +11,13 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"math"
 	"os"
 	"path"
 	"slices"
 	"strings"
 
 	"github.com/wizier/airvault/internal/domain"
+	"github.com/wizier/airvault/internal/durable"
 )
 
 const (
@@ -50,7 +51,7 @@ type manifestEntry struct {
 }
 
 // The portable wire contract of a snapshot: changing it breaks existing stores.
-type manifestProjection struct {
+type manifest struct {
 	Version     int    `json:"version"`
 	SourceUDID  string `json:"sourceUdid"`
 	SnapshotID  string `json:"snapshotId"`
@@ -62,63 +63,7 @@ type manifestProjection struct {
 	Entries       map[string]manifestEntry `json:"entries"`
 }
 
-type View struct {
-	store    *Store
-	relative string
-	manifest *manifestProjection
-}
-
-// A sealed but unpublished snapshot. Only Publish accepts it, so the type rules
-// out publishing a manifest twice.
-type StagingView struct{ View }
-
-func (v *View) Source() string { return v.manifest.SourceUDID }
-
-func (v *View) ID() string { return v.manifest.SnapshotID }
-
-func (v *View) SizeBytes() int64 { return v.manifest.SizeBytes }
-
-// CreatedUnix is when the immutable snapshot was created: the moment its
-// contents were finalized. It rebuilds created_at after SQLite is lost.
-func (v *View) CreatedUnix() int64 { return v.manifest.CreatedUnix }
-
-// FileSize returns the size of a regular file in the snapshot.
-func (v *View) FileSize(key string) (int64, bool) {
-	entry, ok := v.manifest.Entries[key]
-	if !ok || entry.Kind != entryFile {
-		return 0, false
-	}
-	return entry.Size, true
-}
-
-// Open verifies content against its address as it is read.
-func (v *View) Open(key string) (io.ReadCloser, error) {
-	entry, ok := v.manifest.Entries[key]
-	if !ok || entry.Kind != entryFile {
-		return nil, fs.ErrNotExist
-	}
-	return v.store.openReader(v.Source(), key, entry.ObjectRef, entry.Size, nil)
-}
-
-func (s *Store) OpenSnapshot(source, snapshotID string) (*View, error) {
-	return s.openManifest(source, snapshotID, snapshotManifestRelative(source, snapshotID))
-}
-
-func (s *Store) openManifest(source, snapshotID, relative string) (*View, error) {
-	if err := validateSnapshotIdentity(source, snapshotID); err != nil {
-		return nil, err
-	}
-	manifest, err := s.loadManifest(relative)
-	if err != nil {
-		return nil, err
-	}
-	if manifest.SourceUDID != source || manifest.SnapshotID != snapshotID {
-		return nil, corrupt(fmt.Errorf("manifest %q identity mismatch", relative))
-	}
-	return &View{store: s, relative: relative, manifest: manifest}, nil
-}
-
-func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
+func (s *Store) loadManifest(relative string) (*manifest, error) {
 	manifestPath, err := s.resolveManifest(relative)
 	if err != nil {
 		return nil, err
@@ -137,9 +82,9 @@ func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
 	}
 	// Unknown fields are ignored: rejecting them would break every read after an
 	// additive field lands, before formatVersion, the gate meant for that, runs.
-	manifest := new(manifestProjection)
+	decoded := new(manifest)
 	decoder := json.NewDecoder(io.LimitReader(file, maxManifestSize+1))
-	if err := decoder.Decode(manifest); err != nil {
+	if err := decoder.Decode(decoded); err != nil {
 		// The stat above fixed the size, so hitting EOF mid-value is truncated
 		// content, not a read failure; syntax and type errors likewise judge
 		// bytes that were delivered. Anything else may be transient I/O.
@@ -160,42 +105,55 @@ func (s *Store) loadManifest(relative string) (*manifestProjection, error) {
 	}
 	// A newer format is a newer writer's, not damage: it is kept, and collection
 	// stops for its source instead of sweeping what it references.
-	if manifest.Version > formatVersion {
-		return nil, fmt.Errorf("manifest %q uses newer format %d", relative, manifest.Version)
+	if decoded.Version > formatVersion {
+		return nil, fmt.Errorf("manifest %q uses newer format %d", relative, decoded.Version)
 	}
-	if err := validateManifestHeader(relative, manifest); err != nil {
+	if err := validateManifestHeader(relative, decoded); err != nil {
 		return nil, corrupt(err)
 	}
-	facts, err := inspectManifestEntries(relative, manifest)
+	facts, err := inspectManifestEntries(relative, decoded)
 	if err != nil {
 		return nil, corrupt(err)
 	}
-	if facts.sizeBytes != manifest.SizeBytes {
+	if facts.sizeBytes != decoded.SizeBytes {
 		return nil, corrupt(fmt.Errorf(
 			"manifest %q size is %d, entries total %d",
-			relative, manifest.SizeBytes, facts.sizeBytes,
+			relative, decoded.SizeBytes, facts.sizeBytes,
 		))
 	}
-	if facts.entriesSHA256 != manifest.EntriesSHA256 {
+	if facts.entriesSHA256 != decoded.EntriesSHA256 {
 		return nil, corrupt(fmt.Errorf("manifest %q entries checksum mismatch", relative))
 	}
-	return manifest, nil
+	return decoded, nil
 }
 
-func validateManifestHeader(relative string, manifest *manifestProjection) error {
-	if manifest.Version != formatVersion {
+func writeManifest(path string, m *manifest) error {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(m); err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
+	}
+	if encoded.Len() > maxManifestSize {
+		return fmt.Errorf("%w: manifest of %d bytes", ErrIntegrity, encoded.Len())
+	}
+	return durable.WriteFile(path, encoded.Bytes(), 0o644)
+}
+
+func validateManifestHeader(relative string, m *manifest) error {
+	if m.Version != formatVersion {
 		return fmt.Errorf("manifest %q uses an unsupported format", relative)
 	}
-	if err := domain.ValidateSource(manifest.SourceUDID); err != nil {
+	if err := domain.ValidateSource(m.SourceUDID); err != nil {
 		return fmt.Errorf("manifest %q: %w", relative, err)
 	}
-	if err := validateSnapshotID(manifest.SnapshotID); err != nil {
+	if err := validateSnapshotID(m.SnapshotID); err != nil {
 		return fmt.Errorf("manifest %q: %w", relative, err)
 	}
-	if len(manifest.Entries) > maxEntries {
+	if len(m.Entries) > maxEntries {
 		return fmt.Errorf("manifest %q exceeds %d entries", relative, maxEntries)
 	}
-	if manifest.Entries == nil || manifest.SizeBytes < 0 || manifest.CreatedUnix <= 0 || !validSHA256(manifest.EntriesSHA256) {
+	if m.Entries == nil || m.SizeBytes < 0 || m.CreatedUnix <= 0 || !validSHA256(m.EntriesSHA256) {
 		return fmt.Errorf("manifest %q has invalid aggregate metadata", relative)
 	}
 	return nil
@@ -206,16 +164,17 @@ type manifestEntryFacts struct {
 	entriesSHA256 string
 }
 
-func inspectManifestEntries(relative string, manifest *manifestProjection) (manifestEntryFacts, error) {
+func inspectManifestEntries(relative string, m *manifest) (manifestEntryFacts, error) {
 	seal := newManifestEntriesSeal()
 	var snapshotSize int64
-	for _, logicalPath := range slices.Sorted(maps.Keys(manifest.Entries)) {
-		entry := manifest.Entries[logicalPath]
+	var err error
+	for _, logicalPath := range slices.Sorted(maps.Keys(m.Entries)) {
+		entry := m.Entries[logicalPath]
 		if !ValidKey(logicalPath) {
 			return manifestEntryFacts{}, fmt.Errorf("manifest %q has invalid key %q", relative, logicalPath)
 		}
 		if parent := path.Dir(logicalPath); parent != "." {
-			parentEntry, ok := manifest.Entries[parent]
+			parentEntry, ok := m.Entries[parent]
 			if !ok {
 				return manifestEntryFacts{}, fmt.Errorf("manifest %q path %q is missing parent directory %q", relative, logicalPath, parent)
 			}
@@ -235,10 +194,9 @@ func inspectManifestEntries(relative string, manifest *manifestProjection) (mani
 			if err := validateObjectRef(entry.ObjectRef); err != nil {
 				return manifestEntryFacts{}, fmt.Errorf("manifest %q file %q: %w", relative, logicalPath, err)
 			}
-			if entry.Size > math.MaxInt64-snapshotSize {
-				return manifestEntryFacts{}, fmt.Errorf("manifest %q snapshot size overflows int64", relative)
+			if snapshotSize, err = addChecked(snapshotSize, entry.Size); err != nil {
+				return manifestEntryFacts{}, fmt.Errorf("manifest %q: %w", relative, err)
 			}
-			snapshotSize += entry.Size
 		default:
 			return manifestEntryFacts{}, fmt.Errorf("manifest %q path %q has invalid kind %q", relative, logicalPath, entry.Kind)
 		}

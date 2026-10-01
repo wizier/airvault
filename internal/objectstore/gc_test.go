@@ -17,7 +17,7 @@ func collectAll(t *testing.T, store *Store, source string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := store.Sweep(source, scan); err != nil {
+	if err := store.Sweep(scan); err != nil {
 		return 0, err
 	}
 	return scan.Footprint(), nil
@@ -40,13 +40,15 @@ func requirePath(t *testing.T, path string, present bool) {
 
 func manifestFileBytes(t *testing.T, store *Store, source string, snapshotIDs ...string) int64 {
 	t.Helper()
+	snapshots, err := store.ListSnapshots(source)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var total int64
-	for _, snapshotID := range snapshotIDs {
-		manifest, err := store.SnapshotManifestInfo(source, snapshotID)
-		if err != nil {
-			t.Fatal(err)
+	for _, snapshot := range snapshots {
+		if slices.Contains(snapshotIDs, snapshot.ID) {
+			total += snapshot.size
 		}
-		total += manifest.Size()
 	}
 	return total
 }
@@ -130,7 +132,7 @@ func TestCollectSurvivesDamagedLiveObjects(t *testing.T) {
 	if !slices.Equal(scan.Snapshots, want) {
 		t.Fatalf("health = %+v, want %+v", scan.Snapshots, want)
 	}
-	if err := store.Sweep(source, scan); err != nil {
+	if err := store.Sweep(scan); err != nil {
 		t.Fatalf("sweep wedged on pool damage: %v", err)
 	}
 	requireObjects(t, store, source, false, orphanRef)
@@ -153,7 +155,7 @@ func TestCollectSurvivesDamagedLiveObjects(t *testing.T) {
 	if scan, err = store.Scan(context.Background(), source); err != nil || scan.Snapshots[1].Damage != "" {
 		t.Fatalf("health with the objects back = %+v, %v; want whole", scan.Snapshots, err)
 	}
-	if err := store.Sweep(source, scan); err != nil {
+	if err := store.Sweep(scan); err != nil {
 		t.Fatal(err)
 	}
 	requirePath(t, lost+damagedSuffix, false)
@@ -214,6 +216,25 @@ func TestReclaimableExcludesSharedObjects(t *testing.T) {
 	// With no other published survivor, everything gA references is reclaimable.
 	if got := reclaimable(genA); got != 150 {
 		t.Fatalf("reclaimable gA alone = %d, want 150", got)
+	}
+}
+
+// The estimate keeps what Sweep keeps: an unreadable sibling holds every
+// object it mentions, and an unreadable target only makes the answer a floor.
+func TestReclaimableAgreesWithSweepOnUnreadableManifests(t *testing.T) {
+	store, source := newTestStore(t)
+	broken := []byte(`{"broken":true,"names":"` + obj2 + `"}`)
+	if err := os.WriteFile(filepath.Join(store.root, source, "snapshots", genC+".json"), broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ReclaimableBytes(context.Background(), source, []string{genA}); err != nil || got != 0 {
+		t.Fatalf("reclaimable gA = %d, %v; want 0: the unreadable sibling keeps obj2", got, err)
+	}
+	if got, err := store.ReclaimableBytes(context.Background(), source, []string{genC}); err != nil || got != 0 {
+		t.Fatalf("reclaimable of the unreadable one = %d, %v; want 0", got, err)
+	}
+	if got, err := store.ReclaimableBytes(context.Background(), source, []string{genA, genC}); err != nil || got != 50 {
+		t.Fatalf("reclaimable gA with the unreadable one = %d, %v; want 50", got, err)
 	}
 }
 

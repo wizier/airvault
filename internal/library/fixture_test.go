@@ -70,7 +70,7 @@ var fixtureFiles = map[string]string{
 }
 
 // sealFiles writes files into a new snapshot and seals it, as a backup does.
-func sealFiles(t *testing.T, lib *Library, source, id string, files map[string]string) *objectstore.StagingView {
+func sealFiles(t *testing.T, lib *Library, source, id string, files map[string]string) *objectstore.StagedSnapshot {
 	t.Helper()
 	session, err := lib.Begin(source, id, nil)
 	if err != nil {

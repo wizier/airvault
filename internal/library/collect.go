@@ -19,7 +19,7 @@ func (l *Library) Collect(ctx context.Context, source string) error {
 	if err != nil {
 		return err
 	}
-	if err := l.objects.Sweep(source, scan); err != nil {
+	if err := l.objects.Sweep(scan); err != nil {
 		return fmt.Errorf("collect source objects: %w", err)
 	}
 	l.changed(source)
@@ -71,7 +71,7 @@ func (l *Library) Verify(ctx context.Context, source string, progress func(done,
 		return fmt.Errorf("scan source: %w", err)
 	}
 	started := time.Now().Unix()
-	setAside, verifyErr := l.objects.Verify(ctx, source, scan, progress)
+	setAside, verifyErr := l.objects.Verify(ctx, scan, progress)
 	if setAside > 0 {
 		slog.ErrorContext(ctx, "verify: objects failed their hash", "source", source, "objects", setAside)
 	}
@@ -134,7 +134,7 @@ func (l *Library) DeleteSnapshots(ctx context.Context, source string, ids []stri
 		if scan == nil {
 			return l.Collect(finalCtx, source)
 		}
-		return l.objects.Sweep(source, scan)
+		return l.objects.Sweep(scan)
 	})
 	return deleteErr
 }
