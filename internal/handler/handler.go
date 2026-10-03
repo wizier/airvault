@@ -99,6 +99,8 @@ func (h *Handler) Router() *echo.Echo {
 	// The chats of messages and whatsapp; the files of every component.
 	backup.GET("/:component/chats", h.backupChats)
 	backup.GET("/:component/chats/messages", h.backupMessages)
+	backup.GET("/:component/chats/matches", h.backupChatSearch)
+	backup.GET("/:component/matches", h.backupSearch)
 	backup.GET("/:component/files/stat", serveFile(h.openBackupFile, serveStat))
 	backup.GET("/:component/files/download", serveFile(h.openBackupFile, serveDownload))
 	backup.GET("/:component/files/preview", serveFile(h.openBackupFile, streamPreview))

@@ -148,7 +148,7 @@ func (h *Handler) backupChats(c *echo.Context) error {
 }
 
 func (h *Handler) backupMessages(c *echo.Context) error {
-	chatIDs, err := echo.QueryParams[int64](c, "chat")
+	chatIDs, err := echo.QueryParamsOr[int64](c, "chat", nil)
 	if err != nil {
 		return err
 	}
@@ -161,6 +161,26 @@ func (h *Handler) backupMessages(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, map[string][]iosbackup.Message{"messages": messages})
+}
+
+func (h *Handler) backupChatSearch(c *echo.Context) error {
+	chatIDs, err := echo.QueryParamsOr[int64](c, "chat", nil)
+	if err != nil {
+		return err
+	}
+	matches, err := h.svc.BackupChatSearch(c.Request().Context(), c.Param("snapshotId"), component(c), chatIDs, c.QueryParam("q"))
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string][]iosbackup.Match{"matches": matches})
+}
+
+func (h *Handler) backupSearch(c *echo.Context) error {
+	found, err := h.svc.BackupSearch(c.Request().Context(), c.Param("snapshotId"), component(c), c.QueryParam("q"))
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string][]iosbackup.Found{"matches": found})
 }
 
 func (h *Handler) backupContactPhoto(c *echo.Context) error {

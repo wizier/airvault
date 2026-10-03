@@ -83,6 +83,9 @@ var waCallEvents = map[int]Call{
 	40: {Video: true, Answered: true}, 41: {Video: true, Answered: true},
 }
 
+// waChatsSQL picks, of the ZWACHATSESSION s, the chats listed.
+var waChatsSQL = fmt.Sprintf("COALESCE(s.ZSESSIONTYPE, 0) IN (%d, %d) AND COALESCE(s.ZREMOVED, 0) = 0", waPerson, waGroup)
+
 // waSaid are the types of what someone said; the rest are events, or hold
 // nothing to show, such as album links (66).
 var waSaid = []int{waText, waImage, waVideo, waAudio, waContact, waLocation, waLink, waDocument, waGIF, waDeleted,
@@ -116,7 +119,7 @@ func (c *Contents) whatsAppChats(ctx context.Context) ([]Chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	people := c.whatsAppPeople(ctx, db)
+	people, calls := c.whatsAppPeople(ctx, db), c.whatsAppCallLog(ctx)
 	// Members who left stay: their messages still need a name.
 	members := map[int64][]Participant{}
 	for rows, err := range c.rows(ctx, db, `SELECT ZCHATSESSION, COALESCE(ZMEMBERJID, '')
@@ -133,32 +136,27 @@ func (c *Contents) whatsAppChats(ctx context.Context) ([]Chat, error) {
 	}
 	chats := []Chat{}
 	byPerson := map[string]int{} // a person's chats under a number and a LID are one
-	for rows, err := range c.rows(ctx, db, `SELECT s.Z_PK, COALESCE(s.ZCONTACTJID, ''), COALESCE(s.ZPARTNERNAME, ''),
-			COALESCE(s.ZSESSIONTYPE, 0), m.ZMESSAGEDATE, m.ZMESSAGETYPE, COALESCE(m.ZTEXT, ''), COALESCE(i.ZTITLE, '')
+	for rows, err := range c.rows(ctx, db, `SELECT s.Z_PK, COALESCE(s.ZPARTNERNAME, ''), `+waColumns+`
 		FROM ZWACHATSESSION s
 		JOIN ZWAMESSAGE m ON m.Z_PK = (SELECT m.Z_PK FROM ZWAMESSAGE m WHERE m.ZCHATSESSION = s.Z_PK AND `+waSaidSQL+`
-			ORDER BY m.ZSORT DESC LIMIT 1)
-		LEFT JOIN ZWAMEDIAITEM i ON i.Z_PK = m.ZMEDIAITEM
-		WHERE COALESCE(s.ZSESSIONTYPE, 0) IN (?, ?) AND COALESCE(s.ZREMOVED, 0) = 0
-		ORDER BY m.ZMESSAGEDATE DESC`, waPerson, waGroup) {
+			ORDER BY m.ZSORT DESC LIMIT 1) `+waJoins+`
+		WHERE `+waChatsSQL+`
+		ORDER BY m.ZMESSAGEDATE DESC`) {
 		var id int64
-		var jid, partner, text, title string
-		var sessionType, lastType int
-		var last sql.NullFloat64
+		var partner string
+		var r waRow
 		if err == nil {
-			err = rows.Scan(&id, &jid, &partner, &sessionType, &last, &lastType, &text, &title)
+			err = rows.Scan(append([]any{&id, &partner}, r.fields()...)...)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read the WhatsApp chats: %w", err)
 		}
-		chat := Chat{IDs: []int64{id}, Last: coreDataTime(last)}
-		switch lastType {
-		case waText, waLink:
-			chat.Snippet = messageText(text, nil)
-		case waImage, waVideo, waGIF, waVideoNote, waDocument:
-			chat.Snippet = messageText(cmp.Or(title, text), nil)
+		last, jid := c.whatsAppMessage(r, people, calls), r.chat
+		chat := Chat{IDs: []int64{id}, Last: last.Time, Snippet: last.Text}
+		if chat.Snippet == "" && len(last.Attachments) > 0 && last.Attachments[0].titled {
+			chat.Snippet = last.Attachments[0].Name // a document without a caption
 		}
-		if sessionType == waGroup {
+		if r.sessionType == waGroup {
 			chat.Title, chat.Participants = cmp.Or(unmarked(partner), jid), members[id]
 			chat.Avatar = people.avatar(jid)
 			chats = append(chats, chat)
@@ -190,68 +188,54 @@ type waRow struct {
 	metadata, receipt        []byte
 }
 
-// whatsAppMessages pages WhatsApp messages, those of the types shown.
-func (c *Contents) whatsAppMessages(ctx context.Context, chatIDs []int64, offset, limit int) ([]Message, error) {
-	db, err := c.domainDatabase(ctx, whatsAppDomain, whatsAppDatabase)
-	if err != nil {
-		return nil, err
-	}
-	people := c.whatsAppPeople(ctx, db)
-	// A chat sorts by ZSORT, which an index serves; a person's chats under a
-	// number and a LID together only by date.
-	order := "m.ZSORT DESC"
-	if len(chatIDs) > 1 {
-		order = "m.ZMESSAGEDATE DESC, m.Z_PK DESC"
-	}
-	chats, args := inList(chatIDs)
-	messages := []Message{}
-	type loggedCall struct {
-		i     int    // the call's message
-		group string // the log names the group of a group call, nothing for one with a person
-	}
-	var calls []loggedCall // the calls the log can complete
-	for rows, err := range c.rows(ctx, db, `SELECT m.Z_PK, COALESCE(m.ZTEXT, ''), m.ZMESSAGEDATE,
-			COALESCE(m.ZISFROMME, 0) != 0, COALESCE(m.ZMESSAGETYPE, 0), COALESCE(m.ZGROUPEVENTTYPE, 0),
-			COALESCE(s.ZSESSIONTYPE, 0), COALESCE(g.ZMEMBERJID, ''), COALESCE(m.ZFROMJID, ''), COALESCE(s.ZCONTACTJID, ''),
-			COALESCE(i.ZMEDIALOCALPATH, ''), COALESCE(i.ZTITLE, ''), COALESCE(i.ZVCARDNAME, ''),
-			COALESCE(i.ZFILESIZE, 0), i.ZLATITUDE, i.ZLONGITUDE, i.ZMETADATA, mi.ZRECEIPTINFO
-		FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK = m.ZCHATSESSION
-		LEFT JOIN ZWAGROUPMEMBER g ON g.Z_PK = m.ZGROUPMEMBER LEFT JOIN ZWAMEDIAITEM i ON i.Z_PK = m.ZMEDIAITEM
-		LEFT JOIN ZWAMESSAGEINFO mi ON mi.Z_PK = m.ZMESSAGEINFO
-		WHERE m.ZCHATSESSION IN (`+chats+`) AND `+waShownSQL+`
-		ORDER BY `+order+` LIMIT ? OFFSET ?`, append(args, limit, offset)...) {
-		var r waRow
-		if err == nil {
-			err = rows.Scan(&r.id, &r.text, &r.date, &r.fromMe, &r.kind, &r.event, &r.sessionType, &r.member, &r.from,
-				&r.chat, &r.local, &r.title, &r.card, &r.size, &r.latitude, &r.longitude, &r.metadata, &r.receipt)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read the WhatsApp messages: %w", err)
-		}
-		if r.kind == waCall {
-			call := loggedCall{i: len(messages)}
-			if r.sessionType == waGroup {
-				call.group = r.chat
-			}
-			calls = append(calls, call)
-		}
-		messages = append(messages, c.whatsAppMessage(r, people))
-	}
-	// Only the call log knows a video call from a voice one.
-	if len(calls) > 0 {
-		log := c.whatsAppCallLog(ctx)
-		for _, pending := range calls {
-			call := messages[pending.i].Call
-			if logged, ok := log.find(messages[pending.i].Time, call.Duration, pending.group); ok {
-				call.Video, call.Duration = logged.video, cmp.Or(call.Duration, logged.duration)
-				call.Answered = call.Duration > 0
-			}
-		}
-	}
-	return messages, nil
+// waColumns are what a waRow reads of a message m, with waJoins: its chat s,
+// sender g, media i and info mi.
+const (
+	waColumns = `m.Z_PK, COALESCE(m.ZTEXT, ''), m.ZMESSAGEDATE, COALESCE(m.ZISFROMME, 0) != 0,
+		COALESCE(m.ZMESSAGETYPE, 0), COALESCE(m.ZGROUPEVENTTYPE, 0), COALESCE(s.ZSESSIONTYPE, 0), COALESCE(g.ZMEMBERJID, ''),
+		COALESCE(m.ZFROMJID, ''), COALESCE(s.ZCONTACTJID, ''), COALESCE(i.ZMEDIALOCALPATH, ''), COALESCE(i.ZTITLE, ''),
+		COALESCE(i.ZVCARDNAME, ''), COALESCE(i.ZFILESIZE, 0), i.ZLATITUDE, i.ZLONGITUDE, i.ZMETADATA, mi.ZRECEIPTINFO`
+	waJoins = `LEFT JOIN ZWAGROUPMEMBER g ON g.Z_PK = m.ZGROUPMEMBER LEFT JOIN ZWAMEDIAITEM i ON i.Z_PK = m.ZMEDIAITEM
+		LEFT JOIN ZWAMESSAGEINFO mi ON mi.Z_PK = m.ZMESSAGEINFO`
+)
+
+func (r *waRow) fields() []any {
+	return []any{&r.id, &r.text, &r.date, &r.fromMe, &r.kind, &r.event, &r.sessionType, &r.member, &r.from, &r.chat,
+		&r.local, &r.title, &r.card, &r.size, &r.latitude, &r.longitude, &r.metadata, &r.receipt}
 }
 
-func (c *Contents) whatsAppMessage(r waRow, people *waPeople) Message {
+func (c *Contents) whatsAppPage(ctx context.Context, chatIDs []int64) (chatPage, error) {
+	db, err := c.domainDatabase(ctx, whatsAppDomain, whatsAppDatabase)
+	if err != nil {
+		return chatPage{}, err
+	}
+	people, calls := c.whatsAppPeople(ctx, db), c.whatsAppCallLog(ctx)
+	// A chat sorts by ZSORT, which an index serves; a person's chats under a
+	// number and a LID together, and every chat listed, only by date.
+	where, order, args := waChatsSQL, "m.ZMESSAGEDATE DESC, m.Z_PK DESC", []any(nil)
+	if chatIDs != nil {
+		var chats string
+		chats, args = inList(chatIDs)
+		where = "m.ZCHATSESSION IN (" + chats + ")"
+		if len(chatIDs) == 1 {
+			order = "m.ZSORT DESC, m.Z_PK DESC"
+		}
+	}
+	return chatPage{db: db, args: args,
+		query: `SELECT m.ZCHATSESSION, ` + waColumns + `
+		FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK = m.ZCHATSESSION ` + waJoins + `
+		WHERE ` + where + ` AND ` + waShownSQL + ` ORDER BY ` + order,
+		scan: func(rows *sql.Rows) (Found, error) {
+			var found Found
+			var r waRow
+			err := rows.Scan(append([]any{&found.Chat}, r.fields()...)...)
+			found.Message = c.whatsAppMessage(r, people, calls)
+			return found, err
+		},
+	}, nil
+}
+
+func (c *Contents) whatsAppMessage(r waRow, people *waPeople, calls waCallLog) Message {
 	m := Message{ID: r.id, Time: coreDataTime(r.date), FromMe: r.fromMe, Service: "WhatsApp"}
 	// Who wrote it: a group member, else the person the chat is with.
 	author := r.member
@@ -265,7 +249,18 @@ func (c *Contents) whatsAppMessage(r waRow, people *waPeople) Message {
 	case waCall:
 		// Its length, in seconds, is in the media item's metadata: 0 for a call not taken.
 		seconds, _ := protoVarint(protoField(protoField(r.metadata, 87), 1), 3)
-		m.Kind, m.Call = "call", &Call{Duration: int(seconds), Outgoing: r.fromMe, Answered: seconds > 0}
+		call := Call{Duration: int(seconds), Outgoing: r.fromMe, Answered: seconds > 0}
+		// Only the call log knows a video call from a voice one; it names the
+		// group of a group call.
+		group := ""
+		if r.sessionType == waGroup {
+			group = r.chat
+		}
+		if logged, ok := calls.find(m.Time, call.Duration, group); ok {
+			call.Video, call.Duration = logged.video, cmp.Or(call.Duration, logged.duration)
+			call.Answered = call.Duration > 0
+		}
+		m.Kind, m.Call = "call", &call
 	case waSystem, waGroupEvent, waTimer:
 		code := waEvents[[2]int{r.kind, r.event}]
 		if r.kind == waTimer {
@@ -296,19 +291,28 @@ func (c *Contents) whatsAppMessage(r waRow, people *waPeople) Message {
 			m.Location = &Location{Latitude: r.latitude.Float64, Longitude: r.longitude.Float64, Name: cmp.Or(r.title, r.card)}
 		}
 	default:
-		m.Text = messageText(r.text, nil)
-		if r.kind == waImage || r.kind == waVideo || r.kind == waGIF || r.kind == waVideoNote {
-			m.Text = messageText(cmp.Or(r.title, r.text), nil) // the caption
-		}
+		m.Text = strings.TrimSpace(r.text)
 		filePath, name := "", waMedia[r.kind] // media the backup does not hold keeps its kind's name
 		if r.local != "" {
 			filePath, name = "Message/"+strings.TrimPrefix(strings.TrimPrefix(r.local, "/"), "Message/"), ""
 		}
-		if r.kind == waDocument {
-			name = cmp.Or(r.title, name)
+		// Media keeps its caption in its title. A document names its file in its
+		// text, or without a caption may in its title alone.
+		fileName := ""
+		switch r.kind {
+		case waImage, waVideo, waGIF, waVideoNote:
+			m.Text = strings.TrimSpace(cmp.Or(r.title, r.text))
+		case waDocument:
+			fileName = cmp.Or(r.text, r.title)
+			m.Text, name = "", cmp.Or(fileName, name)
+			if r.title != fileName {
+				m.Text = strings.TrimSpace(r.title)
+			}
 		}
 		if filePath != "" || name != "" {
-			m.Attachments = []Attachment{c.attachment(ComponentWhatsApp, filePath, name, r.size)}
+			attachment := c.attachment(ComponentWhatsApp, filePath, name, r.size)
+			attachment.titled = fileName != ""
+			m.Attachments = []Attachment{attachment}
 		}
 	}
 	return m
@@ -481,15 +485,6 @@ func (p *waPeople) event(code string, r waRow, author string) *ChatEvent {
 	return event
 }
 
-// sqlList writes values as the items of an SQL list.
-func sqlList[T any](values []T) string {
-	items := make([]string, len(values))
-	for i, value := range values {
-		items[i] = fmt.Sprint(value)
-	}
-	return strings.Join(items, ", ")
-}
-
 // jidAddress is who a WhatsApp JID names: "+<number>" for a phone account,
 // the JID itself otherwise.
 func jidAddress(jid string) string {
@@ -509,6 +504,7 @@ type waLoggedCall struct {
 
 type waCallLog []waLoggedCall
 
+// whatsAppCallLog reads the call log; chats stand without it.
 func (c *Contents) whatsAppCallLog(ctx context.Context) waCallLog {
 	db, err := c.domainDatabase(ctx, whatsAppDomain, whatsAppCallLog)
 	if err != nil {

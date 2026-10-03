@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// homeDomain holds the system's own databases, such as the messages, the
+// contacts and the calls.
+const homeDomain = "HomeDomain"
+
 // Component is a part of a backup a view opens, by the database it lives in.
 type Component string
 

@@ -62,9 +62,9 @@ func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
 	return nil
 }
 
-// deleteSource deletes a source's restore points, closing the one being browsed.
+// deleteSource deletes a source's restore points, closing those being browsed.
 func (s *Service) deleteSource(ctx context.Context, udid string, release func()) error {
-	s.unlocked.closeIf(func(_, source string) bool { return source == udid })
+	s.unlocked.closeIf(func(b *unlockedBackup) bool { return b.source == udid })
 	return s.library.DeleteSource(ctx, udid, release)
 }
 
@@ -73,7 +73,7 @@ func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs 
 	if err != nil {
 		return err
 	}
-	s.unlocked.closeIf(func(id, _ string) bool { return slices.Contains(snapshotIDs, id) })
+	s.unlocked.closeIf(func(b *unlockedBackup) bool { return slices.Contains(snapshotIDs, b.snapshotID) })
 	return s.library.DeleteSnapshots(ctx, udid, snapshotIDs, release)
 }
 

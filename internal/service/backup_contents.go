@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"slices"
 	"sync"
 	"time"
 
@@ -14,66 +15,91 @@ import (
 	"github.com/wizier/airvault/internal/objectstore"
 )
 
-// The password's key stretch takes seconds, so the backup being browsed stays
-// unlocked until nobody has used it for browseIdle. Unlocking another closes it.
-const browseIdle = 15 * time.Minute
+// The password's key stretch takes seconds, so a backup being browsed stays
+// unlocked until nobody has used it for browseIdle; past maxUnlocked, the one
+// used longest ago closes.
+const (
+	browseIdle  = 15 * time.Minute
+	maxUnlocked = 3
+)
+
+type unlockedBackups struct {
+	unlocking sync.Mutex // one password's key stretch at a time: each costs seconds of CPU
+	mu        sync.Mutex
+	open      []*unlockedBackup // the latest used first
+}
 
 type unlockedBackup struct {
-	unlocking  sync.Mutex // one password's key stretch at a time: each costs seconds of CPU
-	mu         sync.Mutex
-	snapshotID string
-	source     string
-	contents   *iosbackup.Contents // nil when none is unlocked
-	idle       *time.Timer
+	snapshotID, source string
+	contents           *iosbackup.Contents
+	used               time.Time
+	idle               *time.Timer
 }
 
-func (u *unlockedBackup) get(snapshotID string) *iosbackup.Contents {
+func (u *unlockedBackups) get(snapshotID string) *iosbackup.Contents {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.contents == nil || u.snapshotID != snapshotID {
+	if b := u.use(snapshotID); b != nil {
+		return b.contents
+	}
+	return nil
+}
+
+// use puts a snapshot's open backup first, idle anew; nil when none is open.
+func (u *unlockedBackups) use(snapshotID string) *unlockedBackup {
+	i := slices.IndexFunc(u.open, func(b *unlockedBackup) bool { return b.snapshotID == snapshotID })
+	if i < 0 {
 		return nil
 	}
-	u.idle.Reset(browseIdle)
-	return u.contents
+	b := u.open[i]
+	u.open = slices.Insert(slices.Delete(u.open, i, i+1), 0, b)
+	b.used = time.Now()
+	b.idle.Reset(browseIdle)
+	return b
 }
 
-// put keeps contents as the unlocked backup. When requests race to open the
-// same snapshot, the first one opened stays and the others are closed.
-func (u *unlockedBackup) put(snapshotID, source string, contents *iosbackup.Contents) *iosbackup.Contents {
+// put keeps contents unlocked. When requests race to open the same snapshot,
+// the first one opened stays and the others are closed.
+func (u *unlockedBackups) put(snapshotID, source string, contents *iosbackup.Contents) *iosbackup.Contents {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.contents != nil && u.snapshotID == snapshotID {
+	if b := u.use(snapshotID); b != nil {
 		_ = contents.Close()
-		u.idle.Reset(browseIdle)
-		return u.contents
+		return b.contents
 	}
-	u.closeLocked()
-	u.snapshotID, u.source, u.contents = snapshotID, source, contents
-	u.idle = time.AfterFunc(browseIdle, func() {
-		u.mu.Lock()
-		defer u.mu.Unlock()
-		if u.contents == contents {
-			u.closeLocked()
-		}
+	b := &unlockedBackup{snapshotID: snapshotID, source: source, contents: contents, used: time.Now()}
+	// A request can take it while the timer waits for the list: then it stays.
+	b.idle = time.AfterFunc(browseIdle, func() {
+		u.closeIf(func(open *unlockedBackup) bool { return open == b && time.Since(b.used) >= browseIdle })
 	})
+	u.open = slices.Insert(u.open, 0, b)
+	if len(u.open) > maxUnlocked {
+		u.open[maxUnlocked].close()
+		clear(u.open[maxUnlocked:])
+		u.open = u.open[:maxUnlocked]
+	}
 	return contents
 }
 
-func (u *unlockedBackup) closeIf(match func(snapshotID, source string) bool) {
+func (u *unlockedBackups) closeIf(match func(*unlockedBackup) bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.contents != nil && match(u.snapshotID, u.source) {
-		u.closeLocked()
+	kept := u.open[:0]
+	for _, b := range u.open {
+		if match(b) {
+			b.close()
+		} else {
+			kept = append(kept, b)
+		}
 	}
+	clear(u.open[len(kept):])
+	u.open = kept
 }
 
-// closeLocked lets the requests in flight finish first, without holding u.
-func (u *unlockedBackup) closeLocked() {
-	if u.contents != nil {
-		u.idle.Stop()
-		go u.contents.Close()
-		u.contents = nil
-	}
+// close lets the requests in flight finish first, without holding the list.
+func (b *unlockedBackup) close() {
+	b.idle.Stop()
+	go b.contents.Close()
 }
 
 func backupLocked() error {

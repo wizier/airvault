@@ -566,12 +566,14 @@ func TestMessages(t *testing.T) {
 		exec(`CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT, transfer_name TEXT,
 			total_bytes INTEGER, hide_attachment INTEGER)`)
 		exec("CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER)")
-		// The same person over SMS is another handle and another chat.
-		exec("INSERT INTO handle VALUES (1, '+79161234567'), (2, 'zoe@example.com'), (3, '+79161234567')")
+		// The same person over SMS is another handle and another chat; senders by name are apart.
+		exec(`INSERT INTO handle VALUES (1, '+79161234567'), (2, 'zoe@example.com'), (3, '+79161234567'), (4, 'MegaFon'),
+			(5, 'DIT_MOS')`)
 		// Two groups can share their members and stay apart.
 		exec(`INSERT INTO chat VALUES (1, '+79161234567', 'iMessage', NULL), (2, 'chat123', 'iMessage', 'Trip'),
-			(3, '+79161234567', 'SMS', NULL), (4, 'chat456', 'iMessage', 'Gift')`)
-		exec("INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 3), (4, 1), (4, 2)")
+			(3, '+79161234567', 'SMS', NULL), (4, 'chat456', 'iMessage', 'Gift'), (5, 'MegaFon', 'SMS', NULL),
+			(6, 'DIT_MOS', 'SMS', NULL)`)
+		exec("INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 3), (4, 1), (4, 2), (5, 4), (6, 5)")
 		for _, m := range [][]any{
 			{1, 1, "hi", nil, 0, nanos(1), 1, 0, 0},
 			{2, 1, nil, typedstream("Loved “hi”"), 1, nanos(2), 0, 2000, 0}, // a reaction
@@ -580,15 +582,19 @@ func TestMessages(t *testing.T) {
 			{5, 2, nil, nil, 0, nanos(5), 1, 0, 1}, // a group event
 			{6, 3, "by sms", nil, 3, nanos(2), 1, 0, 0},
 			{7, 4, "a scarf?", nil, 2, nanos(1), 0, 0, 0},
+			{8, 5, "balance", nil, 4, nanos(0), 0, 0, 0},
+			{9, 6, "a fine", nil, 5, nanos(-1), 0, 0, 0},
 		} {
 			service := "iMessage"
-			if m[1] == 3 {
+			if m[1] == 3 || m[1] == 5 || m[1] == 6 {
 				service = "SMS"
 			}
 			exec(`INSERT INTO message (ROWID, text, attributedBody, handle_id, service, date, is_from_me, associated_message_type,
 				item_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, m[0], m[2], m[3], m[4], service, m[5], m[6], m[7], m[8])
 			exec("INSERT INTO chat_message_join VALUES (?, ?, ?)", m[1], m[0], m[5])
 		}
+		// A message can be in two chats of one conversation.
+		exec("INSERT INTO chat_message_join VALUES (3, 1, ?)", nanos(1))
 		exec(`INSERT INTO attachment VALUES (1, '~/` + photo + `', 'image/heic', 'IMG_1.HEIC', 12, 0),
 			(2, '~/Library/SMS/Attachments/cd/02/GUID2/movie.mov', 'video/quicktime', NULL, 99, 0),
 			(3, '~/Library/SMS/Attachments/ef/03/GUID3/payload', NULL, NULL, 1, 1)`)
@@ -615,9 +621,14 @@ func TestMessages(t *testing.T) {
 	// Reactions and group events count for nothing.
 	wantChats := []Chat{
 		{IDs: []int64{2}, Title: "Trip", Participants: []Participant{anna, zoe}, Messages: 1, Last: at(4)},
-		{IDs: []int64{1, 3}, Title: "Anna B Cole", Participants: []Participant{anna}, Messages: 3, Last: at(3),
+		// A message counts in each chat it is in.
+		{IDs: []int64{1, 3}, Title: "Anna B Cole", Participants: []Participant{anna}, Messages: 4, Last: at(3),
 			Snippet: strings.TrimSpace(long)},
 		{IDs: []int64{4}, Title: "Gift", Participants: []Participant{anna, zoe}, Messages: 1, Last: at(1), Snippet: "a scarf?"},
+		{IDs: []int64{5}, Title: "MegaFon", Participants: []Participant{{Address: "MegaFon"}}, Messages: 1, Last: at(0),
+			Snippet: "balance"},
+		{IDs: []int64{6}, Title: "DIT_MOS", Participants: []Participant{{Address: "DIT_MOS"}}, Messages: 1, Last: at(-1),
+			Snippet: "a fine"},
 	}
 	if !reflect.DeepEqual(chats, wantChats) {
 		t.Fatalf("Chats =\n%+v\nwant\n%+v", chats, wantChats)
@@ -637,6 +648,23 @@ func TestMessages(t *testing.T) {
 	}
 	if page, err := contents.Messages(t.Context(), ComponentMessages, []int64{1, 3}, 2, 1); err != nil || len(page) != 1 || page[0].ID != 1 {
 		t.Fatalf("last page = %+v, %v", page, err)
+	}
+	// A search ignores case and reads what only the attributed body holds; a reaction says nothing.
+	found, err := contents.Search(t.Context(), ComponentMessages, "BY SMS")
+	if err != nil || !reflect.DeepEqual(found, []Found{{Chat: 3, Message: Message{ID: 6, Text: "by sms", Time: at(2), FromMe: true, Service: "SMS"}}}) {
+		t.Fatalf("Search = %+v, %v", found, err)
+	}
+	for query, want := range map[string]int64{"ПРИВЕТ": 3, "HI": 1} {
+		if found, err := contents.Search(t.Context(), ComponentMessages, query); err != nil || len(found) != 1 || found[0].ID != want {
+			t.Errorf("Search(%q) = %+v, %v; want message %d", query, found, err, want)
+		}
+	}
+	// In a chat, a search tells where what it found stands among what the chat shows.
+	for query, want := range map[string][]Match{"Hi": {{ID: 1, Offset: 2}}, "ПРИВЕТ": {{3, 0}}, "loved": {}} {
+		if matches, err := contents.Matches(t.Context(), ComponentMessages, []int64{1, 3}, query); err != nil ||
+			!reflect.DeepEqual(matches, want) {
+			t.Errorf("Matches(%q) = %+v, %v; want %+v", query, matches, err, want)
+		}
 	}
 
 	messages, err = contents.Messages(t.Context(), ComponentMessages, []int64{2}, 0, 10)
@@ -693,7 +721,8 @@ func TestWhatsApp(t *testing.T) {
 			(2, 3, '777@lid', NULL, NULL)`, "\u202a+49 151 1234\u20115678\u202c")
 		exec("INSERT INTO ZWAPROFILEPUSHNAME VALUES (1, '999@lid', 'Max')")
 		exec(`INSERT INTO ZWAMEDIAITEM VALUES (1, NULL, NULL, NULL, NULL, 0, NULL, NULL, ?),
-			(2, NULL, 'Peak', NULL, NULL, 0, 46.5, 8.0, NULL), (3, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL)`,
+			(2, NULL, 'Peak', NULL, NULL, 0, 46.5, 8.0, NULL), (3, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL),
+			(4, NULL, 'Please sign', NULL, NULL, 0, NULL, NULL, NULL)`,
 			protoBytes(87, protoBytes(1, varint(3, 125))))
 		exec("INSERT INTO ZWAMESSAGEINFO VALUES (1, ?)", protoBytes(8, protoBytes(2, []byte("Where?"))))
 		for _, m := range [][]any{
@@ -718,6 +747,7 @@ func TestWhatsApp(t *testing.T) {
 			{17, 1, nil, 3, 0, nil, nil, 10, 999, nil, nil, 5},
 			{18, 1, nil, 3, 1, nil, nil, 1, 0, 3, nil, 6},
 			{19, 1, nil, 3, 1, nil, nil, 5, 0, 3, nil, 7},
+			{20, 1, "Contract.pdf", 3, 1, nil, nil, 8, 0, 4, nil, 8}, // a document: its name, and a caption
 		} {
 			m[3] = coreData(at(m[3].(int)))
 			exec("INSERT INTO ZWAMESSAGE VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", m...)
@@ -784,6 +814,8 @@ func TestWhatsApp(t *testing.T) {
 		return messages
 	}
 	wantMessages := []Message{
+		{ID: 20, Text: "Please sign", Time: at(3), FromMe: true, Service: "WhatsApp",
+			Attachments: []Attachment{{Name: "Contract.pdf", Missing: true, titled: true}}},
 		{ID: 19, Time: at(3), FromMe: true, Service: "WhatsApp", Kind: "location"},
 		{ID: 18, Time: at(3), FromMe: true, Service: "WhatsApp", Attachments: []Attachment{{Name: "Photo", Missing: true}}},
 		{ID: 3, Time: at(3), Sender: anna.Address, Service: "WhatsApp", Kind: "call", Call: &Call{}},
@@ -796,7 +828,7 @@ func TestWhatsApp(t *testing.T) {
 	if got := read(1); !reflect.DeepEqual(got, wantMessages) {
 		t.Fatalf("Messages =\n%+v\nwant\n%+v", got, wantMessages)
 	}
-	if both := read(1, 2); len(both) != 7 || both[0].ID != 5 || both[0].Sender != anna.Address {
+	if both := read(1, 2); len(both) != 8 || both[0].ID != 5 || both[0].Sender != anna.Address {
 		t.Fatalf("a person's chats together = %+v", both)
 	}
 	group := read(3)
@@ -821,6 +853,27 @@ func TestWhatsApp(t *testing.T) {
 		t.Errorf("added = %+v", group[5].Event)
 	case group[6].Event.Code != "created" || group[6].Event.Actor != nil:
 		t.Errorf("created = %+v", group[6].Event)
+	}
+	// A search reads places' names and documents' titles too; an event's
+	// parameter or the name of media not held says nothing.
+	for query, want := range map[string]struct{ chat, id int64 }{"SALUT": {3, 8}, "peak": {3, 11}, "where?": {3, 10},
+		"contract": {1, 20}, "sign": {1, 20}, "climbing": {}, "photo": {}} {
+		found, err := contents.Search(t.Context(), ComponentWhatsApp, query)
+		if err != nil || want.id == 0 && len(found) != 0 ||
+			want.id != 0 && (len(found) != 1 || found[0].ID != want.id || found[0].Chat != want.chat) {
+			t.Errorf("Search(%q) = %+v, %v; want message %d", query, found, err, want)
+		}
+	}
+	for _, want := range []struct {
+		chats   []int64
+		query   string
+		matches []Match
+	}{{[]int64{3}, "SALUT", []Match{{8, 4}}}, {[]int64{3}, "where", []Match{{10, 2}}},
+		{[]int64{3}, "climbing", []Match{}}, {[]int64{1, 2}, "hi", []Match{{1, 6}}}} {
+		if got, err := contents.Matches(t.Context(), ComponentWhatsApp, want.chats, want.query); err != nil ||
+			!reflect.DeepEqual(got, want.matches) {
+			t.Errorf("Matches(%v, %q) = %+v, %v; want %+v", want.chats, want.query, got, err, want.matches)
+		}
 	}
 	reader, _, err := contents.OpenFile(t.Context(), ComponentWhatsApp, avatar)
 	if err != nil || !bytes.Equal(readAll(t, reader), jpegBytes) {
@@ -943,9 +996,38 @@ func TestAddressKey(t *testing.T) {
 		{"+41 44 123 45 67", "044 123 45 67"},
 		{"+1 555 123 4567", "(555) 123-4567"},
 		{"Zoe@Example.com", "zoe@example.com"},
+		{"MegaFon", "megafon"},
+		{"+7 916 123-45-67 (work)", "8 916 123 45 67"},
 	} {
 		if addressKey(same[0]) != addressKey(same[1]) {
 			t.Errorf("%q and %q do not match", same[0], same[1])
+		}
+	}
+	for _, apart := range [][2]string{
+		{"MegaFon", "DIT_MOS"},
+		{"Tele2", "Market2"},
+		{"900", "+7 916 123-49-00"},
+		{"user1234567@example.com", "+1 234 567"},
+	} {
+		if addressKey(apart[0]) == addressKey(apart[1]) {
+			t.Errorf("%q and %q match", apart[0], apart[1])
+		}
+	}
+}
+
+// TestWhatsAppDocument covers how WhatsApp may keep a document's name and
+// caption: the name in the text, the caption in the title, or the name alone.
+func TestWhatsAppDocument(t *testing.T) {
+	var c Contents
+	for _, want := range []struct{ text, title, shown, file string }{
+		{"Contract.pdf", "Please sign", "Please sign", "Contract.pdf"},
+		{"Scan.pdf", "", "", "Scan.pdf"},
+		{"", "Invoice.pdf", "", "Invoice.pdf"},
+		{"Report.pdf", "Report.pdf", "", "Report.pdf"},
+	} {
+		m := c.whatsAppMessage(waRow{kind: waDocument, fromMe: true, text: want.text, title: want.title}, &waPeople{}, nil)
+		if m.Text != want.shown || len(m.Attachments) != 1 || m.Attachments[0].Name != want.file || !m.Attachments[0].titled {
+			t.Errorf("text %q, title %q: %q with %+v", want.text, want.title, m.Text, m.Attachments)
 		}
 	}
 }

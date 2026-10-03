@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"iter"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -155,6 +156,24 @@ func (c *Contents) rows(ctx context.Context, db *sql.DB, query string, args ...a
 			yield(nil, c.cause(err))
 		}
 	}
+}
+
+// inList is "?, ?, …" for ids, with them as its query arguments.
+func inList(ids []int64) (string, []any) {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return "?" + strings.Repeat(", ?", len(ids)-1), args
+}
+
+// sqlList writes values as the items of an SQL list.
+func sqlList[T any](values []T) string {
+	items := make([]string, len(values))
+	for i, value := range values {
+		items[i] = fmt.Sprint(value)
+	}
+	return strings.Join(items, ", ")
 }
 
 // cause adds to a SQLite error the Go error behind it: SQLite reports a failed

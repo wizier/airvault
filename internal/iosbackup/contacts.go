@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	homeDomain       = "HomeDomain"
 	contactsDatabase = "Library/AddressBook/AddressBook.sqlitedb"
 	contactImages    = "Library/AddressBook/AddressBookImages.sqlitedb"
 )
@@ -196,11 +195,15 @@ func photoImage(data []byte) []byte {
 // personName is a name an app recorded for someone, without the direction
 // marks around it; "" when it is a phone number, however formatted.
 func personName(recorded string) string {
-	name := unmarked(recorded)
-	if strings.ContainsFunc(name, unicode.IsDigit) && !strings.ContainsFunc(name, unicode.IsLetter) {
-		return ""
+	if name := unmarked(recorded); !isNumber(name) {
+		return name
 	}
-	return name
+	return ""
+}
+
+// isNumber reports a phone number, however written: digits, no letter.
+func isNumber(text string) bool {
+	return strings.ContainsFunc(text, unicode.IsDigit) && !strings.ContainsFunc(text, unicode.IsLetter)
 }
 
 // unmarked is text without the spaces and direction marks around it.
@@ -208,18 +211,19 @@ func unmarked(text string) string {
 	return strings.TrimFunc(text, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Bidi_Control, r) })
 }
 
-// addressKey matches a phone number by its last nine digits, so a national
-// form with its trunk prefix (8 916…, 044 123…) matches the international
-// one (+7 916…, +41 44 123…); an email matches case-insensitively.
+// addressKey is the same for the addresses of one party, however written: a
+// phone number's last nine digits, so a national form with its trunk prefix
+// (8 916…, 044 123…) matches the international one (+7 916…, +41 44 123…);
+// an email, a sender's name (MegaFon) or a short code, whatever its case.
 func addressKey(address string) string {
-	if strings.Contains(address, "@") {
-		return strings.ToLower(address)
-	}
 	digits := strings.Map(func(r rune) rune {
 		if r >= '0' && r <= '9' {
 			return r
 		}
 		return -1
 	}, address)
+	if len(digits) < 7 || strings.Contains(address, "@") {
+		return strings.ToLower(strings.TrimSpace(address))
+	}
 	return digits[max(len(digits)-9, 0):]
 }

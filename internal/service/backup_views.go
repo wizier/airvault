@@ -1,6 +1,7 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/iosbackup"
@@ -237,12 +239,50 @@ func (s *Service) BackupChats(ctx context.Context, snapshotID string, app iosbac
 // BackupMessages pages a conversation's messages, the latest first.
 func (s *Service) BackupMessages(ctx context.Context, snapshotID string, app iosbackup.Component, chatIDs []int64,
 	offset, limit int) ([]iosbackup.Message, error) {
-	if err := validPage(offset, limit); err != nil {
+	if err := cmp.Or(validPage(offset, limit), validChats(chatIDs)); err != nil {
 		return nil, err
 	}
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Message, error) {
 		return c.Messages(ctx, app, chatIDs, offset, limit)
 	})
+}
+
+// BackupSearch finds an app's messages that say query, the latest first.
+func (s *Service) BackupSearch(ctx context.Context, snapshotID string, app iosbackup.Component,
+	query string) ([]iosbackup.Found, error) {
+	query, err := searchQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Found, error) { return c.Search(ctx, app, query) })
+}
+
+// BackupChatSearch finds the messages of a conversation that say query, the
+// latest first.
+func (s *Service) BackupChatSearch(ctx context.Context, snapshotID string, app iosbackup.Component, chatIDs []int64,
+	query string) ([]iosbackup.Match, error) {
+	query, err := searchQuery(query)
+	if err = cmp.Or(err, validChats(chatIDs)); err != nil {
+		return nil, err
+	}
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Match, error) {
+		return c.Matches(ctx, app, chatIDs, query)
+	})
+}
+
+// validChats checks a request names a conversation's chats.
+func validChats(chatIDs []int64) error {
+	if len(chatIDs) == 0 {
+		return &domain.ValidationError{Code: "chat_required", Message: "name the conversation's chats (chat=…)"}
+	}
+	return nil
+}
+
+func searchQuery(query string) (string, error) {
+	if query = strings.TrimSpace(query); utf8.RuneCountInString(query) < 2 {
+		return "", &domain.ValidationError{Code: "query_too_short", Message: "search for two characters or more"}
+	}
+	return query, nil
 }
 
 // OpenBackupFile opens a file of a component: a photo or a Live Photo's video,

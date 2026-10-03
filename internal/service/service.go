@@ -27,7 +27,7 @@ type Service struct {
 	live     *deviceRuntimeStore
 	lockObs  *lockObserverMgr
 	gallery  *galleryIndex
-	unlocked unlockedBackup
+	unlocked unlockedBackups
 	wg       sync.WaitGroup
 
 	deviceTransitionMu sync.Mutex
