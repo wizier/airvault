@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"path"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/iosbackup"
@@ -116,16 +115,12 @@ func (h *Handler) backupPhotos(c *echo.Context) error {
 	return c.JSON(http.StatusOK, galleryResponse{Assets: assets, Total: total})
 }
 
-type photoMonthsResponse struct {
-	Months []service.PhotoMonth `json:"months"`
-}
-
 func (h *Handler) backupPhotoMonths(c *echo.Context) error {
 	months, err := h.svc.BackupPhotoMonths(c.Request().Context(), c.Param("snapshotId"), c.QueryParam("filter"))
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, photoMonthsResponse{Months: months})
+	return c.JSON(http.StatusOK, map[string][]service.PhotoMonth{"months": months})
 }
 
 func (h *Handler) backupPhotoThumbs(c *echo.Context) error {
@@ -138,10 +133,6 @@ func (h *Handler) backupPhotoThumbs(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, thumbBatchResponse{Thumbs: thumbs})
-}
-
-type backupMessagesResponse struct {
-	Messages []iosbackup.Message `json:"messages"`
 }
 
 // component is the part of the backup a route names; one it does not know
@@ -169,41 +160,23 @@ func (h *Handler) backupMessages(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, backupMessagesResponse{Messages: messages})
+	return c.JSON(http.StatusOK, map[string][]iosbackup.Message{"messages": messages})
 }
 
-// openBackupFile opens the file of a component a request names, by its path.
-func (h *Handler) openBackupFile(c *echo.Context) (*service.BackupFileDownload, string, error) {
-	filePath := c.QueryParam("path")
-	download, err := h.svc.OpenBackupFile(c.Request().Context(), c.Param("snapshotId"), component(c), filePath)
-	return download, path.Base(filePath), err
-}
-
-func (h *Handler) backupFileStat(c *echo.Context) error {
-	download, _, err := h.openBackupFile(c)
+func (h *Handler) backupContactPhoto(c *echo.Context) error {
+	contactID, err := echo.PathParam[int64](c, "contactId")
 	if err != nil {
 		return err
 	}
-	defer download.Close()
-	stat := service.DeviceFileStat{Size: download.Size()}
-	if modified := download.ModTime(); !modified.IsZero() {
-		stat.Modified = new(modified.Unix())
-	}
-	return c.JSON(http.StatusOK, stat)
-}
-
-func (h *Handler) downloadBackupFile(c *echo.Context) error {
-	download, name, err := h.openBackupFile(c)
+	photo, err := h.svc.BackupContactPhoto(c.Request().Context(), c.Param("snapshotId"), contactID)
 	if err != nil {
 		return err
 	}
-	return serveDownload(c, download, name)
+	c.Response().Header().Set("Cache-Control", "private, max-age=300")
+	return c.Blob(http.StatusOK, http.DetectContentType(photo), photo)
 }
 
-func (h *Handler) previewBackupFile(c *echo.Context) error {
-	download, name, err := h.openBackupFile(c)
-	if err != nil {
-		return err
-	}
-	return streamPreview(c, download, name)
+// openBackupFile opens a file of the component a request names.
+func (h *Handler) openBackupFile(c *echo.Context, filePath string) (deviceDownload, error) {
+	return h.svc.OpenBackupFile(c.Request().Context(), c.Param("snapshotId"), component(c), filePath)
 }

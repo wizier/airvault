@@ -24,7 +24,8 @@ type Note struct {
 	Title    string    `json:"title"`
 	Folder   string    `json:"folder,omitempty"`
 	Modified time.Time `json:"modified,omitzero"`
-	// Text holds U+FFFC where each of the attachments sits, in their order.
+	// Text is what follows the title, U+FFFC where each of the attachments
+	// sits, in their order.
 	Text        string       `json:"text,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	Locked      bool         `json:"locked,omitempty"` // password-protected: its text stays encrypted
@@ -66,6 +67,10 @@ func (c *Contents) Notes(ctx context.Context) ([]Note, error) {
 		note.Modified = coreDataTime(modified)
 		if !note.Locked {
 			note.Text, note.Attachments = noteBody(data, attachments)
+			// Notes titles a note by its first line.
+			if rest, ok := strings.CutPrefix(note.Text, note.Title); ok && (rest == "" || rest[0] == '\n') {
+				note.Text = strings.TrimSpace(rest)
+			}
 		}
 		// A draft Notes never shows: no title, text or attachment.
 		if note.Title != "" || note.Text != "" || note.Locked {

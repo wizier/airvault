@@ -428,8 +428,24 @@ func addressBook(t *testing.T) []byte {
 	})
 }
 
+// contactPhoto is the image contactImagesDB holds for Anna and Zoe.
+var contactPhoto = []byte("\xff\xd8\xff\xe0 a photo")
+
+// contactImagesDB holds photos of addressBook's people: Anna's thumbnail is a
+// JPEG after a byte; Zoe's is pixels, her whole photo a JPEG; Acme's is pixels alone.
+func contactImagesDB(t *testing.T) []byte {
+	return sqliteFile(t, true, func(exec func(string, ...any)) {
+		exec("CREATE TABLE ABThumbnailImage (record_id INTEGER, format INTEGER, data BLOB)")
+		exec("CREATE TABLE ABFullSizeImage (record_id INTEGER, data BLOB)")
+		exec("INSERT INTO ABThumbnailImage VALUES (3, 0, ?), (1, 0, x'00112233'), (2, 0, x'00112233')",
+			append([]byte{1}, contactPhoto...))
+		exec("INSERT INTO ABFullSizeImage VALUES (1, ?)", contactPhoto)
+	})
+}
+
 func TestContacts(t *testing.T) {
-	files := append(slices.Clone(homeFiles), fixtureFile{domain: homeDomain, path: contactsDatabase, flags: 1, content: addressBook(t)})
+	files := append(slices.Clone(homeFiles), fixtureFile{domain: homeDomain, path: contactsDatabase, flags: 1, content: addressBook(t)},
+		fixtureFile{domain: homeDomain, path: contactImages, flags: 1, content: contactImagesDB(t)})
 	contents, err := buildBackup(t, "correct horse", files).Unlock(t.Context(), "correct horse")
 	if err != nil {
 		t.Fatal(err)
@@ -440,15 +456,25 @@ func TestContacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Contact{
-		{Organization: "Acme"},
-		{Name: "Anna B Cole", JobTitle: "CTO", Phones: []LabeledValue{{"Mobile", "8 (916) 123-45-67"}}},
-		{Name: "Zoe Adams", Note: "met at work",
+		{ID: 2, Organization: "Acme", ContactID: 2},
+		{ID: 3, Name: "Anna B Cole", JobTitle: "CTO", Phones: []LabeledValue{{"Mobile", "8 (916) 123-45-67"}}, ContactID: 3},
+		{ID: 1, Name: "Zoe Adams", Note: "met at work",
 			Phones: []LabeledValue{{"Mobile", "+1 555 0100"}, {"work line", "+1 555 0199"}},
-			Emails: []LabeledValue{{"", "zoe@example.com"}}},
-		{Note: "nameless"},
+			Emails: []LabeledValue{{"", "zoe@example.com"}}, ContactID: 1},
+		{ID: 4, Note: "nameless"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Contacts =\n%+v\nwant\n%+v", got, want)
+	}
+	for _, id := range []int64{3, 1} {
+		if photo, err := contents.ContactPhoto(t.Context(), id); err != nil || !bytes.Equal(photo, contactPhoto) {
+			t.Errorf("ContactPhoto(%d) = %x, %v", id, photo, err)
+		}
+	}
+	for _, id := range []int64{2, 4} {
+		if _, err := contents.ContactPhoto(t.Context(), id); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("ContactPhoto(%d): err=%v, want fs.ErrNotExist", id, err)
+		}
 	}
 }
 
@@ -459,7 +485,8 @@ func TestCalls(t *testing.T) {
 			ZDURATION FLOAT, ZORIGINATED INTEGER, ZANSWERED INTEGER, ZSERVICE_PROVIDER VARCHAR, ZCALLTYPE INTEGER)`)
 		for _, call := range [][]any{
 			{"+79161234567", nil, day(1), 65.4, 1, 1, providerPhone, 1},
-			{"+4915112345678", "Max", day(2), 30.0, 1, 1, "net.whatsapp.WhatsApp", 1},
+			{"+4915112345678", "Max", day(2), 30.0, 1, 1, "57T9237FN3.net.whatsapp.WhatsApp", 1},
+			{"+4915112345678", "Max", day(2).Add(time.Hour), 10.0, 1, 1, "C67CF9S4VU.ph.telegra.Telegraph", 1},
 			{[]byte("ZOE@example.com"), nil, day(3), 120.0, 0, 1, providerFaceTime, callTypeVideo},
 			{"+15550100", nil, day(4), 0.0, 0, 0, providerPhone, 1},
 			{nil, nil, day(5), 0.0, 0, 0, nil, nil}, // a withheld number
@@ -471,8 +498,17 @@ func TestCalls(t *testing.T) {
 	})
 	files := append(slices.Clone(homeFiles),
 		fixtureFile{domain: homeDomain, path: contactsDatabase, flags: 1, content: addressBook(t)},
+		fixtureFile{domain: homeDomain, path: contactImages, flags: 1, content: contactImagesDB(t)},
 		fixtureFile{domain: homeDomain, path: callsDatabase, flags: 1, content: history})
-	contents, err := buildBackup(t, "correct horse", files).Unlock(t.Context(), "correct horse")
+	backup := buildBackup(t, "correct horse", files)
+	// Telegram is installed and names itself; WhatsApp is not.
+	metadata, err := plist.Marshal(map[string]string{"bundleDisplayName": "Telegram", "itemName": "Telegram Messenger"},
+		plist.BinaryFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup.Info.Applications = map[string]Application{"ph.telegra.Telegraph": {Metadata: metadata}}
+	contents, err := backup.Unlock(t.Context(), "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,10 +522,14 @@ func TestCalls(t *testing.T) {
 	}
 	want := []Call{
 		{Time: day(5), Service: "phone"},
-		{Address: "+15550100", Name: "Zoe Adams", Time: day(4), Service: "phone"},
-		{Address: "ZOE@example.com", Name: "Zoe Adams", Time: day(3), Duration: 120, Answered: true, Service: "facetime", Video: true},
+		{Address: "+15550100", Name: "Zoe Adams", Time: day(4), Service: "phone", ContactID: 1},
+		{Address: "ZOE@example.com", Name: "Zoe Adams", Time: day(3), Duration: 120, Answered: true, Service: "facetime", Video: true,
+			ContactID: 1},
+		{Address: "+4915112345678", Name: "Max", Time: day(2).Add(time.Hour), Duration: 10, Outgoing: true, Answered: true,
+			Service: "ph.telegra.Telegraph", App: "Telegram"},
 		{Address: "+4915112345678", Name: "Max", Time: day(2), Duration: 30, Outgoing: true, Answered: true, Service: "net.whatsapp.WhatsApp"},
-		{Address: "+79161234567", Name: "Anna B Cole", Time: day(1), Duration: 65, Outgoing: true, Answered: true, Service: "phone"},
+		{Address: "+79161234567", Name: "Anna B Cole", Time: day(1), Duration: 65, Outgoing: true, Answered: true, Service: "phone",
+			ContactID: 3},
 	}
 	for i := range got {
 		got[i].Time = got[i].Time.Truncate(time.Second)
@@ -624,11 +664,11 @@ func TestWhatsApp(t *testing.T) {
 	varint := func(number int, value uint64) []byte {
 		return binary.AppendUvarint(binary.AppendUvarint(nil, uint64(number)<<3), value)
 	}
-	const avatar = "Media/Profile/79161234567-1700000000.jpg"
+	// Anna's large copy wins over the small; Max has only the small, by his LID.
+	const avatar, maxAvatar = "Media/Profile/79161234567-1700000000.jpg", "Media/Profile/999-1700000000.thumb"
 	chatStorage := sqliteFile(t, true, func(exec func(string, ...any)) {
 		exec(`CREATE TABLE ZWACHATSESSION (Z_PK INTEGER PRIMARY KEY, ZCONTACTJID VARCHAR, ZCONTACTIDENTIFIER VARCHAR,
-			ZPARTNERNAME VARCHAR, ZSESSIONTYPE INTEGER, ZLASTMESSAGEDATE TIMESTAMP, ZREMOVED INTEGER, ZLASTMESSAGE INTEGER,
-			ZLASTMESSAGETEXT VARCHAR)`)
+			ZPARTNERNAME VARCHAR, ZSESSIONTYPE INTEGER, ZREMOVED INTEGER)`)
 		exec(`CREATE TABLE ZWAMESSAGE (Z_PK INTEGER PRIMARY KEY, ZCHATSESSION INTEGER, ZTEXT VARCHAR, ZMESSAGEDATE TIMESTAMP,
 			ZISFROMME INTEGER, ZFROMJID VARCHAR, ZGROUPMEMBER INTEGER, ZMESSAGETYPE INTEGER, ZGROUPEVENTTYPE INTEGER,
 			ZMEDIAITEM INTEGER, ZMESSAGEINFO INTEGER, ZSORT INTEGER)`)
@@ -641,20 +681,20 @@ func TestWhatsApp(t *testing.T) {
 		// One person under a number and a LID; a group; a status feed, a deleted
 		// chat and one with nothing shown are left out.
 		exec(`INSERT INTO ZWACHATSESSION VALUES
-			(1, '79161234567@s.whatsapp.net', NULL, '+7 916 123-45-67', 0, ?, 0, 3, 'YiQ3MjI1Q0I1'),
-			(2, '555@lid', '79161234567@s.whatsapp.net', NULL, 0, ?, 0, 5, NULL),
-			(3, '120363-1@g.us', NULL, 'Climbing', 1, ?, 0, 8, NULL),
-			(4, '79161234567@status', NULL, NULL, 3, ?, 0, NULL, NULL),
-			(5, '4911@s.whatsapp.net', NULL, 'Gone', 0, ?, 1, NULL, NULL),
-			(6, '4922@s.whatsapp.net', NULL, NULL, 0, ?, 0, 14, NULL),
-			(7, '0@s.whatsapp.net', NULL, 'WhatsApp', 0, ?, 0, 15, NULL)`,
-			coreData(at(3)), coreData(at(4)), coreData(at(6)), coreData(at(7)), coreData(at(7)), coreData(at(7)),
-			coreData(at(28)))
-		exec(`INSERT INTO ZWAGROUPMEMBER VALUES (1, 3, '4915112345678@s.whatsapp.net', '+49 151 12345678', NULL),
-			(2, 3, '777@lid', NULL, NULL)`)
-		exec("INSERT INTO ZWAPROFILEPUSHNAME VALUES (1, '4915112345678@s.whatsapp.net', 'Max')")
+			(1, '79161234567@s.whatsapp.net', NULL, '+7 916 123-45-67', 0, 0),
+			(2, '555@lid', '79161234567@s.whatsapp.net', 'Annie', 0, 0),
+			(3, '120363-1@g.us', NULL, 'Climbing', 1, 0),
+			(4, '79161234567@status', NULL, NULL, 3, 0),
+			(5, '4911@s.whatsapp.net', NULL, 'Gone', 0, 1),
+			(6, '4922@s.whatsapp.net', NULL, NULL, 0, 0),
+			(7, '0@s.whatsapp.net', NULL, 'WhatsApp', 0, 0)`)
+		// WhatsApp's formatted number is no name: Max's own one wins.
+		exec(`INSERT INTO ZWAGROUPMEMBER VALUES (1, 3, '4915112345678@s.whatsapp.net', ?, NULL),
+			(2, 3, '777@lid', NULL, NULL)`, "\u202a+49 151 1234\u20115678\u202c")
+		exec("INSERT INTO ZWAPROFILEPUSHNAME VALUES (1, '999@lid', 'Max')")
 		exec(`INSERT INTO ZWAMEDIAITEM VALUES (1, NULL, NULL, NULL, NULL, 0, NULL, NULL, ?),
-			(2, NULL, 'Peak', NULL, NULL, 0, 46.5, 8.0, NULL)`, protoBytes(87, protoBytes(1, varint(3, 125))))
+			(2, NULL, 'Peak', NULL, NULL, 0, 46.5, 8.0, NULL), (3, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL)`,
+			protoBytes(87, protoBytes(1, varint(3, 125))))
 		exec("INSERT INTO ZWAMESSAGEINFO VALUES (1, ?)", protoBytes(8, protoBytes(2, []byte("Where?"))))
 		for _, m := range [][]any{
 			// id, chat, text, day, from me, from, member, type, event, media, info, sort
@@ -673,6 +713,11 @@ func TestWhatsApp(t *testing.T) {
 			{13, 3, "Climbing", 6, 0, "120363-1@g.us", 1, 6, 1, nil, nil, 8}, // Max renamed it
 			{14, 6, nil, 7, 0, nil, nil, 66, 0, nil, nil, 1},
 			{15, 7, nil, 7, 0, nil, nil, 10, 2, nil, nil, 1}, // WhatsApp's own chat: events only
+			// What has nothing to show is left out; media and a place the backup lacks keep their kind.
+			{16, 1, " ", 3, 1, nil, nil, 0, 0, nil, nil, 4},
+			{17, 1, nil, 3, 0, nil, nil, 10, 999, nil, nil, 5},
+			{18, 1, nil, 3, 1, nil, nil, 1, 0, 3, nil, 6},
+			{19, 1, nil, 3, 1, nil, nil, 5, 0, 3, nil, 7},
 		} {
 			m[3] = coreData(at(m[3].(int)))
 			exec("INSERT INTO ZWAMESSAGE VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", m...)
@@ -680,7 +725,7 @@ func TestWhatsApp(t *testing.T) {
 	})
 	contactsV2 := sqliteFile(t, true, func(exec func(string, ...any)) {
 		exec("CREATE TABLE ZWAADDRESSBOOKCONTACT (Z_PK INTEGER PRIMARY KEY, ZWHATSAPPID VARCHAR, ZFULLNAME VARCHAR, ZLID VARCHAR)")
-		exec("INSERT INTO ZWAADDRESSBOOKCONTACT VALUES (1, '33612345678', 'Jean', '777')")
+		exec("INSERT INTO ZWAADDRESSBOOKCONTACT VALUES (1, '33612345678', 'Jean', '777'), (2, '4915112345678', NULL, '999')")
 	})
 	callHistory := sqliteFile(t, true, func(exec func(string, ...any)) {
 		exec("CREATE TABLE ZWAAGGREGATECALLEVENT (Z_PK INTEGER PRIMARY KEY, ZVIDEO INTEGER)")
@@ -694,7 +739,9 @@ func TestWhatsApp(t *testing.T) {
 		fixtureFile{domain: whatsAppDomain, path: whatsAppDatabase, flags: 1, content: chatStorage},
 		fixtureFile{domain: whatsAppDomain, path: whatsAppContacts, flags: 1, content: contactsV2},
 		fixtureFile{domain: whatsAppDomain, path: whatsAppCallLog, flags: 1, content: callHistory},
-		fixtureFile{domain: whatsAppDomain, path: avatar, flags: 1, content: jpegBytes})
+		fixtureFile{domain: whatsAppDomain, path: avatar, flags: 1, content: jpegBytes},
+		fixtureFile{domain: whatsAppDomain, path: strings.TrimSuffix(avatar, ".jpg") + ".thumb", flags: 1, content: jpegBytes},
+		fixtureFile{domain: whatsAppDomain, path: maxAvatar, flags: 1, content: jpegBytes})
 	contents, err := buildBackup(t, "correct horse", files).Unlock(t.Context(), "correct horse")
 	if err != nil {
 		t.Fatal(err)
@@ -708,8 +755,10 @@ func TestWhatsApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	anna, maxP, jean := Participant{Address: "+79161234567", Name: "Anna B Cole"}, Participant{Address: "+4915112345678", Name: "~Max"},
-		Participant{Address: "+33612345678", Name: "Jean"}
+	// The system contacts name Anna over what her chat recorded.
+	anna := Participant{Address: "+79161234567", Name: "Anna B Cole", Avatar: avatar}
+	maxP := Participant{Address: "+4915112345678", Name: "~Max", Avatar: maxAvatar}
+	jean := Participant{Address: "+33612345678", Name: "Jean"}
 	wantChats := []Chat{
 		// Its last said is the location: an event and an album link are not.
 		{IDs: []int64{3}, Title: "Climbing", Participants: []Participant{maxP, jean}, Last: at(5)},
@@ -735,6 +784,8 @@ func TestWhatsApp(t *testing.T) {
 		return messages
 	}
 	wantMessages := []Message{
+		{ID: 19, Time: at(3), FromMe: true, Service: "WhatsApp", Kind: "location"},
+		{ID: 18, Time: at(3), FromMe: true, Service: "WhatsApp", Attachments: []Attachment{{Name: "Photo", Missing: true}}},
 		{ID: 3, Time: at(3), Sender: anna.Address, Service: "WhatsApp", Kind: "call", Call: &Call{}},
 		{ID: 2, Time: at(2), FromMe: true, Service: "WhatsApp", Kind: "call",
 			Call: &Call{Duration: 125, Outgoing: true, Answered: true, Video: true}},
@@ -745,7 +796,7 @@ func TestWhatsApp(t *testing.T) {
 	if got := read(1); !reflect.DeepEqual(got, wantMessages) {
 		t.Fatalf("Messages =\n%+v\nwant\n%+v", got, wantMessages)
 	}
-	if both := read(1, 2); len(both) != 5 || both[0].ID != 5 || both[0].Sender != anna.Address {
+	if both := read(1, 2); len(both) != 7 || both[0].ID != 5 || both[0].Sender != anna.Address {
 		t.Fatalf("a person's chats together = %+v", both)
 	}
 	group := read(3)
@@ -855,7 +906,7 @@ func TestNotes(t *testing.T) {
 	}
 	want := []Note{
 		{ID: 3, Title: "Bank", Folder: "Trips", Modified: at(2), Locked: true},
-		{ID: 2, Title: "Rome", Folder: "Trips", Modified: at(1), Text: "Rome\nColosseum \uFFFC at 9 #rome\nПантеон\uFFFC\uFFFC\uFFFC\uFFFC",
+		{ID: 2, Title: "Rome", Folder: "Trips", Modified: at(1), Text: "Colosseum \uFFFC at 9 #rome\nПантеон\uFFFC\uFFFC\uFFFC\uFFFC",
 			Attachments: []Attachment{{Name: "IMG_1.jpeg", Path: image}, {Name: "Table"}, {Name: "ATT-DRAW.jpg", Path: drawing},
 				{Name: "IMG_2.HEIC", Missing: true},
 				{Name: "Scanned document", Pages: []Attachment{{Name: "scan1.jpg", Path: page1}, {Name: "PAGE-2.jpg", Path: page2}}}}},
@@ -869,6 +920,20 @@ func TestNotes(t *testing.T) {
 	}
 	if _, _, err := contents.OpenFile(t.Context(), ComponentNotes, notesDatabase); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("OpenFile of the database: err=%v", err)
+	}
+}
+
+func TestPersonName(t *testing.T) {
+	for recorded, want := range map[string]string{
+		"\u202a+49 151 1234\u20115678\u202c": "",
+		"(916) 123-45-67":                    "",
+		"\u200eAnna Cole\u200f ":             "Anna Cole",
+		"❤️":                                 "❤️",
+		"Office 2":                           "Office 2",
+	} {
+		if got := personName(recorded); got != want {
+			t.Errorf("personName(%q) = %q, want %q", recorded, got, want)
+		}
 	}
 }
 

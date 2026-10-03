@@ -1,18 +1,22 @@
 package iosbackup
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 const (
 	homeDomain       = "HomeDomain"
 	contactsDatabase = "Library/AddressBook/AddressBook.sqlitedb"
+	contactImages    = "Library/AddressBook/AddressBookImages.sqlitedb"
 )
 
 // ABMultiValue.property values.
@@ -22,12 +26,14 @@ const (
 )
 
 type Contact struct {
+	ID           int64          `json:"id"`
 	Name         string         `json:"name"`
 	Organization string         `json:"organization,omitempty"`
 	JobTitle     string         `json:"jobTitle,omitempty"`
 	Note         string         `json:"note,omitempty"`
 	Phones       []LabeledValue `json:"phones,omitempty"`
 	Emails       []LabeledValue `json:"emails,omitempty"`
+	ContactID    int64          `json:"contactId,omitempty"` // its own ID when ContactPhoto has its photo
 }
 
 type LabeledValue struct {
@@ -41,21 +47,24 @@ func (c *Contents) Contacts(ctx context.Context) ([]Contact, error) {
 	if err != nil {
 		return nil, err
 	}
+	photos := c.contactPhotos(ctx)
 	contacts := []Contact{}
 	index := map[int64]int{} // ROWID -> position in contacts
 	for rows, err := range c.rows(ctx, db, `SELECT ROWID, COALESCE(First, ''), COALESCE(Middle, ''), COALESCE(Last, ''),
 		COALESCE(Organization, ''), COALESCE(JobTitle, ''), COALESCE(Note, '') FROM ABPerson ORDER BY ROWID`) {
-		var id int64
 		var first, middle, last string
 		var contact Contact
 		if err == nil {
-			err = rows.Scan(&id, &first, &middle, &last, &contact.Organization, &contact.JobTitle, &contact.Note)
+			err = rows.Scan(&contact.ID, &first, &middle, &last, &contact.Organization, &contact.JobTitle, &contact.Note)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read the address book: %w", err)
 		}
 		contact.Name = strings.Join(strings.Fields(first+" "+middle+" "+last), " ")
-		index[id] = len(contacts)
+		if photos[contact.ID] {
+			contact.ContactID = contact.ID
+		}
+		index[contact.ID] = len(contacts)
 		contacts = append(contacts, contact)
 	}
 	for rows, err := range c.rows(ctx, db, `SELECT v.record_id, v.property, COALESCE(l.value, ''), v.value FROM ABMultiValue v
@@ -101,26 +110,102 @@ func labelName(label string) string {
 	return label
 }
 
-// contactNames maps the contacts' numbers and emails by addressKey to their
-// names. Calls stand without them.
-func (c *Contents) contactNames(ctx context.Context) map[string]string {
+// title is what names a contact: its name, else its company.
+func (c Contact) title() string { return cmp.Or(c.Name, c.Organization) }
+
+// contactsByAddress maps the named contacts by addressKey of their numbers and
+// emails. Calls and chats stand without them.
+func (c *Contents) contactsByAddress(ctx context.Context) map[string]Contact {
 	contacts, err := c.Contacts(ctx)
 	if err != nil {
 		if !errors.Is(err, ErrNotStored) {
-			slog.WarnContext(ctx, "contacts unreadable for the call history", "error", err)
+			slog.WarnContext(ctx, "contacts unreadable for names", "error", err)
 		}
 		return nil
 	}
-	names := map[string]string{}
+	byAddress := map[string]Contact{}
 	for _, contact := range contacts {
-		name := cmp.Or(contact.Name, contact.Organization)
 		for _, value := range append(contact.Phones, contact.Emails...) {
-			if key := addressKey(value.Value); key != "" && name != "" {
-				names[key] = name
+			if key := addressKey(value.Value); key != "" && contact.title() != "" {
+				byAddress[key] = contact
 			}
 		}
 	}
-	return names
+	return byAddress
+}
+
+// contactPhotos is the contacts the images database holds a photo of; the
+// contacts stand without it.
+func (c *Contents) contactPhotos(ctx context.Context) map[int64]bool {
+	db, err := c.domainDatabase(ctx, homeDomain, contactImages)
+	if err != nil {
+		if !errors.Is(err, ErrNotStored) {
+			slog.WarnContext(ctx, "contact photos unreadable", "error", err)
+		}
+		return nil
+	}
+	photos := map[int64]bool{}
+	for rows, err := range c.rows(ctx, db, `SELECT record_id FROM ABThumbnailImage UNION SELECT record_id FROM ABFullSizeImage`) {
+		var id int64
+		if err == nil {
+			err = rows.Scan(&id)
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "contact photos unreadable", "error", err)
+			return nil
+		}
+		photos[id] = true
+	}
+	return photos
+}
+
+// ContactPhoto reads a contact's photo, the cropped thumbnail before the whole
+// image; fs.ErrNotExist when it has none a browser shows.
+func (c *Contents) ContactPhoto(ctx context.Context, id int64) ([]byte, error) {
+	db, err := c.domainDatabase(ctx, homeDomain, contactImages)
+	if err != nil {
+		return nil, err
+	}
+	for rows, err := range c.rows(ctx, db, `SELECT data FROM ABThumbnailImage WHERE record_id = ?1
+		UNION ALL SELECT data FROM ABFullSizeImage WHERE record_id = ?1`, id) {
+		var data []byte
+		if err == nil {
+			err = rows.Scan(&data)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read a contact photo: %w", err)
+		}
+		if image := photoImage(data); image != nil {
+			return image, nil
+		}
+	}
+	return nil, fs.ErrNotExist
+}
+
+// photoImage is the JPEG or PNG a contact photo's data holds, which some iOS
+// versions put a byte or so before; nil for anything else, such as pixels.
+func photoImage(data []byte) []byte {
+	for i := range min(len(data), 16) {
+		if rest := data[i:]; bytes.HasPrefix(rest, []byte("\xff\xd8\xff")) || bytes.HasPrefix(rest, []byte("\x89PNG")) {
+			return rest
+		}
+	}
+	return nil
+}
+
+// personName is a name an app recorded for someone, without the direction
+// marks around it; "" when it is a phone number, however formatted.
+func personName(recorded string) string {
+	name := unmarked(recorded)
+	if strings.ContainsFunc(name, unicode.IsDigit) && !strings.ContainsFunc(name, unicode.IsLetter) {
+		return ""
+	}
+	return name
+}
+
+// unmarked is text without the spaces and direction marks around it.
+func unmarked(text string) string {
+	return strings.TrimFunc(text, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Bidi_Control, r) })
 }
 
 // addressKey matches a phone number by its last nine digits, so a national

@@ -23,6 +23,8 @@ type Participant struct {
 	Address string `json:"address"` // a phone number or an email
 	Name    string `json:"name,omitempty"`
 	Avatar  string `json:"avatar,omitempty"` // a picture among the files
+	// The contact whose photo shows them, when it has one.
+	ContactID int64 `json:"contactId,omitempty"`
 }
 
 // Chat is a conversation as Messages shows it: one per set of people, over
@@ -31,8 +33,9 @@ type Chat struct {
 	IDs          []int64       `json:"ids"`
 	Title        string        `json:"title"` // the group's name, else who is in it
 	Participants []Participant `json:"participants,omitempty"`
-	Avatar       string        `json:"avatar,omitempty"`   // the picture among the attachments
-	Messages     int           `json:"messages,omitempty"` // shown ones, when the app counts them
+	Avatar       string        `json:"avatar,omitempty"`    // a picture among the files
+	ContactID    int64         `json:"contactId,omitempty"` // whose photo shows a chat with one person
+	Messages     int           `json:"messages,omitempty"`  // shown ones, when the app counts them
 	Last         time.Time     `json:"last"`
 	Snippet      string        `json:"snippet,omitempty"` // the last message's text
 }
@@ -77,7 +80,7 @@ type Attachment struct {
 	Path    string       `json:"path,omitempty"` // in its component's domain
 	Name    string       `json:"name"`
 	Size    int64        `json:"size,omitempty"`
-	Missing bool         `json:"missing,omitempty"` // a file the backup does not hold: kept only in iCloud
+	Missing bool         `json:"missing,omitempty"` // a file the backup does not hold
 	Pages   []Attachment `json:"pages,omitempty"`
 }
 
@@ -106,11 +109,12 @@ func (c *Contents) Messages(ctx context.Context, app Component, chatIDs []int64,
 	return nil, fs.ErrNotExist
 }
 
-// attachment is a file a message carries, missing when the backup does not
-// hold it.
-func (c *Contents) attachment(domain, filePath, name string, size int64) Attachment {
+// attachment is a file a message carries, missing unless its component can
+// open it.
+func (c *Contents) attachment(component Component, filePath, name string, size int64) Attachment {
+	domain, ok := fileDomain(component, filePath)
 	return Attachment{Path: filePath, Name: cmp.Or(name, path.Base(filePath)), Size: size,
-		Missing: filePath == "" || !c.stored(domain, filePath)}
+		Missing: !ok || !c.stored(domain, filePath)}
 }
 
 // inList is "?, ?, …" for ids, with them as its query arguments.
@@ -128,7 +132,7 @@ func (c *Contents) smsChats(ctx context.Context) ([]Chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := c.contactNames(ctx)
+	contacts := c.contactsByAddress(ctx)
 	participants := map[int64][]Participant{}
 	for rows, err := range c.rows(ctx, db,
 		`SELECT j.chat_id, h.id FROM chat_handle_join j JOIN handle h ON h.ROWID = j.handle_id ORDER BY j.chat_id, h.ROWID`) {
@@ -140,7 +144,9 @@ func (c *Contents) smsChats(ctx context.Context) ([]Chat, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read the chats: %w", err)
 		}
-		participants[chat] = append(participants[chat], Participant{Address: address, Name: names[addressKey(address)]})
+		contact := contacts[addressKey(address)]
+		participants[chat] = append(participants[chat], Participant{Address: address, Name: contact.title(),
+			ContactID: contact.ContactID})
 	}
 	chats := []Chat{}
 	byPeople := map[string]int{} // peopleKey -> position in chats
@@ -170,8 +176,12 @@ func (c *Contents) smsChats(ctx context.Context) ([]Chat, error) {
 			i = len(chats)
 			byPeople[key] = i
 			people := participants[id]
-			chats = append(chats, Chat{Title: cmp.Or(name, peopleTitle(people), identifier), Participants: people,
-				Last: messageTime(last), Snippet: messageText(text, body)})
+			chat := Chat{Title: cmp.Or(name, peopleTitle(people), identifier), Participants: people,
+				Last: messageTime(last), Snippet: messageText(text, body)}
+			if len(people) == 1 {
+				chat.ContactID = people[0].ContactID
+			}
+			chats = append(chats, chat)
 		}
 		chats[i].IDs = append(chats[i].IDs, id)
 		chats[i].Messages += messages
@@ -252,7 +262,7 @@ func (c *Contents) smsMessages(ctx context.Context, chatIDs []int64, offset, lim
 		// Older records name the file by its absolute path on the phone.
 		filePath := strings.TrimPrefix(strings.TrimPrefix(filename, "~/"), "/var/mobile/")
 		i := index[id]
-		messages[i].Attachments = append(messages[i].Attachments, c.attachment(mediaDomain, filePath, name, size))
+		messages[i].Attachments = append(messages[i].Attachments, c.attachment(ComponentMessages, filePath, name, size))
 	}
 	return messages, nil
 }

@@ -70,10 +70,18 @@ func (c *Contents) OpenFile(ctx context.Context, component Component, filePath s
 		}
 		return c.openPath(ctx, cameraRoll, filePath)
 	}
-	where, ok := fileRoots[component]
-	under := slices.ContainsFunc(where.roots, func(root string) bool { return strings.HasPrefix(filePath, root) })
-	if !ok || !under || where.except != "" && strings.HasPrefix(filePath, where.except) {
+	domain, ok := fileDomain(component, filePath)
+	if !ok {
 		return nil, time.Time{}, fs.ErrNotExist
 	}
-	return c.openPath(ctx, where.domain, filePath)
+	return c.openPath(ctx, domain, filePath)
+}
+
+// fileDomain is the domain of a file among a component's, false for any other.
+func fileDomain(component Component, filePath string) (string, bool) {
+	where, ok := fileRoots[component]
+	if !ok || where.except != "" && strings.HasPrefix(filePath, where.except) {
+		return "", false
+	}
+	return where.domain, slices.ContainsFunc(where.roots, func(root string) bool { return strings.HasPrefix(filePath, root) })
 }

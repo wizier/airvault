@@ -100,8 +100,12 @@ func (s *Service) unlockBackup(ctx context.Context, snapshotID, password string)
 		return nil, &domain.ValidationError{Code: "backup_password_required", Message: "this backup is encrypted — its password is required"}
 	}
 	s.unlocked.unlocking.Lock()
+	defer s.unlocked.unlocking.Unlock()
+	// An unencrypted backup another request opened meanwhile needs no second copy.
+	if contents := s.unlocked.get(snapshotID); contents != nil && !backup.Encrypted {
+		return contents, nil
+	}
 	contents, err := backup.Unlock(ctx, password)
-	s.unlocked.unlocking.Unlock()
 	if errors.Is(err, iosbackup.ErrWrongPassword) {
 		return nil, &domain.ValidationError{Code: "invalid_backup_password", Message: "this password does not unlock the selected backup"}
 	}
@@ -166,7 +170,7 @@ type damageReporter struct {
 
 func (r damageReporter) ReadAt(p []byte, offset int64) (int, error) {
 	n, err := r.ReaderAt.ReadAt(p, offset)
-	if errors.Is(err, objectstore.ErrIntegrity) {
+	if err != nil {
 		r.report(err)
 	}
 	return n, err

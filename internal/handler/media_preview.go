@@ -17,6 +17,8 @@ var nativeImageType = map[string]string{
 	".gif":  "image/gif",
 	".webp": "image/webp",
 	".bmp":  "image/bmp",
+	// WhatsApp's small copy of a profile picture.
+	".thumb": "image/jpeg",
 }
 
 var transcodeImageExt = map[string]bool{".heic": true, ".heif": true}

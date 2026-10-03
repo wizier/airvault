@@ -27,22 +27,8 @@ func (h *Handler) listMedia(c *echo.Context) error {
 	return c.JSON(http.StatusOK, deviceFilesResponse{Entries: entries})
 }
 
-func (h *Handler) downloadMedia(c *echo.Context) error {
-	devPath := c.QueryParam("path")
-	download, err := h.svc.OpenMediaDownload(c.Request().Context(), c.Param("udid"), devPath)
-	if err != nil {
-		return err
-	}
-	return serveDownload(c, download, path.Base(devPath))
-}
-
-func (h *Handler) previewMedia(c *echo.Context) error {
-	devPath := c.QueryParam("path")
-	download, err := h.svc.OpenMediaDownload(c.Request().Context(), c.Param("udid"), devPath)
-	if err != nil {
-		return err
-	}
-	return streamPreview(c, download, path.Base(devPath))
+func (h *Handler) openMedia(c *echo.Context, filePath string) (deviceDownload, error) {
+	return h.svc.OpenMediaDownload(c.Request().Context(), c.Param("udid"), filePath)
 }
 
 type deviceDownload interface {
@@ -50,6 +36,29 @@ type deviceDownload interface {
 	Size() int64
 	ModTime() time.Time
 	Close()
+}
+
+// serveFile answers with the file open finds at the request's path, as serve
+// sends it: a download, a preview or its facts.
+func serveFile(open func(*echo.Context, string) (deviceDownload, error),
+	serve func(*echo.Context, deviceDownload, string) error) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		filePath := c.QueryParam("path")
+		download, err := open(c, filePath)
+		if err != nil {
+			return err
+		}
+		return serve(c, download, path.Base(filePath))
+	}
+}
+
+func serveStat(c *echo.Context, download deviceDownload, _ string) error {
+	defer download.Close()
+	stat := service.DeviceFileStat{Size: download.Size()}
+	if modified := download.ModTime(); !modified.IsZero() {
+		stat.Modified = new(modified.Unix())
+	}
+	return c.JSON(http.StatusOK, stat)
 }
 
 // A client disconnect closes the download at once, which unblocks an in-flight

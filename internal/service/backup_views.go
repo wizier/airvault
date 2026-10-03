@@ -209,6 +209,7 @@ func (s *Service) BackupPhotoThumbs(ctx context.Context, snapshotID string, path
 		return nil, &domain.ValidationError{Code: "too_many_paths", Message: "too many paths in one batch"}
 	}
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) (map[string][]byte, error) {
+		// A library that fails to read is not kept: fail the batch once, not per photo.
 		if _, err := c.Photos(ctx); err != nil {
 			return nil, err
 		}
@@ -267,4 +268,8 @@ func (s *Service) BackupNotes(ctx context.Context, snapshotID string) ([]iosback
 
 func (s *Service) BackupContacts(ctx context.Context, snapshotID string) ([]iosbackup.Contact, error) {
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Contact, error) { return c.Contacts(ctx) })
+}
+
+func (s *Service) BackupContactPhoto(ctx context.Context, snapshotID string, contactID int64) ([]byte, error) {
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]byte, error) { return c.ContactPhoto(ctx, contactID) })
 }

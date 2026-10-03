@@ -53,13 +53,13 @@ func (h *Handler) Router() *echo.Echo {
 	e.Use(echoMiddleware.GzipWithConfig(echoMiddleware.GzipConfig{
 		// SSE and the install progress stream must flush immediately; downloads,
 		// previews and wallpapers carry an exact Content-Length and Range that
-		// compression would void.
+		// compression would void, and photos are compressed already.
 		Skipper: func(c *echo.Context) bool {
 			p := c.Request().URL.Path
 			return p == "/api/events" || strings.HasSuffix(p, "/console") ||
 				strings.HasSuffix(p, "/apps/install") ||
 				strings.HasSuffix(p, "/download") || strings.HasSuffix(p, "/preview") ||
-				strings.HasSuffix(p, "/wallpaper")
+				strings.HasSuffix(p, "/wallpaper") || strings.HasSuffix(p, "/photo")
 		},
 	}))
 
@@ -89,6 +89,7 @@ func (h *Handler) Router() *echo.Echo {
 	backup.POST("/unlock", h.unlockBackup)
 	backup.GET("/components", backupJSON("components", h.svc.BackupComponents))
 	backup.GET("/contacts", backupJSON("contacts", h.svc.BackupContacts))
+	backup.GET("/contacts/:contactId/photo", h.backupContactPhoto)
 	backup.GET("/calls", backupJSON("calls", h.svc.BackupCalls))
 	backup.GET("/notes", backupJSON("notes", h.svc.BackupNotes))
 	backup.GET("/photos/gallery", h.backupPhotos)
@@ -98,9 +99,9 @@ func (h *Handler) Router() *echo.Echo {
 	// The chats of messages and whatsapp; the files of every component.
 	backup.GET("/:component/chats", h.backupChats)
 	backup.GET("/:component/chats/messages", h.backupMessages)
-	backup.GET("/:component/files/stat", h.backupFileStat)
-	backup.GET("/:component/files/download", h.downloadBackupFile)
-	backup.GET("/:component/files/preview", h.previewBackupFile)
+	backup.GET("/:component/files/stat", serveFile(h.openBackupFile, serveStat))
+	backup.GET("/:component/files/download", serveFile(h.openBackupFile, serveDownload))
+	backup.GET("/:component/files/preview", serveFile(h.openBackupFile, streamPreview))
 
 	api.GET("/pair/state", h.getPairingState)
 	api.POST("/pair/trust", h.startPairing)
@@ -127,11 +128,11 @@ func (h *Handler) Router() *echo.Echo {
 	device.GET("/apps/:bundle/files", h.listAppFiles)
 	device.DELETE("/apps/:bundle/files", h.deleteAppFile)
 	device.GET("/apps/:bundle/files/stat", h.appFileStat)
-	device.GET("/apps/:bundle/files/download", h.downloadAppFile)
-	device.GET("/apps/:bundle/files/preview", h.previewAppFile)
+	device.GET("/apps/:bundle/files/download", serveFile(h.openAppFile, serveDownload))
+	device.GET("/apps/:bundle/files/preview", serveFile(h.openAppFile, streamPreview))
 	device.GET("/media", h.listMedia)
-	device.GET("/media/download", h.downloadMedia)
-	device.GET("/media/preview", h.previewMedia)
+	device.GET("/media/download", serveFile(h.openMedia, serveDownload))
+	device.GET("/media/preview", serveFile(h.openMedia, streamPreview))
 	device.GET("/media/gallery", h.galleryList)
 	device.POST("/media/thumbs", h.mediaThumbs)
 	device.GET("/media/stat", h.mediaStat)

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"path"
 
 	"github.com/wizier/airvault/internal/service"
 
@@ -69,22 +68,8 @@ func (h *Handler) appFileStat(c *echo.Context) error {
 	return c.JSON(http.StatusOK, stat)
 }
 
-func (h *Handler) downloadAppFile(c *echo.Context) error {
-	devPath := c.QueryParam("path")
-	download, err := h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
-	if err != nil {
-		return err
-	}
-	return serveDownload(c, download, path.Base(devPath))
-}
-
-func (h *Handler) previewAppFile(c *echo.Context) error {
-	devPath := c.QueryParam("path")
-	download, err := h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), devPath)
-	if err != nil {
-		return err
-	}
-	return streamPreview(c, download, path.Base(devPath))
+func (h *Handler) openAppFile(c *echo.Context, filePath string) (deviceDownload, error) {
+	return h.svc.OpenAppFileDownload(c.Request().Context(), c.Param("udid"), c.Param("bundle"), filePath)
 }
 
 func (h *Handler) deleteAppFile(c *echo.Context) error {
