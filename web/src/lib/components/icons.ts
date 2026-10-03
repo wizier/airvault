@@ -31,7 +31,9 @@ import {
   Lock,
   LockOpen,
   LogOut,
+  MessageCircle,
   MessagesSquare,
+  NotebookPen,
   Moon,
   Pause,
   Phone,
@@ -99,6 +101,8 @@ export const ICONS = {
   callMissed: PhoneMissed,
   callOutgoing: PhoneOutgoing,
   messages: MessagesSquare,
+  chat: MessageCircle,
+  notes: NotebookPen,
   alert: TriangleAlert,
   info: Info,
   plug: Usb, // pairing is over USB

@@ -80,3 +80,14 @@ export function formatSeconds(secs: number): string {
   if (m > 0) return `${m}m ${secs}s`;
   return `${secs}s`;
 }
+
+/** Up to two letters for a name without a picture; a number gets "#". A "~" marks a name its owner set. */
+export function initials(name: string): string {
+  const letters = name
+    .replace(/^~/, '')
+    .split(/\s+/)
+    .filter((word) => /^\p{L}/u.test(word))
+    .slice(0, 2)
+    .map((word) => word[0].toUpperCase());
+  return letters.join('') || '#';
+}

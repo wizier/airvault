@@ -1,17 +1,16 @@
 package iosbackup
 
 import (
-	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,8 +18,6 @@ import (
 	"howett.net/plist"
 	_ "modernc.org/sqlite"
 	"modernc.org/sqlite/vfs"
-
-	"github.com/wizier/airvault/internal/objectstore"
 )
 
 // ErrNotStored is a listed file whose content the backup does not hold.
@@ -32,7 +29,6 @@ var ErrClosed = errors.New("backup contents are closed")
 // listedFile is a Manifest.db record.
 type listedFile struct {
 	domain, path string
-	regular      bool
 	modified     time.Time // zero when the backup never recorded it
 	id           string
 	wrappedKey   []byte // encrypted backups only
@@ -51,21 +47,23 @@ type Contents struct {
 	fsys     *vfs.FS
 	vfs      string
 	manifest *sql.DB
-	closed   atomic.Bool
+	queries  *gate // Close waits for the queries in flight
 
 	mu        sync.Mutex
-	databases map[string]*sql.DB // by VFS name, opened on first use
-	// SQLite reports a failed open only as CANTOPEN; the cause waits here.
-	openErrs sync.Map // VFS name -> error
+	databases map[string]*sql.DB    // by VFS name, opened on first use
+	fileErr   atomic.Pointer[error] // the cause of a failed open or read, for cause
 
 	photosMu sync.Mutex // held while the library is read, so it is read once
 	photos   *PhotoLibrary
+
+	whatsAppMu sync.Mutex // held while WhatsApp's people are read, likewise
+	whatsApp   *waPeople
 }
 
 // Unlock opens the backup's file list; an encrypted backup needs its password,
 // and a wrong one is ErrWrongPassword.
 func (b *Backup) Unlock(ctx context.Context, password string) (*Contents, error) {
-	contents := &Contents{backup: b, databases: map[string]*sql.DB{}}
+	contents := &Contents{backup: b, queries: newGate(), databases: map[string]*sql.DB{}}
 	if b.Encrypted {
 		var err error
 		if contents.keys, err = b.unlockKeys(password); err != nil {
@@ -86,7 +84,7 @@ func (b *Backup) Unlock(ctx context.Context, password string) (*Contents, error)
 func (c *Contents) Source() string { return c.backup.Source() }
 
 func (c *Contents) Close() error {
-	if c.closed.Swap(true) || c.manifest == nil { // a zero Contents was never unlocked
+	if c.manifest == nil || !c.queries.close() { // a zero Contents was never unlocked
 		return nil
 	}
 	c.mu.Lock()
@@ -100,19 +98,19 @@ func (c *Contents) Close() error {
 
 // openDatabase keeps one connection for the life of the Contents: a new one
 // would verify its file from the start again. Reading the schema opens the
-// file, so a failure shows here with its cause.
+// file, so a failure shows here with its cause. Large sorts stay in memory:
+// the VFS has no temporary files to spill them to.
 func (c *Contents) openDatabase(ctx context.Context, name string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "file:"+url.PathEscape(name)+"?vfs="+c.vfs+"&mode=ro&immutable=1")
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(name)+"?vfs="+c.vfs+"&mode=ro&immutable=1&_pragma=temp_store(memory)")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := c.query(ctx, db, nil, "SELECT 1 FROM sqlite_master WHERE 0"); err != nil {
-		_ = db.Close()
-		if cause, ok := c.openErrs.LoadAndDelete(name); ok {
-			err = fmt.Errorf("%w: %w", err, cause.(error))
+	for _, err := range c.rows(ctx, db, "SELECT count(*) FROM sqlite_master") {
+		if err != nil {
+			_ = db.Close()
+			return nil, err
 		}
-		return nil, err
 	}
 	return db, nil
 }
@@ -133,49 +131,112 @@ func (c *Contents) domainDatabase(ctx context.Context, domain, path string) (*sq
 	return db, nil
 }
 
-func (c *Contents) query(ctx context.Context, db *sql.DB, scan func(*sql.Rows) error, query string, args ...any) error {
-	if c.closed.Load() {
-		return ErrClosed
-	}
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if err := scan(rows); err != nil {
-			return err
+// rows runs a query and yields its rows; a failure ends them, after Close it
+// is ErrClosed.
+func (c *Contents) rows(ctx context.Context, db *sql.DB, query string, args ...any) iter.Seq2[*sql.Rows, error] {
+	return func(yield func(*sql.Rows, error) bool) {
+		if !c.queries.enter() {
+			yield(nil, ErrClosed)
+			return
+		}
+		defer c.queries.leave()
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			yield(nil, c.cause(err))
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			if !yield(rows, nil) {
+				return
+			}
+		}
+		if err := rows.Err(); err != nil {
+			yield(nil, c.cause(err))
 		}
 	}
-	return rows.Err()
+}
+
+// cause adds to a SQLite error the Go error behind it: SQLite reports a failed
+// open or read only as CANTOPEN or IOERR.
+func (c *Contents) cause(err error) error {
+	if cause := c.fileErr.Swap(nil); cause != nil {
+		return fmt.Errorf("%w: %w", err, *cause)
+	}
+	return err
+}
+
+// gate admits work until it closes; closing waits for the work admitted.
+type gate struct {
+	mu     sync.Mutex
+	idle   *sync.Cond
+	active int
+	closed bool
+}
+
+func newGate() *gate {
+	g := &gate{}
+	g.idle = sync.NewCond(&g.mu)
+	return g
+}
+
+// enter admits one more, unless the gate is closed.
+func (g *gate) enter() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.closed {
+		g.active++
+	}
+	return !g.closed
+}
+
+func (g *gate) leave() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.active--; g.active == 0 {
+		g.idle.Broadcast()
+	}
+}
+
+// close admits no more and waits for those admitted; false when it already was.
+func (g *gate) close() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	open := !g.closed
+	g.closed = true
+	for g.active > 0 {
+		g.idle.Wait()
+	}
+	return open
 }
 
 // stat is fs.ErrNotExist for a path the backup does not list.
 func (c *Contents) stat(ctx context.Context, domain, path string) (listedFile, error) {
-	var file listedFile
-	found := false
-	err := c.query(ctx, c.manifest, func(rows *sql.Rows) error {
-		var err error
-		file, err = scanFile(rows)
-		found = true
-		return err
-	}, "SELECT fileID, domain, relativePath, flags, file FROM Files WHERE domain = ? AND relativePath = ?", domain, path)
-	if err == nil && !found {
-		err = fs.ErrNotExist
+	for rows, err := range c.rows(ctx, c.manifest,
+		"SELECT fileID, domain, relativePath, flags, file FROM Files WHERE domain = ? AND relativePath = ?", domain, path) {
+		if err != nil {
+			return listedFile{}, err
+		}
+		return scanFile(rows)
 	}
-	return file, err
+	return listedFile{}, fs.ErrNotExist
 }
 
-// storedPaths is every regular file of domain the backup lists.
-func (c *Contents) storedPaths(ctx context.Context, domain string) (map[string]bool, error) {
+// storedPaths is every regular file of domain the backup lists under prefix.
+func (c *Contents) storedPaths(ctx context.Context, domain, prefix string) (map[string]bool, error) {
 	paths := map[string]bool{}
-	err := c.query(ctx, c.manifest, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, c.manifest, `SELECT relativePath FROM Files
+		WHERE domain = ? AND flags = 1 AND substr(relativePath, 1, length(?)) = ?`, domain, prefix, prefix) {
 		var path string
-		err := rows.Scan(&path)
+		if err == nil {
+			err = rows.Scan(&path)
+		}
+		if err != nil {
+			return nil, err
+		}
 		paths[path] = true
-		return err
-	}, "SELECT relativePath FROM Files WHERE domain = ? AND flags = 1", domain)
-	return paths, err
+	}
+	return paths, nil
 }
 
 func scanFile(rows *sql.Rows) (listedFile, error) {
@@ -188,7 +249,6 @@ func scanFile(rows *sql.Rows) (listedFile, error) {
 	if len(file.id) != 40 {
 		return listedFile{}, fmt.Errorf("invalid file id %q in Manifest.db", file.id)
 	}
-	file.regular = flags == 1
 	record, err := parseMBFile(blob)
 	if err != nil {
 		return listedFile{}, fmt.Errorf("%s/%s: %w", file.domain, file.path, err)
@@ -249,10 +309,10 @@ type Reader interface {
 	Close() error
 }
 
-// holds reports a regular file whose content is in the snapshot.
+// holds reports a file whose content is in the snapshot; a folder has none.
 func (c *Contents) holds(file listedFile) bool {
 	_, ok := c.backup.FileSize(file.key())
-	return file.regular && ok
+	return ok
 }
 
 func (f listedFile) key() string { return f.id[:2] + "/" + f.id }
@@ -302,121 +362,27 @@ func (c *Contents) openPath(ctx context.Context, domain, path string) (Reader, t
 	return reader, file.modified, err
 }
 
-// backupFS serves SQLite the backup's databases.
-type backupFS struct{ contents *Contents }
+// Core Data stores time as seconds since 2001-01-01 UTC.
+const coreDataEpoch = 978307200
 
-func (f backupFS) Open(name string) (fs.File, error) {
-	var reader Reader
-	var err error
-	if name == manifestDB {
-		// Its own key is absent before iOS 10.2, when it was not encrypted.
-		reader, err = f.contents.openStored(manifestDB, f.contents.backup.manifestKey)
-	} else {
-		reader, err = f.contents.openListed(name)
+// coreDataTime reads a Core Data timestamp; zero is none.
+func coreDataTime(value sql.NullFloat64) time.Time {
+	if !value.Valid || value.Float64 == 0 {
+		return time.Time{}
 	}
-	if err != nil {
-		f.contents.openErrs.Store(name, err)
-		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
-	}
-	return &dbFile{SectionReader: io.NewSectionReader(reader, 0, reader.Size()), reader: reader, name: name}, nil
+	return time.Unix(coreDataEpoch, 0).Add(time.Duration(value.Float64 * float64(time.Second))).UTC()
 }
 
-func (c *Contents) openListed(name string) (Reader, error) {
-	domain, path, ok := strings.Cut(name, "/")
-	if !ok {
-		return nil, fs.ErrNotExist
-	}
-	// SQLite opens files with no context of its own; this bounds the lookup.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	reader, _, err := c.openPath(ctx, domain, path)
-	return reader, err
+// fileKey is where the snapshot keeps a file the backup lists: its file ID is
+// the SHA-1 of "<domain>-<path>".
+func fileKey(domain, filePath string) string {
+	sum := sha1.Sum([]byte(domain + "-" + filePath))
+	id := hex.EncodeToString(sum[:])
+	return id[:2] + "/" + id
 }
 
-type dbFile struct {
-	*io.SectionReader
-	reader Reader
-	name   string
-}
-
-func (f *dbFile) Stat() (fs.FileInfo, error) { return dbFileInfo{f.name, f.Size()}, nil }
-
-func (f *dbFile) Close() error { return f.reader.Close() }
-
-type dbFileInfo struct {
-	name string
-	size int64
-}
-
-func (i dbFileInfo) Name() string       { return i.name }
-func (i dbFileInfo) Size() int64        { return i.size }
-func (i dbFileInfo) Mode() fs.FileMode  { return 0o444 }
-func (i dbFileInfo) ModTime() time.Time { return time.Time{} }
-func (i dbFileInfo) IsDir() bool        { return false }
-func (i dbFileInfo) Sys() any           { return nil }
-
-// cbcFile decrypts content stored as AES-256-CBC with a zero IV at any offset:
-// plaintext block i is D(C[i]) xor C[i-1].
-type cbcFile struct {
-	stored *objectstore.File
-	block  cipher.Block
-	size   int64
-}
-
-// The plaintext ends where the PKCS#7 padding of the last block says: the size
-// Manifest.db lists is stale for content that changed while it was backed up.
-func newCBCFile(stored *objectstore.File, keys classKeys, wrappedKey []byte) (*cbcFile, error) {
-	key, err := keys.unwrap(wrappedKey)
-	if err != nil {
-		return nil, fmt.Errorf("unwrap file key: %w", err)
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	if stored.Size() == 0 || stored.Size()%aes.BlockSize != 0 {
-		return nil, fmt.Errorf("stored %d bytes are not whole AES blocks", stored.Size())
-	}
-	file := &cbcFile{stored: stored, block: block, size: stored.Size()}
-	last := make([]byte, aes.BlockSize)
-	if _, err := file.ReadAt(last, file.size-aes.BlockSize); err != nil {
-		return nil, err
-	}
-	pad := int(last[aes.BlockSize-1])
-	if pad < 1 || pad > aes.BlockSize || !bytes.Equal(last[aes.BlockSize-pad:], bytes.Repeat([]byte{byte(pad)}, pad)) {
-		return nil, errors.New("encrypted content has no valid padding")
-	}
-	file.size -= int64(pad)
-	return file, nil
-}
-
-func (f *cbcFile) Size() int64 { return f.size }
-
-func (f *cbcFile) Close() error { return f.stored.Close() }
-
-func (f *cbcFile) ReadAt(p []byte, offset int64) (int, error) {
-	if offset >= f.size {
-		return 0, io.EOF
-	}
-	end := min(offset+int64(len(p)), f.size)
-	first := offset / aes.BlockSize * aes.BlockSize
-	last := (end + aes.BlockSize - 1) / aes.BlockSize * aes.BlockSize
-	if end == f.size {
-		last = f.stored.Size() // the padding too, so the stored object is verified
-	}
-	from := max(first-aes.BlockSize, 0)
-	buffer := make([]byte, last-from)
-	if _, err := f.stored.ReadAt(buffer, from); err != nil {
-		return 0, err
-	}
-	iv, blocks := make([]byte, aes.BlockSize), buffer
-	if first > 0 {
-		iv, blocks = buffer[:aes.BlockSize], buffer[aes.BlockSize:]
-	}
-	cipher.NewCBCDecrypter(f.block, iv).CryptBlocks(blocks, blocks)
-	n := copy(p, blocks[offset-first:end-first])
-	if n < len(p) {
-		return n, io.EOF
-	}
-	return n, nil
+// stored reports a file the backup lists and the snapshot holds.
+func (c *Contents) stored(domain, filePath string) bool {
+	_, ok := c.backup.FileSize(fileKey(domain, filePath))
+	return ok
 }

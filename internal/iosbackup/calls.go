@@ -4,11 +4,8 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"log/slog"
 	"math"
-	"strings"
 	"time"
 )
 
@@ -27,11 +24,11 @@ const callTypeVideo = 8
 type Call struct {
 	Address  string    `json:"address,omitempty"` // a phone number or an email; "" when withheld
 	Name     string    `json:"name,omitempty"`    // from the contacts, else what the call recorded
-	Time     time.Time `json:"time"`
-	Duration int       `json:"duration"` // seconds
+	Time     time.Time `json:"time,omitzero"`     // none for a call a chat records
+	Duration int       `json:"duration"`          // seconds
 	Outgoing bool      `json:"outgoing,omitempty"`
 	Answered bool      `json:"answered,omitempty"`
-	Service  string    `json:"service"` // "phone" | "facetime" | an app's bundle ID
+	Service  string    `json:"service,omitempty"` // "phone" | "facetime" | an app's bundle ID
 	Video    bool      `json:"video,omitempty"`
 }
 
@@ -43,14 +40,18 @@ func (c *Contents) Calls(ctx context.Context) ([]Call, error) {
 	}
 	names := c.contactNames(ctx)
 	calls := []Call{}
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, `SELECT COALESCE(CAST(ZADDRESS AS TEXT), ''), COALESCE(ZNAME, ''), ZDATE,
+		ZDURATION, COALESCE(ZORIGINATED, 0) != 0, COALESCE(ZANSWERED, 0) != 0, COALESCE(ZSERVICE_PROVIDER, ''),
+		COALESCE(ZCALLTYPE, 0) FROM ZCALLRECORD ORDER BY ZDATE DESC`) {
 		var call Call
 		var provider string
 		var callType int
 		var taken, duration sql.NullFloat64
-		if err := rows.Scan(&call.Address, &call.Name, &taken, &duration, &call.Outgoing, &call.Answered,
-			&provider, &callType); err != nil {
-			return err
+		if err == nil {
+			err = rows.Scan(&call.Address, &call.Name, &taken, &duration, &call.Outgoing, &call.Answered, &provider, &callType)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the call history: %w", err)
 		}
 		call.Time = coreDataTime(taken)
 		call.Duration = int(math.Round(duration.Float64))
@@ -64,49 +65,6 @@ func (c *Contents) Calls(ctx context.Context) ([]Call, error) {
 			call.Service = provider
 		}
 		calls = append(calls, call)
-		return nil
-	}, `SELECT COALESCE(CAST(ZADDRESS AS TEXT), ''), COALESCE(ZNAME, ''), ZDATE, ZDURATION,
-		COALESCE(ZORIGINATED, 0) != 0, COALESCE(ZANSWERED, 0) != 0, COALESCE(ZSERVICE_PROVIDER, ''),
-		COALESCE(ZCALLTYPE, 0) FROM ZCALLRECORD ORDER BY ZDATE DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("read the call history: %w", err)
 	}
 	return calls, nil
-}
-
-// contactNames maps the contacts' numbers and emails by addressKey to their
-// names. Calls stand without them.
-func (c *Contents) contactNames(ctx context.Context) map[string]string {
-	contacts, err := c.Contacts(ctx)
-	if err != nil {
-		if !errors.Is(err, ErrNotStored) {
-			slog.WarnContext(ctx, "contacts unreadable for the call history", "error", err)
-		}
-		return nil
-	}
-	names := map[string]string{}
-	for _, contact := range contacts {
-		name := cmp.Or(contact.Name, contact.Organization)
-		for _, value := range append(contact.Phones, contact.Emails...) {
-			if key := addressKey(value.Value); key != "" && name != "" {
-				names[key] = name
-			}
-		}
-	}
-	return names
-}
-
-// addressKey matches a phone number by its last ten digits, so +7 916…,
-// 8 916… and 916… are one number; an email matches case-insensitively.
-func addressKey(address string) string {
-	if strings.Contains(address, "@") {
-		return strings.ToLower(address)
-	}
-	digits := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, address)
-	return digits[max(len(digits)-10, 0):]
 }

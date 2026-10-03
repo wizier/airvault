@@ -4,14 +4,10 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/sha1"
-	"database/sql"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path"
-	"slices"
 	"strings"
 	"time"
 )
@@ -26,6 +22,7 @@ const (
 type Participant struct {
 	Address string `json:"address"` // a phone number or an email
 	Name    string `json:"name,omitempty"`
+	Avatar  string `json:"avatar,omitempty"` // a picture among the files
 }
 
 // Chat is a conversation as Messages shows it: one per set of people, over
@@ -34,11 +31,10 @@ type Chat struct {
 	IDs          []int64       `json:"ids"`
 	Title        string        `json:"title"` // the group's name, else who is in it
 	Participants []Participant `json:"participants,omitempty"`
-	Messages     int           `json:"messages"`
+	Avatar       string        `json:"avatar,omitempty"`   // the picture among the attachments
+	Messages     int           `json:"messages,omitempty"` // shown ones, when the app counts them
 	Last         time.Time     `json:"last"`
 	Snippet      string        `json:"snippet,omitempty"` // the last message's text
-	name         string        // the group's own name
-	identifier   string        // the latest chat's address or group ID
 }
 
 type Message struct {
@@ -47,45 +43,125 @@ type Message struct {
 	Time        time.Time    `json:"time"`
 	FromMe      bool         `json:"fromMe,omitempty"`
 	Sender      string       `json:"sender,omitempty"`  // the address an incoming one came from
-	Service     string       `json:"service,omitempty"` // "iMessage" | "SMS" | "RCS"
+	Service     string       `json:"service,omitempty"` // "iMessage" | "SMS" | "RCS" | "WhatsApp"
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Kind is "" for what was written; else "call", "event", "location",
+	// "contact" (Text names it), "poll" (Text asks), "deleted", "waiting",
+	// "viewOncePhoto", "viewOnceVideo" or "viewOnceVoice".
+	Kind     string     `json:"kind,omitempty"`
+	Call     *Call      `json:"call,omitempty"`
+	Event    *ChatEvent `json:"event,omitempty"`
+	Location *Location  `json:"location,omitempty"`
 }
 
+// ChatEvent is a line a chat shows about itself: Code is "renamed" (Text is
+// the name), "added", "removed", "left", "joined", "created", "photo",
+// "photoRemoved", "description", "timer" (Text is its seconds), "number",
+// "encrypted" or "security". A nil Actor is the backup's owner.
+type ChatEvent struct {
+	Code    string        `json:"code"`
+	Actor   *Participant  `json:"actor,omitempty"`
+	Targets []Participant `json:"targets,omitempty"`
+	Text    string        `json:"text,omitempty"`
+}
+
+type Location struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Name      string  `json:"name,omitempty"`
+}
+
+// Attachment is a file a message or a note carries. A table or a link in a
+// note has no file and only a name, a scanned document its pages.
 type Attachment struct {
-	Path    string `json:"path,omitempty"` // in MediaDomain
-	Name    string `json:"name"`
-	Type    string `json:"type,omitempty"` // MIME
-	Size    int64  `json:"size"`
-	Missing bool   `json:"missing,omitempty"` // not in the backup: kept only in iCloud
+	Path    string       `json:"path,omitempty"` // in its component's domain
+	Name    string       `json:"name"`
+	Size    int64        `json:"size,omitempty"`
+	Missing bool         `json:"missing,omitempty"` // a file the backup does not hold: kept only in iCloud
+	Pages   []Attachment `json:"pages,omitempty"`
 }
 
-// Chats lists the conversations, the latest first.
-func (c *Contents) Chats(ctx context.Context) ([]Chat, error) {
+// Chats lists an app's conversations, the latest first.
+func (c *Contents) Chats(ctx context.Context, app Component) ([]Chat, error) {
+	switch app {
+	case ComponentMessages:
+		return c.smsChats(ctx)
+	case ComponentWhatsApp:
+		return c.whatsAppChats(ctx)
+	}
+	return nil, fs.ErrNotExist
+}
+
+// Messages pages a conversation's messages, the latest first; chatIDs are the
+// app's chats it is made of.
+func (c *Contents) Messages(ctx context.Context, app Component, chatIDs []int64, offset, limit int) ([]Message, error) {
+	switch {
+	case len(chatIDs) == 0:
+		return []Message{}, nil
+	case app == ComponentMessages:
+		return c.smsMessages(ctx, chatIDs, offset, limit)
+	case app == ComponentWhatsApp:
+		return c.whatsAppMessages(ctx, chatIDs, offset, limit)
+	}
+	return nil, fs.ErrNotExist
+}
+
+// attachment is a file a message carries, missing when the backup does not
+// hold it.
+func (c *Contents) attachment(domain, filePath, name string, size int64) Attachment {
+	return Attachment{Path: filePath, Name: cmp.Or(name, path.Base(filePath)), Size: size,
+		Missing: filePath == "" || !c.stored(domain, filePath)}
+}
+
+// inList is "?, ?, …" for ids, with them as its query arguments.
+func inList(ids []int64) (string, []any) {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return "?" + strings.Repeat(", ?", len(ids)-1), args
+}
+
+// smsChats lists the Messages app's conversations, the latest first.
+func (c *Contents) smsChats(ctx context.Context) ([]Chat, error) {
 	db, err := c.domainDatabase(ctx, homeDomain, messagesDatabase)
 	if err != nil {
 		return nil, err
 	}
 	names := c.contactNames(ctx)
 	participants := map[int64][]Participant{}
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db,
+		`SELECT j.chat_id, h.id FROM chat_handle_join j JOIN handle h ON h.ROWID = j.handle_id ORDER BY j.chat_id, h.ROWID`) {
 		var chat int64
 		var address string
-		err := rows.Scan(&chat, &address)
+		if err == nil {
+			err = rows.Scan(&chat, &address)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the chats: %w", err)
+		}
 		participants[chat] = append(participants[chat], Participant{Address: address, Name: names[addressKey(address)]})
-		return err
-	}, `SELECT j.chat_id, h.id FROM chat_handle_join j JOIN handle h ON h.ROWID = j.handle_id ORDER BY j.chat_id, h.ROWID`)
-	if err != nil {
-		return nil, fmt.Errorf("read the chats: %w", err)
 	}
 	chats := []Chat{}
 	byPeople := map[string]int{} // peopleKey -> position in chats
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, `WITH ranked AS (
+			SELECT j.chat_id, j.message_id, j.message_date, COUNT(*) OVER (PARTITION BY j.chat_id) AS messages,
+				ROW_NUMBER() OVER (PARTITION BY j.chat_id ORDER BY j.message_date DESC, j.message_id DESC) AS n
+			FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id
+			WHERE COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0)
+		SELECT c.ROWID, COALESCE(c.display_name, ''), COALESCE(c.chat_identifier, ''), r.messages, r.message_date,
+			COALESCE(m.text, ''), m.attributedBody
+		FROM chat c JOIN ranked r ON r.chat_id = c.ROWID AND r.n = 1 JOIN message m ON m.ROWID = r.message_id
+		ORDER BY r.message_date DESC`) {
 		var id, last int64
 		var name, identifier, text string
 		var messages int
 		var body []byte
-		if err := rows.Scan(&id, &name, &identifier, &messages, &last, &text, &body); err != nil {
-			return err
+		if err == nil {
+			err = rows.Scan(&id, &name, &identifier, &messages, &last, &text, &body)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the chats: %w", err)
 		}
 		// Rows come latest first, so a conversation's first one has its last message.
 		key := peopleKey(id, participants[id])
@@ -93,76 +169,57 @@ func (c *Contents) Chats(ctx context.Context) ([]Chat, error) {
 		if !ok {
 			i = len(chats)
 			byPeople[key] = i
-			chats = append(chats, Chat{Participants: participants[id], Last: messageTime(last),
-				Snippet: messageText(text, body), identifier: identifier})
+			people := participants[id]
+			chats = append(chats, Chat{Title: cmp.Or(name, peopleTitle(people), identifier), Participants: people,
+				Last: messageTime(last), Snippet: messageText(text, body)})
 		}
-		chat := &chats[i]
-		chat.IDs = append(chat.IDs, id)
-		chat.Messages += messages
-		chat.name = cmp.Or(chat.name, name)
-		return nil
-	}, `WITH ranked AS (
-			SELECT chat_id, message_id, message_date, COUNT(*) OVER (PARTITION BY chat_id) AS messages,
-				ROW_NUMBER() OVER (PARTITION BY chat_id ORDER BY message_date DESC, message_id DESC) AS n
-			FROM chat_message_join)
-		SELECT c.ROWID, COALESCE(c.display_name, ''), COALESCE(c.chat_identifier, ''), r.messages, r.message_date, COALESCE(m.text, ''), m.attributedBody
-		FROM chat c JOIN ranked r ON r.chat_id = c.ROWID AND r.n = 1 JOIN message m ON m.ROWID = r.message_id
-		ORDER BY r.message_date DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("read the chats: %w", err)
-	}
-	for i := range chats {
-		chat := &chats[i]
-		people := make([]string, len(chat.Participants))
-		for j, p := range chat.Participants {
-			people[j] = cmp.Or(p.Name, p.Address)
-		}
-		chat.Title = cmp.Or(chat.name, strings.Join(people, ", "), chat.identifier)
+		chats[i].IDs = append(chats[i].IDs, id)
+		chats[i].Messages += messages
 	}
 	return chats, nil
 }
 
-// peopleKey names who is in a chat, however their addresses are written; a
-// chat with nobody recorded stands alone.
-func peopleKey(id int64, people []Participant) string {
-	keys := make([]string, len(people))
+// peopleTitle names a chat by who is in it.
+func peopleTitle(people []Participant) string {
+	names := make([]string, len(people))
 	for i, p := range people {
-		keys[i] = addressKey(p.Address)
+		names[i] = cmp.Or(p.Name, p.Address)
 	}
-	slices.Sort(keys)
-	return cmp.Or(strings.Join(keys, "\n"), fmt.Sprint("#", id))
+	return strings.Join(names, ", ")
 }
 
-// Messages pages a conversation's messages, the latest first, without
-// reactions and group events; chatIDs are its sms.db chats.
-func (c *Contents) Messages(ctx context.Context, chatIDs []int64, offset, limit int) ([]Message, error) {
-	messages := []Message{}
-	if len(chatIDs) == 0 {
-		return messages, nil
+// peopleKey joins one-to-one chats with the same person, however the address
+// is written; a group stands alone, as two can share their members.
+func peopleKey(id int64, people []Participant) string {
+	if len(people) != 1 {
+		return fmt.Sprint("#", id)
 	}
+	return addressKey(people[0].Address)
+}
+
+// smsMessages pages sms.db messages, without reactions and group events.
+func (c *Contents) smsMessages(ctx context.Context, chatIDs []int64, offset, limit int) ([]Message, error) {
 	db, err := c.domainDatabase(ctx, homeDomain, messagesDatabase)
 	if err != nil {
 		return nil, err
 	}
-	page := `WITH page AS (
-		SELECT j.message_id, j.message_date FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id
-		WHERE j.chat_id IN (?` + strings.Repeat(", ?", len(chatIDs)-1) + `)
-			AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0
-		ORDER BY j.message_date DESC, j.message_id DESC LIMIT ? OFFSET ?)
-	`
-	args := []any{}
-	for _, id := range chatIDs {
-		args = append(args, id)
-	}
-	args = append(args, limit, offset)
+	chats, args := inList(chatIDs)
+	messages := []Message{}
 	index := map[int64]int{} // ROWID -> position in messages
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, `SELECT m.ROWID, COALESCE(m.text, ''), m.attributedBody, j.message_date,
+			COALESCE(m.is_from_me, 0) != 0, COALESCE(h.id, ''), COALESCE(m.service, '')
+		FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
+		WHERE j.chat_id IN (`+chats+`) AND COALESCE(m.associated_message_type, 0) = 0 AND COALESCE(m.item_type, 0) = 0
+		ORDER BY j.message_date DESC, j.message_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...) {
 		var message Message
 		var text string
 		var date int64
 		var body []byte
-		if err := rows.Scan(&message.ID, &text, &body, &date, &message.FromMe, &message.Sender, &message.Service); err != nil {
-			return err
+		if err == nil {
+			err = rows.Scan(&message.ID, &text, &body, &date, &message.FromMe, &message.Sender, &message.Service)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the messages: %w", err)
 		}
 		message.Text = messageText(text, body)
 		message.Time = messageTime(date)
@@ -171,52 +228,43 @@ func (c *Contents) Messages(ctx context.Context, chatIDs []int64, offset, limit 
 		}
 		index[message.ID] = len(messages)
 		messages = append(messages, message)
-		return nil
-	}, page+`SELECT m.ROWID, COALESCE(m.text, ''), m.attributedBody, page.message_date, COALESCE(m.is_from_me, 0) != 0,
-			COALESCE(h.id, ''), COALESCE(m.service, '')
-		FROM page JOIN message m ON m.ROWID = page.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
-		ORDER BY page.message_date DESC, page.message_id DESC`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("read the messages: %w", err)
 	}
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
-		var id int64
-		var filename string
-		var attachment Attachment
-		if err := rows.Scan(&id, &filename, &attachment.Name, &attachment.Type, &attachment.Size); err != nil {
-			return err
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	ids := make([]int64, len(messages))
+	for i, message := range messages {
+		ids[i] = message.ID
+	}
+	page, args := inList(ids)
+	for rows, err := range c.rows(ctx, db, `SELECT j.message_id, COALESCE(a.filename, ''), COALESCE(a.transfer_name, ''),
+			COALESCE(a.total_bytes, 0)
+		FROM message_attachment_join j JOIN attachment a ON a.ROWID = j.attachment_id
+		WHERE j.message_id IN (`+page+`) AND COALESCE(a.hide_attachment, 0) = 0 ORDER BY a.ROWID`, args...) {
+		var id, size int64
+		var filename, name string
+		if err == nil {
+			err = rows.Scan(&id, &filename, &name, &size)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the attachments: %w", err)
 		}
 		// Older records name the file by its absolute path on the phone.
-		attachment.Path = strings.TrimPrefix(strings.TrimPrefix(filename, "~/"), "/var/mobile/")
-		attachment.Name = cmp.Or(attachment.Name, path.Base(attachment.Path))
-		_, stored := c.backup.FileSize(fileKey(mediaDomain, attachment.Path))
-		attachment.Missing = attachment.Path == "" || !stored
-		if i, ok := index[id]; ok {
-			messages[i].Attachments = append(messages[i].Attachments, attachment)
-		}
-		return nil
-	}, page+`SELECT page.message_id, COALESCE(a.filename, ''), COALESCE(a.transfer_name, ''), COALESCE(a.mime_type, ''),
-			COALESCE(a.total_bytes, 0)
-		FROM page JOIN message_attachment_join j ON j.message_id = page.message_id JOIN attachment a ON a.ROWID = j.attachment_id
-		WHERE COALESCE(a.hide_attachment, 0) = 0 ORDER BY a.ROWID`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("read the attachments: %w", err)
+		filePath := strings.TrimPrefix(strings.TrimPrefix(filename, "~/"), "/var/mobile/")
+		i := index[id]
+		messages[i].Attachments = append(messages[i].Attachments, c.attachment(mediaDomain, filePath, name, size))
 	}
 	return messages, nil
 }
 
-// OpenAttachment opens a message attachment by its path in MediaDomain.
-func (c *Contents) OpenAttachment(ctx context.Context, attachmentPath string) (Reader, time.Time, error) {
-	if !strings.HasPrefix(attachmentPath, attachmentsRoot) {
-		return nil, time.Time{}, fs.ErrNotExist
-	}
-	return c.openPath(ctx, mediaDomain, attachmentPath)
-}
-
-// messageTime reads a Messages timestamp: nanoseconds since 2001.
+// messageTime reads a Messages timestamp since 2001: nanoseconds, or seconds
+// before iOS 11.
 func messageTime(value int64) time.Time {
-	if value == 0 {
+	switch {
+	case value == 0:
 		return time.Time{}
+	case value < 1e11:
+		return time.Unix(coreDataEpoch+value, 0).UTC()
 	}
 	return time.Unix(coreDataEpoch, value).UTC()
 }
@@ -256,12 +304,4 @@ func attributedText(body []byte) string {
 		return ""
 	}
 	return string(rest[:length])
-}
-
-// fileKey is where the snapshot keeps a file the backup lists: its file ID is
-// the SHA-1 of "<domain>-<path>".
-func fileKey(domain, filePath string) string {
-	sum := sha1.Sum([]byte(domain + "-" + filePath))
-	id := hex.EncodeToString(sum[:])
-	return id[:2] + "/" + id
 }

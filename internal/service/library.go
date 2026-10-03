@@ -54,13 +54,18 @@ func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
 	if err != nil {
 		return err
 	}
-	s.unlocked.closeIf(func(_, source string) bool { return source == udid })
-	if err := s.library.DeleteSource(ctx, udid, release); err != nil {
+	if err := s.deleteSource(ctx, udid, release); err != nil {
 		return err
 	}
 	// Wiping a source's history resets its status to "never", stale failure included.
 	s.runs.forget(udid)
 	return nil
+}
+
+// deleteSource deletes a source's restore points, closing the one being browsed.
+func (s *Service) deleteSource(ctx context.Context, udid string, release func()) error {
+	s.unlocked.closeIf(func(_, source string) bool { return source == udid })
+	return s.library.DeleteSource(ctx, udid, release)
 }
 
 func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs []string) error {

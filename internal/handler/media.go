@@ -85,12 +85,12 @@ func (r *readFailure) Read(buffer []byte) (int, error) {
 	return read, err
 }
 
-// Videos stream as they are, Range and all, so the browser can seek.
+// Video and audio stream as they are, Range and all, so the browser can seek.
 func streamPreview(c *echo.Context, download deviceDownload, name string) error {
 	context.AfterFunc(c.Request().Context(), download.Close)
 	defer download.Close()
 	ext := strings.ToLower(path.Ext(name))
-	if contentType, video := videoType[ext]; video {
+	if contentType, stream := streamType[ext]; stream {
 		return serveDeviceFile(c, download, name, contentType, "inline")
 	}
 	contentType, native := nativeImageType[ext]

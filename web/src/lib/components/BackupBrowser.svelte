@@ -3,12 +3,14 @@
   // backup the server holds locked asks for the password alone, and no password
   // closes it all. One locked later, for idleness, shows as a view's error.
   import { onMount } from 'svelte';
-  import { backupGallerySource, listBackupComponents, type BackupComponent, type RestorePoint } from '../api/backups';
+  import { backupGallerySource, listBackupComponents, type BackupComponent } from '../api/backup-contents';
+  import type { RestorePoint } from '../api/backups';
   import { ApiError, errMsg } from '../api/client';
   import { formatBytes, formatDateTime } from '../format';
   import BackupCalls from './BackupCalls.svelte';
   import BackupContacts from './BackupContacts.svelte';
   import BackupMessages from './BackupMessages.svelte';
+  import BackupNotes from './BackupNotes.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Gallery from './Gallery.svelte';
   import Icon from './Icon.svelte';
@@ -25,8 +27,10 @@
 
   // Tones echo the iPhone apps' icons.
   const COMPONENTS: Record<BackupComponent, { icon: IconName; tone: string; title: string; description: string }> = {
-    photos: { icon: 'image', tone: 'bg-warning/15 text-warning', title: 'Photos', description: 'Photos, videos and Live Photos by month and album' },
+    photos: { icon: 'image', tone: 'bg-primary/10 text-primary', title: 'Photos', description: 'Photos, videos and Live Photos by month and album' },
     messages: { icon: 'messages', tone: 'bg-success/15 text-success', title: 'Messages', description: 'iMessage, SMS and RCS chats with attachments' },
+    whatsapp: { icon: 'chat', tone: 'bg-success/15 text-success', title: 'WhatsApp', description: 'Chats, groups, photos, voice and documents' },
+    notes: { icon: 'notes', tone: 'bg-warning/15 text-warning', title: 'Notes', description: 'Notes by folder; locked ones stay locked' },
     contacts: { icon: 'contacts', tone: 'bg-info/15 text-info', title: 'Contacts', description: 'Names, phone numbers and emails' },
     calls: { icon: 'call', tone: 'bg-accent/15 text-accent', title: 'Calls', description: 'Phone, FaceTime and app calls' },
   };
@@ -115,39 +119,22 @@
   </Modal>
 {/if}
 
-{#if open === 'contacts'}
-  <BackupContacts
-    title={`Contacts — backup of ${deviceName}`}
-    subtitle={created}
-    snapshotId={point.snapshotId}
-    onclose={() => (open = null)}
-  />
-{/if}
-
-{#if open === 'messages'}
-  <BackupMessages
-    title={`Messages — backup of ${deviceName}`}
-    subtitle={created}
-    snapshotId={point.snapshotId}
-    onclose={() => (open = null)}
-  />
-{/if}
-
-{#if open === 'calls'}
-  <BackupCalls
-    title={`Calls — backup of ${deviceName}`}
-    subtitle={created}
-    snapshotId={point.snapshotId}
-    onclose={() => (open = null)}
-  />
-{/if}
-
-{#if open === 'photos'}
-  <Gallery
-    source={backupGallerySource(point.snapshotId)}
-    title={`Photos — backup of ${deviceName}`}
-    subtitle={created}
-    rescan={false}
-    onclose={() => (open = null)}
-  />
+{#if open}
+  {@const view = {
+    title: `${COMPONENTS[open].title} — backup of ${deviceName}`,
+    subtitle: created,
+    onclose: () => (open = null),
+  }}
+  {@const snapshotId = point.snapshotId}
+  {#if open === 'photos'}
+    <Gallery source={backupGallerySource(snapshotId)} rescan={false} {...view} />
+  {:else if open === 'messages' || open === 'whatsapp'}
+    <BackupMessages {snapshotId} app={open} {...view} />
+  {:else if open === 'notes'}
+    <BackupNotes {snapshotId} {...view} />
+  {:else if open === 'contacts'}
+    <BackupContacts {snapshotId} {...view} />
+  {:else if open === 'calls'}
+    <BackupCalls {snapshotId} {...view} />
+  {/if}
 {/if}

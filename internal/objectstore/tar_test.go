@@ -168,6 +168,20 @@ func TestFileChecksOverlappingReadsAndRandomJumps(t *testing.T) {
 	if err := readOverlapping(file); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("overlapping reads of a damaged object: err=%v, want ErrIntegrity", err)
 	}
+	if _, err := file.ReadAt(make([]byte, 10), 0); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("a read after the failure: err=%v, want ErrIntegrity", err)
+	}
+	_ = file.Close()
+	_ = os.Rename(object+damagedSuffix, object) // set aside by the failed check
+
+	// Read whole, as a download is, a damaged object never arrives complete.
+	file, err = snapshot.OpenFile("Manifest.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := io.ReadAll(io.NewSectionReader(file, 0, file.Size())); !errors.Is(err, ErrIntegrity) || len(data) == len(content) {
+		t.Fatalf("a damaged object read whole: %d of %d bytes, err=%v", len(data), len(content), err)
+	}
 	_ = file.Close()
 	_ = os.Rename(object+damagedSuffix, object) // set aside by the failed check
 

@@ -114,7 +114,7 @@
     return a.kind === 'video' && !a.missing && isPlayableVideo(a.name);
   }
 
-  // taken carries the server's zone, the one months are counted in.
+  // taken is on the clock where the photo was taken, as months are counted.
   function monthOf(a: GalleryAsset | undefined): string {
     return a?.taken?.slice(0, 7) ?? '';
   }
@@ -525,10 +525,13 @@
               ? ` · Taken ${formatDateTime(a.taken)}`
               : ''}
           </p>
-          <!-- A failed stat leaves size and date out; the empty catch keeps it handled. -->
-          {#await lbStat then stat}
-            <p class="truncate text-xs text-base-content/50">{fileFacts(stat!)}</p>
-          {:catch}{/await}
+          <!-- A failed stat leaves size and date out (the empty catch handles it); a
+               photo kept only in iCloud has none, and {#await undefined} would render at once. -->
+          {#if lbStat}
+            {#await lbStat then stat}
+              <p class="truncate text-xs text-base-content/50">{fileFacts(stat)}</p>
+            {:catch}{/await}
+          {/if}
           <ErrorLine error={saveError} size="xs" />
         </div>
         <button

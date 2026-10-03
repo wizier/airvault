@@ -24,10 +24,10 @@ type GalleryAsset struct {
 	Kind string `json:"kind"` // "photo" | "video"
 	// LiveVideo is a Live Photo's video, by path like the photo's.
 	LiveVideo string `json:"liveVideo,omitempty"`
-	// A backup's library knows when a photo was taken, and which originals
-	// stayed only in iCloud.
-	Taken   *time.Time `json:"taken,omitempty"`
-	Missing bool       `json:"missing,omitempty"`
+	// A backup's library knows when a photo was taken, on the clock where it
+	// was ("2006-01-02T15:04:05"), and which originals stayed only in iCloud.
+	Taken   string `json:"taken,omitempty"`
+	Missing bool   `json:"missing,omitempty"`
 }
 
 const galleryCacheTTL = 5 * time.Minute

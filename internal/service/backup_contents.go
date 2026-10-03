@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 const browseIdle = 15 * time.Minute
 
 type unlockedBackup struct {
+	unlocking  sync.Mutex // one password's key stretch at a time: each costs seconds of CPU
 	mu         sync.Mutex
 	snapshotID string
 	source     string
@@ -65,10 +67,11 @@ func (u *unlockedBackup) closeIf(match func(snapshotID, source string) bool) {
 	}
 }
 
+// closeLocked lets the requests in flight finish first, without holding u.
 func (u *unlockedBackup) closeLocked() {
 	if u.contents != nil {
 		u.idle.Stop()
-		_ = u.contents.Close()
+		go u.contents.Close()
 		u.contents = nil
 	}
 }
@@ -96,7 +99,9 @@ func (s *Service) unlockBackup(ctx context.Context, snapshotID, password string)
 	if backup.Encrypted && password == "" {
 		return nil, &domain.ValidationError{Code: "backup_password_required", Message: "this backup is encrypted — its password is required"}
 	}
+	s.unlocked.unlocking.Lock()
 	contents, err := backup.Unlock(ctx, password)
+	s.unlocked.unlocking.Unlock()
 	if errors.Is(err, iosbackup.ErrWrongPassword) {
 		return nil, &domain.ValidationError{Code: "invalid_backup_password", Message: "this password does not unlock the selected backup"}
 	}
@@ -130,6 +135,8 @@ func (s *Service) backupError(ctx context.Context, source string, err error) err
 		return backupLocked()
 	case errors.Is(err, iosbackup.ErrNotStored):
 		return &domain.ValidationError{Code: "backup_file_not_stored", Message: "the backup does not hold this file"}
+	case errors.Is(err, fs.ErrNotExist):
+		return domain.ErrNotFound
 	}
 	return err
 }
@@ -168,6 +175,9 @@ func (r damageReporter) ReadAt(p []byte, offset int64) (int, error) {
 // noticeReadDamage records damage a read found, unless a backup, check or
 // deletion holds the source: its own collection records it.
 func (s *Service) noticeReadDamage(ctx context.Context, source string, err error) {
+	if !errors.Is(err, objectstore.ErrIntegrity) && !errors.Is(err, objectstore.ErrManifestCorrupt) {
+		return
+	}
 	release, busy := s.ops.acquire("backup download", snapshotReadResource(source))
 	if busy != nil {
 		return

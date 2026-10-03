@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { listBackupContacts, type BackupContact } from '../api/backups';
+  import { listBackupContacts, type BackupContact } from '../api/backup-contents';
   import SearchList from './SearchList.svelte';
 
   let { title, subtitle, snapshotId, onclose }: {

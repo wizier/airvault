@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { listBackupCalls, type BackupCall } from '../api/backups';
+  import { listBackupCalls, type BackupCall } from '../api/backup-contents';
   import { formatDateTime, formatSeconds } from '../format';
   import Icon from './Icon.svelte';
   import SearchList from './SearchList.svelte';

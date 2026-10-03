@@ -23,9 +23,6 @@ const (
 	thumbnailsRoot = "Media/PhotoData/Thumbnails/V2/"
 )
 
-// Core Data stores time as seconds since 2001-01-01 UTC.
-const coreDataEpoch = 978307200
-
 type PhotoKind string
 
 const (
@@ -53,10 +50,10 @@ type Photo struct {
 	Hidden    bool
 	Trashed   bool    // in Recently Deleted
 	Stored    bool    // the original is in the backup, not only in iCloud
-	Thumbnail string  // iOS's thumbnail in the backup, "" when there is none
 	LiveVideo string  // the Live Photo's video in the backup, "" when there is none
 	Albums    []int64 // the user albums it is in
 	id        int64
+	thumbnail string // iOS's own in the backup, "" when there is none
 }
 
 // Album is a user album, titled under its folders: "Trips / 2025".
@@ -73,7 +70,7 @@ type PhotoLibrary struct {
 	videos map[string]bool // Live Photos' videos
 }
 
-func (l *PhotoLibrary) Lookup(path string) (Photo, bool) {
+func (l *PhotoLibrary) lookup(path string) (Photo, bool) {
 	i, ok := l.byPath[path]
 	if !ok {
 		return Photo{}, false
@@ -81,8 +78,8 @@ func (l *PhotoLibrary) Lookup(path string) (Photo, bool) {
 	return l.Photos[i], true
 }
 
-// Holds reports a file of the library: a photo or a Live Photo's video.
-func (l *PhotoLibrary) Holds(path string) bool {
+// holds reports a file of the library: a photo or a Live Photo's video.
+func (l *PhotoLibrary) holds(path string) bool {
 	_, ok := l.byPath[path]
 	return ok || l.videos[path]
 }
@@ -94,6 +91,8 @@ func (c *Contents) Photos(ctx context.Context) (*PhotoLibrary, error) {
 	if c.photos != nil {
 		return c.photos, nil
 	}
+	// Every request waiting on the lock needs this read: one cancelled must not end it.
+	ctx = context.WithoutCancel(ctx)
 	db, err := c.domainDatabase(ctx, cameraRoll, photosDatabase)
 	if err != nil {
 		return nil, err
@@ -102,7 +101,7 @@ func (c *Contents) Photos(ctx context.Context) (*PhotoLibrary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read the photo library: %w", err)
 	}
-	stored, err := c.storedPaths(ctx, cameraRoll)
+	stored, err := c.storedPaths(ctx, cameraRoll, "")
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +116,7 @@ func (c *Contents) Photos(ctx context.Context) (*PhotoLibrary, error) {
 	for i := range library.Photos {
 		photo := &library.Photos[i]
 		photo.Stored = stored[photo.Path]
-		photo.Thumbnail = thumbnails[strings.TrimPrefix(photo.Path, "Media/")]
+		photo.thumbnail = thumbnails[strings.TrimPrefix(photo.Path, "Media/")]
 		photo.Albums = members[photo.id]
 		// iOS keeps a Live Photo's video beside it, under the same name.
 		if video := strings.TrimSuffix(photo.Path, path.Ext(photo.Path)) + ".MOV"; photo.Subtype == SubtypeLive && stored[video] {
@@ -131,15 +130,24 @@ func (c *Contents) Photos(ctx context.Context) (*PhotoLibrary, error) {
 }
 
 func (c *Contents) readAssets(ctx context.Context, db *sql.DB) ([]Photo, error) {
+	// Time zones are a convenience: without them a photo is dated in UTC.
+	zones, err := c.readTimeZones(ctx, db)
+	if err != nil {
+		slog.WarnContext(ctx, "photo time zones unreadable", "error", err)
+	}
 	var photos []Photo
-	err := c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, `SELECT Z_PK, ZDIRECTORY, ZFILENAME, ZKIND, ZKINDSUBTYPE, ZDATECREATED, ZFAVORITE,
+		ZHIDDEN, ZTRASHEDSTATE FROM ZASSET WHERE ZDIRECTORY IS NOT NULL AND ZFILENAME IS NOT NULL`) {
 		var id int64
 		var directory, name string
 		var kind int
 		var subtype, favorite, hidden, trashed sql.NullInt64
 		var taken sql.NullFloat64
-		if err := rows.Scan(&id, &directory, &name, &kind, &subtype, &taken, &favorite, &hidden, &trashed); err != nil {
-			return err
+		if err == nil {
+			err = rows.Scan(&id, &directory, &name, &kind, &subtype, &taken, &favorite, &hidden, &trashed)
+		}
+		if err != nil {
+			return nil, err
 		}
 		photo := Photo{
 			id:       id,
@@ -154,14 +162,34 @@ func (c *Contents) readAssets(ctx context.Context, db *sql.DB) ([]Photo, error) 
 		if kind == 1 {
 			photo.Kind = KindVideo
 		}
+		if zone, ok := zones[id]; ok {
+			photo.Taken = photo.Taken.In(zone)
+		}
 		photos = append(photos, photo)
-		return nil
-	}, `SELECT Z_PK, ZDIRECTORY, ZFILENAME, ZKIND, ZKINDSUBTYPE, ZDATECREATED, ZFAVORITE, ZHIDDEN, ZTRASHEDSTATE
-		FROM ZASSET WHERE ZDIRECTORY IS NOT NULL AND ZFILENAME IS NOT NULL`)
+	}
 	slices.SortStableFunc(photos, func(a, b Photo) int {
 		return cmp.Or(b.Taken.Compare(a.Taken), cmp.Compare(a.Path, b.Path))
 	})
-	return photos, err
+	return photos, nil
+}
+
+// readTimeZones maps assets to the time zone they were taken in; one without
+// is UTC.
+func (c *Contents) readTimeZones(ctx context.Context, db *sql.DB) (map[int64]*time.Location, error) {
+	zones := map[int64]*time.Location{}
+	for rows, err := range c.rows(ctx, db,
+		"SELECT ZASSET, ZTIMEZONEOFFSET FROM ZADDITIONALASSETATTRIBUTES WHERE ZTIMEZONEOFFSET IS NOT NULL") {
+		var asset int64
+		var offset int
+		if err == nil {
+			err = rows.Scan(&asset, &offset)
+		}
+		if err != nil {
+			return nil, err
+		}
+		zones[asset] = time.FixedZone("", offset)
+	}
+	return zones, nil
 }
 
 // ZGENERICALBUM.ZKIND values.
@@ -179,16 +207,17 @@ func (c *Contents) readAlbums(ctx context.Context, db *sql.DB) ([]Album, map[int
 		parent int64
 	}
 	nodes := map[int64]node{}
-	err := c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, `SELECT Z_PK, ZKIND, COALESCE(ZTITLE, ''), COALESCE(ZPARENTFOLDER, 0)
+		FROM ZGENERICALBUM WHERE ZKIND IN (?, ?) AND COALESCE(ZTRASHEDSTATE, 0) = 0`, albumKind, folderKind) {
 		var id int64
 		var n node
-		err := rows.Scan(&id, &n.kind, &n.title, &n.parent)
+		if err == nil {
+			err = rows.Scan(&id, &n.kind, &n.title, &n.parent)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
 		nodes[id] = n
-		return err
-	}, `SELECT Z_PK, ZKIND, COALESCE(ZTITLE, ''), COALESCE(ZPARENTFOLDER, 0) FROM ZGENERICALBUM
-		WHERE ZKIND IN (?, ?) AND COALESCE(ZTRASHEDSTATE, 0) = 0`, albumKind, folderKind)
-	if err != nil {
-		return nil, nil, err
 	}
 	var albums []Album
 	for id, n := range nodes {
@@ -209,15 +238,19 @@ func (c *Contents) readAlbums(ctx context.Context, db *sql.DB) ([]Album, map[int
 		return albums, nil, err
 	}
 	members := map[int64][]int64{}
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, fmt.Sprintf("SELECT %s, %s FROM %s", albumColumn, assetColumn, table)) {
 		var album, asset int64
-		err := rows.Scan(&album, &asset)
+		if err == nil {
+			err = rows.Scan(&album, &asset)
+		}
+		if err != nil {
+			return albums, nil, err
+		}
 		if nodes[album].kind == albumKind {
 			members[asset] = append(members[asset], album)
 		}
-		return err
-	}, fmt.Sprintf("SELECT %s, %s FROM %s", albumColumn, assetColumn, table))
-	return albums, members, err
+	}
+	return albums, members, nil
 }
 
 // albumMembership finds the album-asset join table: Core Data names it
@@ -225,15 +258,16 @@ func (c *Contents) readAlbums(ctx context.Context, db *sql.DB) ([]Album, map[int
 // column beside the Z_<m>ASSETS one.
 func (c *Contents) albumMembership(ctx context.Context, db *sql.DB) (table, albumColumn, assetColumn string, err error) {
 	columns := map[string][]string{}
-	err = c.query(ctx, db, func(rows *sql.Rows) error {
+	for rows, err := range c.rows(ctx, db, `SELECT m.name, p.name FROM sqlite_master m JOIN pragma_table_info(m.name) p
+		WHERE m.type = 'table' AND m.name GLOB 'Z_[0-9]*ASSETS'`) {
 		var table, column string
-		err := rows.Scan(&table, &column)
+		if err == nil {
+			err = rows.Scan(&table, &column)
+		}
+		if err != nil {
+			return "", "", "", err
+		}
 		columns[table] = append(columns[table], column)
-		return err
-	}, `SELECT m.name, p.name FROM sqlite_master m JOIN pragma_table_info(m.name) p
-		WHERE m.type = 'table' AND m.name GLOB 'Z_[0-9]*ASSETS'`)
-	if err != nil {
-		return "", "", "", err
 	}
 	for _, table := range slices.Sorted(maps.Keys(columns)) {
 		albumColumn, assetColumn = "", ""
@@ -253,13 +287,6 @@ func (c *Contents) albumMembership(ctx context.Context, db *sql.DB) (table, albu
 	return "", "", "", errors.New("no album membership table")
 }
 
-func coreDataTime(value sql.NullFloat64) time.Time {
-	if !value.Valid || value.Float64 == 0 {
-		return time.Time{}
-	}
-	return time.Unix(coreDataEpoch, 0).Add(time.Duration(value.Float64 * float64(time.Second))).UTC()
-}
-
 // largestThumbnails maps an asset path under Media to its largest thumbnail
 // (highest size code).
 func largestThumbnails(stored map[string]bool) map[string]string {
@@ -277,18 +304,17 @@ func largestThumbnails(stored map[string]bool) map[string]string {
 	return thumbnails
 }
 
-// OpenPhoto opens a file of the library by path, with when it was last
-// modified; an original kept only in iCloud is ErrNotStored.
-func (c *Contents) OpenPhoto(ctx context.Context, photoPath string) (Reader, time.Time, error) {
-	return c.openPath(ctx, cameraRoll, photoPath)
-}
-
-// Thumbnail reads iOS's thumbnail of photo; fs.ErrNotExist when there is none.
-func (c *Contents) Thumbnail(ctx context.Context, photo Photo) ([]byte, error) {
-	if photo.Thumbnail == "" {
+// Thumbnail reads iOS's thumbnail of a photo; fs.ErrNotExist when there is none.
+func (c *Contents) Thumbnail(ctx context.Context, photoPath string) ([]byte, error) {
+	library, err := c.Photos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	photo, ok := library.lookup(photoPath)
+	if !ok || photo.thumbnail == "" {
 		return nil, fs.ErrNotExist
 	}
-	reader, _, err := c.openPath(ctx, cameraRoll, photo.Thumbnail)
+	reader, _, err := c.openPath(ctx, cameraRoll, photo.thumbnail)
 	if err != nil {
 		return nil, err
 	}

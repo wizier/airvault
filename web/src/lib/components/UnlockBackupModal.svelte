@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { unlockBackup, type RestorePoint } from '../api/backups';
+  import { unlockBackup } from '../api/backup-contents';
+  import type { RestorePoint } from '../api/backups';
   import { formatDateTime } from '../format';
   import { Submit } from '../submit.svelte';
   import ErrorLine from './ErrorLine.svelte';

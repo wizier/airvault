@@ -7,7 +7,8 @@ export interface GalleryAsset {
   kind: 'photo' | 'video';
   /** A Live Photo's video, by path like the photo's. */
   liveVideo?: string;
-  /** When it was taken; only a backup's library knows. */
+  /** When it was taken, on the clock where it was ("2026-10-03T14:05:00", no
+   *  zone, so the browser shows it as is); only a backup's library knows. */
   taken?: string;
   /** The original stayed in iCloud and is not in the backup. */
   missing?: boolean;

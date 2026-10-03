@@ -2,6 +2,7 @@ package iosbackup
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha1"
@@ -226,7 +227,7 @@ func TestContents(t *testing.T) {
 
 			for path, want := range map[string][]byte{"Library/photo.heic": heicBytes, "Library/aligned.jpg": jpegBytes} {
 				file, err := contents.stat(t.Context(), "HomeDomain", path)
-				if err != nil || !file.regular || file.modified.Unix() != 1_700_000_000 {
+				if err != nil || !contents.holds(file) || file.modified.Unix() != 1_700_000_000 {
 					t.Fatalf("stat(%q) = %+v, %v", path, file, err)
 				}
 				reader, err := contents.open(file)
@@ -293,8 +294,8 @@ func TestPhotosWithoutLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held, err := contents.Components(t.Context()); err != nil || held == nil || len(held) != 0 {
-		t.Fatalf("Components = %#v, %v; want an empty list", held, err)
+	if held := contents.Components(); held == nil || len(held) != 0 {
+		t.Fatalf("Components = %#v; want an empty list", held)
 	}
 	if _, err := contents.Photos(t.Context()); !errors.Is(err, ErrNotStored) {
 		t.Fatalf("Photos without Photos.sqlite: err=%v, want ErrNotStored", err)
@@ -323,6 +324,8 @@ func TestPhotos(t *testing.T) {
 				"DCIM/100APPLE", asset.name, asset.kind, asset.subtype, coreData(asset.taken), asset.favorite, asset.hidden, asset.trashed)
 		}
 		exec("INSERT INTO ZASSET (ZKIND) VALUES (0)") // no file: skipped
+		exec("CREATE TABLE ZADDITIONALASSETATTRIBUTES (Z_PK INTEGER PRIMARY KEY, ZASSET INTEGER, ZTIMEZONEOFFSET INTEGER)")
+		exec("INSERT INTO ZADDITIONALASSETATTRIBUTES (ZASSET, ZTIMEZONEOFFSET) VALUES (4, 10800), (1, NULL)")
 		exec(`CREATE TABLE ZGENERICALBUM (Z_PK INTEGER PRIMARY KEY, ZKIND INTEGER, ZTITLE VARCHAR,
 			ZPARENTFOLDER INTEGER, ZTRASHEDSTATE INTEGER)`)
 		exec(`INSERT INTO ZGENERICALBUM VALUES (1, 3999, NULL, NULL, 0), (2, 4000, 'Trips', 1, 0),
@@ -353,26 +356,30 @@ func TestPhotos(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer contents.Close()
-			if held, err := contents.Components(t.Context()); err != nil || len(held) != 1 || held[0] != ComponentPhotos {
-				t.Fatalf("Components = %v, %v", held, err)
+			if held := contents.Components(); len(held) != 1 || held[0] != ComponentPhotos {
+				t.Fatalf("Components = %v", held)
 			}
 			library, err := contents.Photos(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
 			want := []Photo{
-				{Path: "Media/DCIM/100APPLE/IMG_0004.HEIC", Kind: KindPhoto, Taken: day(4), Thumbnail: thumbs + "IMG_0004.HEIC/5005.JPG",
+				{Path: "Media/DCIM/100APPLE/IMG_0004.HEIC", Kind: KindPhoto, Taken: day(4), thumbnail: thumbs + "IMG_0004.HEIC/5005.JPG",
 					Albums: []int64{4}},
 				{Path: "Media/DCIM/100APPLE/IMG_0002.JPG", Kind: KindPhoto, Taken: day(3), Hidden: true, Stored: true},
 				{Path: "Media/DCIM/100APPLE/IMG_0003.MOV", Kind: KindVideo, Taken: day(2), Trashed: true, Stored: true},
 				{Path: "Media/DCIM/100APPLE/IMG_0001.HEIC", Kind: KindPhoto, Subtype: SubtypeLive, Taken: day(1), Favorite: true, Stored: true,
-					Thumbnail: thumbs + "IMG_0001.HEIC/5005.JPG", LiveVideo: "Media/DCIM/100APPLE/IMG_0001.MOV", Albums: []int64{3, 4}},
+					thumbnail: thumbs + "IMG_0001.HEIC/5005.JPG", LiveVideo: "Media/DCIM/100APPLE/IMG_0001.MOV", Albums: []int64{3, 4}},
 			}
 			if len(library.Photos) != len(want) {
 				t.Fatalf("Photos = %+v", library.Photos)
 			}
+			// Taken in Moscow: the clock there shows 15:00.
+			if taken := library.Photos[0].Taken; taken.Hour() != 15 || taken.Format("-07:00") != "+03:00" {
+				t.Errorf("photo taken at %v, want 15:00 +03:00", taken)
+			}
 			for i, photo := range library.Photos {
-				photo.Taken, photo.id = photo.Taken.Truncate(time.Second), 0
+				photo.Taken, photo.id = photo.Taken.Truncate(time.Second).UTC(), 0
 				if !reflect.DeepEqual(photo, want[i]) {
 					t.Errorf("photo %d = %+v, want %+v", i, photo, want[i])
 				}
@@ -380,24 +387,24 @@ func TestPhotos(t *testing.T) {
 			if wantAlbums := []Album{{4, "Cats"}, {3, "Trips / Rome"}}; !reflect.DeepEqual(library.Albums, wantAlbums) {
 				t.Errorf("Albums = %+v, want %+v", library.Albums, wantAlbums)
 			}
-			if photo, ok := library.Lookup("Media/DCIM/100APPLE/IMG_0002.JPG"); !ok || !photo.Hidden {
+			if photo, ok := library.lookup("Media/DCIM/100APPLE/IMG_0002.JPG"); !ok || !photo.Hidden {
 				t.Fatalf("Lookup = %+v, %v", photo, ok)
 			}
-			if !library.Holds("Media/DCIM/100APPLE/IMG_0001.MOV") || library.Holds("Media/PhotoData/Photos.sqlite") {
+			if !library.holds("Media/DCIM/100APPLE/IMG_0001.MOV") || library.holds("Media/PhotoData/Photos.sqlite") {
 				t.Fatal("Holds must admit the library's files only")
 			}
-			if thumbnail, err := contents.Thumbnail(t.Context(), library.Photos[3]); err != nil || string(thumbnail) != "large" {
+			if thumbnail, err := contents.Thumbnail(t.Context(), library.Photos[3].Path); err != nil || string(thumbnail) != "large" {
 				t.Fatalf("Thumbnail = %q, %v", thumbnail, err)
 			}
-			if _, err := contents.Thumbnail(t.Context(), library.Photos[1]); !errors.Is(err, fs.ErrNotExist) {
+			if _, err := contents.Thumbnail(t.Context(), library.Photos[1].Path); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("Thumbnail without one: err=%v", err)
 			}
-			reader, modified, err := contents.OpenPhoto(t.Context(), library.Photos[3].Path)
+			reader, modified, err := contents.OpenFile(t.Context(), ComponentPhotos, library.Photos[3].Path)
 			if err != nil || modified.Unix() != 1_700_000_000 || !bytes.Equal(readAll(t, reader), heicBytes) {
-				t.Fatalf("OpenPhoto: %v, %v", modified, err)
+				t.Fatalf("OpenFile: %v, %v", modified, err)
 			}
-			if _, _, err := contents.OpenPhoto(t.Context(), library.Photos[0].Path); !errors.Is(err, ErrNotStored) {
-				t.Fatalf("OpenPhoto of an iCloud-only photo: err=%v, want ErrNotStored", err)
+			if _, _, err := contents.OpenFile(t.Context(), ComponentPhotos, library.Photos[0].Path); !errors.Is(err, ErrNotStored) {
+				t.Fatalf("OpenFile of an iCloud-only photo: err=%v, want ErrNotStored", err)
 			}
 		})
 	}
@@ -470,8 +477,8 @@ func TestCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held, err := contents.Components(t.Context()); err != nil || !slices.Equal(held, []Component{ComponentContacts, ComponentCalls}) {
-		t.Fatalf("Components = %v, %v", held, err)
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentContacts, ComponentCalls}) {
+		t.Fatalf("Components = %v", held)
 	}
 	got, err := contents.Calls(t.Context())
 	if err != nil {
@@ -521,9 +528,10 @@ func TestMessages(t *testing.T) {
 		exec("CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER)")
 		// The same person over SMS is another handle and another chat.
 		exec("INSERT INTO handle VALUES (1, '+79161234567'), (2, 'zoe@example.com'), (3, '+79161234567')")
+		// Two groups can share their members and stay apart.
 		exec(`INSERT INTO chat VALUES (1, '+79161234567', 'iMessage', NULL), (2, 'chat123', 'iMessage', 'Trip'),
-			(3, '+79161234567', 'SMS', NULL)`)
-		exec("INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 3)")
+			(3, '+79161234567', 'SMS', NULL), (4, 'chat456', 'iMessage', 'Gift')`)
+		exec("INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 3), (4, 1), (4, 2)")
 		for _, m := range [][]any{
 			{1, 1, "hi", nil, 0, nanos(1), 1, 0, 0},
 			{2, 1, nil, typedstream("Loved “hi”"), 1, nanos(2), 0, 2000, 0}, // a reaction
@@ -531,6 +539,7 @@ func TestMessages(t *testing.T) {
 			{4, 2, "\uFFFC\uFFFC", nil, 2, nanos(4), 0, 0, 0},
 			{5, 2, nil, nil, 0, nanos(5), 1, 0, 1}, // a group event
 			{6, 3, "by sms", nil, 3, nanos(2), 1, 0, 0},
+			{7, 4, "a scarf?", nil, 2, nanos(1), 0, 0, 0},
 		} {
 			service := "iMessage"
 			if m[1] == 3 {
@@ -554,29 +563,27 @@ func TestMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held, err := contents.Components(t.Context()); err != nil || !slices.Equal(held, []Component{ComponentMessages, ComponentContacts}) {
-		t.Fatalf("Components = %v, %v", held, err)
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentMessages, ComponentContacts}) {
+		t.Fatalf("Components = %v", held)
 	}
 
-	chats, err := contents.Chats(t.Context())
+	chats, err := contents.Chats(t.Context(), ComponentMessages)
 	if err != nil {
 		t.Fatal(err)
 	}
-	anna := Participant{"+79161234567", "Anna B Cole"}
+	anna, zoe := Participant{Address: "+79161234567", Name: "Anna B Cole"}, Participant{Address: "zoe@example.com", Name: "Zoe Adams"}
+	// Reactions and group events count for nothing.
 	wantChats := []Chat{
-		{IDs: []int64{2}, Title: "Trip", Participants: []Participant{anna, {"zoe@example.com", "Zoe Adams"}}, Messages: 2,
-			Last: at(5)},
-		{IDs: []int64{1, 3}, Title: "Anna B Cole", Participants: []Participant{anna}, Messages: 4, Last: at(3),
+		{IDs: []int64{2}, Title: "Trip", Participants: []Participant{anna, zoe}, Messages: 1, Last: at(4)},
+		{IDs: []int64{1, 3}, Title: "Anna B Cole", Participants: []Participant{anna}, Messages: 3, Last: at(3),
 			Snippet: strings.TrimSpace(long)},
-	}
-	for i := range chats {
-		chats[i].name, chats[i].identifier = "", ""
+		{IDs: []int64{4}, Title: "Gift", Participants: []Participant{anna, zoe}, Messages: 1, Last: at(1), Snippet: "a scarf?"},
 	}
 	if !reflect.DeepEqual(chats, wantChats) {
 		t.Fatalf("Chats =\n%+v\nwant\n%+v", chats, wantChats)
 	}
 
-	messages, err := contents.Messages(t.Context(), []int64{1, 3}, 0, 10)
+	messages, err := contents.Messages(t.Context(), ComponentMessages, []int64{1, 3}, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,26 +595,292 @@ func TestMessages(t *testing.T) {
 	if !reflect.DeepEqual(messages, wantMessages) {
 		t.Fatalf("Messages =\n%+v\nwant\n%+v", messages, wantMessages)
 	}
-	if page, err := contents.Messages(t.Context(), []int64{1, 3}, 2, 1); err != nil || len(page) != 1 || page[0].ID != 1 {
+	if page, err := contents.Messages(t.Context(), ComponentMessages, []int64{1, 3}, 2, 1); err != nil || len(page) != 1 || page[0].ID != 1 {
 		t.Fatalf("last page = %+v, %v", page, err)
 	}
 
-	messages, err = contents.Messages(t.Context(), []int64{2}, 0, 10)
+	messages, err = contents.Messages(t.Context(), ComponentMessages, []int64{2}, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantAttachments := []Attachment{
-		{Path: photo, Name: "IMG_1.HEIC", Type: "image/heic", Size: 12},
-		{Path: "Library/SMS/Attachments/cd/02/GUID2/movie.mov", Name: "movie.mov", Type: "video/quicktime", Size: 99, Missing: true},
+		{Path: photo, Name: "IMG_1.HEIC", Size: 12},
+		{Path: "Library/SMS/Attachments/cd/02/GUID2/movie.mov", Name: "movie.mov", Size: 99, Missing: true},
 	}
 	if len(messages) != 1 || messages[0].Text != "" || !reflect.DeepEqual(messages[0].Attachments, wantAttachments) {
 		t.Fatalf("group messages = %+v", messages)
 	}
-	reader, _, err := contents.OpenAttachment(t.Context(), photo)
+	reader, _, err := contents.OpenFile(t.Context(), ComponentMessages, photo)
 	if err != nil || !bytes.Equal(readAll(t, reader), heicBytes) {
-		t.Fatalf("OpenAttachment: %v", err)
+		t.Fatalf("OpenFile: %v", err)
 	}
-	if _, _, err := contents.OpenAttachment(t.Context(), "Library/Preferences/x.plist"); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("OpenAttachment outside the attachments: err=%v", err)
+	if _, _, err := contents.OpenFile(t.Context(), ComponentMessages, "Library/Preferences/x.plist"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("OpenFile outside the attachments: err=%v", err)
+	}
+}
+
+func TestWhatsApp(t *testing.T) {
+	at := func(d int) time.Time { return time.Date(2026, 8, d, 12, 0, 0, 0, time.UTC) }
+	varint := func(number int, value uint64) []byte {
+		return binary.AppendUvarint(binary.AppendUvarint(nil, uint64(number)<<3), value)
+	}
+	const avatar = "Media/Profile/79161234567-1700000000.jpg"
+	chatStorage := sqliteFile(t, true, func(exec func(string, ...any)) {
+		exec(`CREATE TABLE ZWACHATSESSION (Z_PK INTEGER PRIMARY KEY, ZCONTACTJID VARCHAR, ZCONTACTIDENTIFIER VARCHAR,
+			ZPARTNERNAME VARCHAR, ZSESSIONTYPE INTEGER, ZLASTMESSAGEDATE TIMESTAMP, ZREMOVED INTEGER, ZLASTMESSAGE INTEGER,
+			ZLASTMESSAGETEXT VARCHAR)`)
+		exec(`CREATE TABLE ZWAMESSAGE (Z_PK INTEGER PRIMARY KEY, ZCHATSESSION INTEGER, ZTEXT VARCHAR, ZMESSAGEDATE TIMESTAMP,
+			ZISFROMME INTEGER, ZFROMJID VARCHAR, ZGROUPMEMBER INTEGER, ZMESSAGETYPE INTEGER, ZGROUPEVENTTYPE INTEGER,
+			ZMEDIAITEM INTEGER, ZMESSAGEINFO INTEGER, ZSORT INTEGER)`)
+		exec(`CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMEDIALOCALPATH VARCHAR, ZTITLE VARCHAR,
+			ZVCARDSTRING VARCHAR, ZVCARDNAME VARCHAR, ZFILESIZE INTEGER, ZLATITUDE FLOAT, ZLONGITUDE FLOAT, ZMETADATA BLOB)`)
+		exec("CREATE TABLE ZWAMESSAGEINFO (Z_PK INTEGER PRIMARY KEY, ZRECEIPTINFO BLOB)")
+		exec(`CREATE TABLE ZWAGROUPMEMBER (Z_PK INTEGER PRIMARY KEY, ZCHATSESSION INTEGER, ZMEMBERJID VARCHAR,
+			ZCONTACTNAME VARCHAR, ZFIRSTNAME VARCHAR)`)
+		exec("CREATE TABLE ZWAPROFILEPUSHNAME (Z_PK INTEGER PRIMARY KEY, ZJID VARCHAR, ZPUSHNAME VARCHAR)")
+		// One person under a number and a LID; a group; a status feed, a deleted
+		// chat and one with nothing shown are left out.
+		exec(`INSERT INTO ZWACHATSESSION VALUES
+			(1, '79161234567@s.whatsapp.net', NULL, '+7 916 123-45-67', 0, ?, 0, 3, 'YiQ3MjI1Q0I1'),
+			(2, '555@lid', '79161234567@s.whatsapp.net', NULL, 0, ?, 0, 5, NULL),
+			(3, '120363-1@g.us', NULL, 'Climbing', 1, ?, 0, 8, NULL),
+			(4, '79161234567@status', NULL, NULL, 3, ?, 0, NULL, NULL),
+			(5, '4911@s.whatsapp.net', NULL, 'Gone', 0, ?, 1, NULL, NULL),
+			(6, '4922@s.whatsapp.net', NULL, NULL, 0, ?, 0, 14, NULL),
+			(7, '0@s.whatsapp.net', NULL, 'WhatsApp', 0, ?, 0, 15, NULL)`,
+			coreData(at(3)), coreData(at(4)), coreData(at(6)), coreData(at(7)), coreData(at(7)), coreData(at(7)),
+			coreData(at(28)))
+		exec(`INSERT INTO ZWAGROUPMEMBER VALUES (1, 3, '4915112345678@s.whatsapp.net', '+49 151 12345678', NULL),
+			(2, 3, '777@lid', NULL, NULL)`)
+		exec("INSERT INTO ZWAPROFILEPUSHNAME VALUES (1, '4915112345678@s.whatsapp.net', 'Max')")
+		exec(`INSERT INTO ZWAMEDIAITEM VALUES (1, NULL, NULL, NULL, NULL, 0, NULL, NULL, ?),
+			(2, NULL, 'Peak', NULL, NULL, 0, 46.5, 8.0, NULL)`, protoBytes(87, protoBytes(1, varint(3, 125))))
+		exec("INSERT INTO ZWAMESSAGEINFO VALUES (1, ?)", protoBytes(8, protoBytes(2, []byte("Where?"))))
+		for _, m := range [][]any{
+			// id, chat, text, day, from me, from, member, type, event, media, info, sort
+			{1, 1, "hi", 1, 1, nil, nil, 0, 2, nil, nil, 1},
+			{2, 1, nil, 2, 1, nil, nil, 59, 0, 1, nil, 2},                            // a call, 125 s
+			{3, 1, nil, 3, 0, "79161234567@s.whatsapp.net", nil, 10, 1, nil, nil, 3}, // a missed voice call
+			{4, 1, nil, 0, 0, nil, nil, 10, 2, nil, nil, 0},                          // end-to-end encryption
+			{5, 2, "from lid", 4, 0, "555@lid", nil, 0, 2, nil, nil, 1},
+			{6, 3, nil, 1, 0, "120363-1@g.us", nil, 6, 12, nil, nil, 1}, // you created the group
+			{7, 3, nil, 1, 0, "120363-1@g.us", 1, 6, 2, nil, nil, 2},    // you added Max
+			{8, 3, "salut", 2, 0, "120363-1@g.us", 2, 0, 2, nil, nil, 3},
+			{9, 3, nil, 3, 0, "120363-1@g.us", 1, 14, 0, nil, nil, 4},        // deleted
+			{10, 3, nil, 4, 1, nil, nil, 46, 0, nil, 1, 5},                   // a poll
+			{11, 3, nil, 5, 0, "120363-1@g.us", 2, 5, 0, 2, nil, 6},          // a location
+			{12, 3, nil, 5, 0, "120363-1@g.us", 1, 66, 0, nil, nil, 7},       // an album link
+			{13, 3, "Climbing", 6, 0, "120363-1@g.us", 1, 6, 1, nil, nil, 8}, // Max renamed it
+			{14, 6, nil, 7, 0, nil, nil, 66, 0, nil, nil, 1},
+			{15, 7, nil, 7, 0, nil, nil, 10, 2, nil, nil, 1}, // WhatsApp's own chat: events only
+		} {
+			m[3] = coreData(at(m[3].(int)))
+			exec("INSERT INTO ZWAMESSAGE VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", m...)
+		}
+	})
+	contactsV2 := sqliteFile(t, true, func(exec func(string, ...any)) {
+		exec("CREATE TABLE ZWAADDRESSBOOKCONTACT (Z_PK INTEGER PRIMARY KEY, ZWHATSAPPID VARCHAR, ZFULLNAME VARCHAR, ZLID VARCHAR)")
+		exec("INSERT INTO ZWAADDRESSBOOKCONTACT VALUES (1, '33612345678', 'Jean', '777')")
+	})
+	callHistory := sqliteFile(t, true, func(exec func(string, ...any)) {
+		exec("CREATE TABLE ZWAAGGREGATECALLEVENT (Z_PK INTEGER PRIMARY KEY, ZVIDEO INTEGER)")
+		exec(`CREATE TABLE ZWACDCALLEVENT (Z_PK INTEGER PRIMARY KEY, ZDATE TIMESTAMP, ZDURATION FLOAT, ZGROUPJIDSTRING VARCHAR,
+			Z1CALLEVENTS INTEGER)`)
+		exec("INSERT INTO ZWAAGGREGATECALLEVENT VALUES (1, 1)")
+		exec("INSERT INTO ZWACDCALLEVENT VALUES (1, ?, 125, NULL, 1)", coreData(at(2).Add(-30*time.Second)))
+	})
+	files := append(slices.Clone(homeFiles),
+		fixtureFile{domain: homeDomain, path: contactsDatabase, flags: 1, content: addressBook(t)},
+		fixtureFile{domain: whatsAppDomain, path: whatsAppDatabase, flags: 1, content: chatStorage},
+		fixtureFile{domain: whatsAppDomain, path: whatsAppContacts, flags: 1, content: contactsV2},
+		fixtureFile{domain: whatsAppDomain, path: whatsAppCallLog, flags: 1, content: callHistory},
+		fixtureFile{domain: whatsAppDomain, path: avatar, flags: 1, content: jpegBytes})
+	contents, err := buildBackup(t, "correct horse", files).Unlock(t.Context(), "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contents.Close()
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentWhatsApp, ComponentContacts}) {
+		t.Fatalf("Components = %v", held)
+	}
+
+	chats, err := contents.Chats(t.Context(), ComponentWhatsApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anna, maxP, jean := Participant{Address: "+79161234567", Name: "Anna B Cole"}, Participant{Address: "+4915112345678", Name: "~Max"},
+		Participant{Address: "+33612345678", Name: "Jean"}
+	wantChats := []Chat{
+		// Its last said is the location: an event and an album link are not.
+		{IDs: []int64{3}, Title: "Climbing", Participants: []Participant{maxP, jean}, Last: at(5)},
+		{IDs: []int64{2, 1}, Title: "Anna B Cole", Participants: []Participant{anna}, Avatar: avatar, Last: at(4),
+			Snippet: "from lid"},
+	}
+	for i := range chats {
+		chats[i].Last = chats[i].Last.Truncate(time.Second)
+	}
+	if !reflect.DeepEqual(chats, wantChats) {
+		t.Fatalf("Chats =\n%+v\nwant\n%+v", chats, wantChats)
+	}
+
+	read := func(ids ...int64) []Message {
+		t.Helper()
+		messages, err := contents.Messages(t.Context(), ComponentWhatsApp, ids, 0, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range messages {
+			messages[i].Time = messages[i].Time.Truncate(time.Second)
+		}
+		return messages
+	}
+	wantMessages := []Message{
+		{ID: 3, Time: at(3), Sender: anna.Address, Service: "WhatsApp", Kind: "call", Call: &Call{}},
+		{ID: 2, Time: at(2), FromMe: true, Service: "WhatsApp", Kind: "call",
+			Call: &Call{Duration: 125, Outgoing: true, Answered: true, Video: true}},
+		{ID: 1, Text: "hi", Time: at(1), FromMe: true, Service: "WhatsApp"},
+		{ID: 4, Time: at(0), Sender: anna.Address, Service: "WhatsApp", Kind: "event",
+			Event: &ChatEvent{Code: "encrypted", Actor: &anna}},
+	}
+	if got := read(1); !reflect.DeepEqual(got, wantMessages) {
+		t.Fatalf("Messages =\n%+v\nwant\n%+v", got, wantMessages)
+	}
+	if both := read(1, 2); len(both) != 5 || both[0].ID != 5 || both[0].Sender != anna.Address {
+		t.Fatalf("a person's chats together = %+v", both)
+	}
+	group := read(3)
+	ids := make([]int64, len(group))
+	for i, m := range group {
+		ids[i] = m.ID
+	}
+	switch {
+	case !slices.Equal(ids, []int64{13, 11, 10, 9, 8, 7, 6}):
+		t.Fatalf("group messages %v", ids)
+	case group[0].Event.Code != "renamed" || group[0].Event.Text != "Climbing" || *group[0].Event.Actor != maxP:
+		t.Errorf("rename = %+v", group[0].Event)
+	case group[1].Kind != "location" || group[1].Location.Name != "Peak":
+		t.Errorf("location = %+v", group[1])
+	case group[2].Kind != "poll" || group[2].Text != "Where?":
+		t.Errorf("poll = %+v", group[2])
+	case group[3].Kind != "deleted" || group[3].Sender != maxP.Address:
+		t.Errorf("deleted = %+v", group[3])
+	case group[4].Text != "salut" || group[4].Sender != jean.Address:
+		t.Errorf("message from a LID = %+v", group[4])
+	case group[5].Event.Code != "added" || group[5].Event.Actor != nil || !slices.Equal(group[5].Event.Targets, []Participant{maxP}):
+		t.Errorf("added = %+v", group[5].Event)
+	case group[6].Event.Code != "created" || group[6].Event.Actor != nil:
+		t.Errorf("created = %+v", group[6].Event)
+	}
+	reader, _, err := contents.OpenFile(t.Context(), ComponentWhatsApp, avatar)
+	if err != nil || !bytes.Equal(readAll(t, reader), jpegBytes) {
+		t.Fatalf("OpenFile of a profile picture: %v", err)
+	}
+	if _, _, err := contents.OpenFile(t.Context(), ComponentWhatsApp, whatsAppDatabase); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("OpenFile of the database: err=%v", err)
+	}
+}
+
+func protoBytes(number int, value []byte) []byte {
+	field := binary.AppendUvarint(nil, uint64(number)<<3|2)
+	return append(binary.AppendUvarint(field, uint64(len(value))), value...)
+}
+
+// noteData is a ZDATA blob as Notes writes it: text, and a run naming each
+// attachment its U+FFFCs hold.
+func noteData(t *testing.T, text string, attachments ...string) []byte {
+	t.Helper()
+	varint := func(number int, value uint64) []byte {
+		return binary.AppendUvarint(binary.AppendUvarint(nil, uint64(number)<<3), value)
+	}
+	note := append(protoBytes(2, []byte(text)), protoBytes(5, varint(1, 4))...) // a plain run
+	for _, id := range attachments {
+		info := append(protoBytes(1, []byte(id)), protoBytes(2, []byte("public.data"))...)
+		note = append(note, protoBytes(5, append(varint(1, 1), protoBytes(12, info)...))...)
+	}
+	document := append(varint(2, 1), protoBytes(3, note)...)
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	if _, err := writer.Write(protoBytes(2, document)); err != nil || writer.Close() != nil {
+		t.Fatal("gzip the note")
+	}
+	return buffer.Bytes()
+}
+
+func TestNotes(t *testing.T) {
+	at := func(d int) time.Time { return time.Date(2026, 9, d, 8, 0, 0, 0, time.UTC) }
+	store := sqliteFile(t, true, func(exec func(string, ...any)) {
+		exec(`CREATE TABLE ZICCLOUDSYNCINGOBJECT (Z_PK INTEGER PRIMARY KEY, ZTITLE1 VARCHAR, ZTITLE2 VARCHAR, ZFOLDER INTEGER,
+			ZMODIFICATIONDATE1 TIMESTAMP, ZISPASSWORDPROTECTED INTEGER, ZMARKEDFORDELETION INTEGER, ZIDENTIFIER VARCHAR,
+			ZTYPEUTI VARCHAR, ZALTTEXT VARCHAR, ZURLSTRING VARCHAR, ZMEDIA INTEGER, ZFILENAME VARCHAR, ZPARENTATTACHMENT INTEGER)`)
+		exec("CREATE TABLE ZICNOTEDATA (Z_PK INTEGER PRIMARY KEY, ZNOTE INTEGER, ZDATA BLOB)")
+		exec(`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZTITLE1, ZTITLE2, ZFOLDER, ZMODIFICATIONDATE1, ZISPASSWORDPROTECTED,
+			ZMARKEDFORDELETION) VALUES (1, NULL, 'Trips', NULL, NULL, 0, 0), (2, 'Rome', NULL, 1, ?, 0, 0),
+			(3, 'Bank', NULL, 1, ?, 1, 0), (4, 'Old', NULL, 1, ?, 0, 1), (5, NULL, NULL, 1, NULL, 0, 0)`,
+			coreData(at(1)), coreData(at(2)), coreData(at(3)))
+		exec(`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZIDENTIFIER, ZTYPEUTI, ZALTTEXT, ZMEDIA, ZFILENAME) VALUES
+			(6, 'ATT-IMG', 'public.jpeg', NULL, 7, NULL), (7, 'MEDIA-1', NULL, NULL, NULL, 'IMG_1.jpeg'),
+			(8, 'ATT-TAG', 'com.apple.notes.inlinetextattachment.hashtag', '#rome', NULL, NULL),
+			(9, 'ATT-TABLE', 'com.apple.notes.table', NULL, NULL, NULL), (10, 'ATT-DRAW', 'com.apple.drawing.2', NULL, NULL, NULL),
+			(11, 'ATT-GONE', 'public.heic', NULL, 12, NULL), (12, 'MEDIA-2', NULL, NULL, NULL, 'IMG_2.HEIC'),
+			(13, 'ATT-SCAN', 'com.apple.notes.gallery', NULL, NULL, NULL)`)
+		// A scanned document's pages, in the order scanned; the second shows its processed image.
+		exec(`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZIDENTIFIER, ZTYPEUTI, ZMEDIA, ZFILENAME, ZPARENTATTACHMENT) VALUES
+			(14, 'PAGE-1', 'public.jpeg', 15, NULL, 13), (15, 'MEDIA-3', NULL, NULL, 'scan1.jpg', NULL),
+			(16, 'PAGE-2', 'public.jpeg', NULL, NULL, 13)`)
+		exec("INSERT INTO ZICNOTEDATA VALUES (1, 2, ?), (2, 3, ?), (3, 4, ?), (4, 5, ?)",
+			noteData(t, "Rome\nColosseum \uFFFC at 9 \uFFFC\nПантеон\uFFFC\uFFFC\uFFFC\uFFFC",
+				"ATT-IMG", "ATT-TAG", "ATT-TABLE", "ATT-DRAW", "ATT-GONE", "ATT-SCAN"),
+			[]byte("encrypted bytes"), noteData(t, "Old"), noteData(t, ""))
+	})
+	const image, drawing = "Accounts/ACCOUNT/Media/MEDIA-1/1_GENERATION/IMG_1.jpeg", "Accounts/ACCOUNT/FallbackImages/ATT-DRAW.jpg"
+	const page1, page2 = "Accounts/ACCOUNT/Media/MEDIA-3/scan1.jpg", "Accounts/ACCOUNT/FallbackImages/PAGE-2.jpg"
+	files := append(slices.Clone(homeFiles), fixtureFile{domain: notesDomain, path: notesDatabase, flags: 1, content: store})
+	for _, file := range []string{image, drawing, page1, page2} {
+		files = append(files, fixtureFile{domain: notesDomain, path: file, flags: 1, content: jpegBytes})
+	}
+	contents, err := buildBackup(t, "correct horse", files).Unlock(t.Context(), "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contents.Close()
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentNotes}) {
+		t.Fatalf("Components = %v", held)
+	}
+	notes, err := contents.Notes(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range notes {
+		notes[i].Modified = notes[i].Modified.Truncate(time.Second)
+	}
+	want := []Note{
+		{ID: 3, Title: "Bank", Folder: "Trips", Modified: at(2), Locked: true},
+		{ID: 2, Title: "Rome", Folder: "Trips", Modified: at(1), Text: "Rome\nColosseum \uFFFC at 9 #rome\nПантеон\uFFFC\uFFFC\uFFFC\uFFFC",
+			Attachments: []Attachment{{Name: "IMG_1.jpeg", Path: image}, {Name: "Table"}, {Name: "ATT-DRAW.jpg", Path: drawing},
+				{Name: "IMG_2.HEIC", Missing: true},
+				{Name: "Scanned document", Pages: []Attachment{{Name: "scan1.jpg", Path: page1}, {Name: "PAGE-2.jpg", Path: page2}}}}},
+	}
+	if !reflect.DeepEqual(notes, want) {
+		t.Fatalf("Notes =\n%+v\nwant\n%+v", notes, want)
+	}
+	reader, _, err := contents.OpenFile(t.Context(), ComponentNotes, image)
+	if err != nil || !bytes.Equal(readAll(t, reader), jpegBytes) {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, _, err := contents.OpenFile(t.Context(), ComponentNotes, notesDatabase); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("OpenFile of the database: err=%v", err)
+	}
+}
+
+func TestAddressKey(t *testing.T) {
+	for _, same := range [][2]string{
+		{"+7 916 123-45-67", "8 (916) 123-45-67"},
+		{"+41 44 123 45 67", "044 123 45 67"},
+		{"+1 555 123 4567", "(555) 123-4567"},
+		{"Zoe@Example.com", "zoe@example.com"},
+	} {
+		if addressKey(same[0]) != addressKey(same[1]) {
+			t.Errorf("%q and %q do not match", same[0], same[1])
+		}
 	}
 }

@@ -225,7 +225,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	finalCtx := context.WithoutCancel(ctx)
 	if deleteBackups {
 		handedOff = true
-		if err := s.library.DeleteSource(finalCtx, udid, releaseSnapshots); err != nil {
+		if err := s.deleteSource(finalCtx, udid, releaseSnapshots); err != nil {
 			return err
 		}
 	}

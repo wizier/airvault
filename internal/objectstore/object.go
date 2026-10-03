@@ -151,15 +151,15 @@ func (r *objectReader) failed(err error) error {
 
 func (r *objectReader) Close() error { return r.file.Close() }
 
-// File reads a stored file at any offset. Content read in order from its start
-// is checked, overlapping reads included. A read that skips ahead hashes the
-// skipped part first, so a resumed download is still verified by the time its
-// last byte goes out; a random File leaves it unchecked instead.
+// File reads a stored file at any offset, one read at a time. What is read in
+// order from the start is checked, a mismatch failing that read and all later
+// ones; a read that skips ahead hashes the skipped part first, unless random.
 type File struct {
 	key    string
 	file   *os.File
 	check  *contentCheck
 	random bool
+	err    error // the integrity failure every read repeats
 }
 
 func (s *Store) openFile(source, key, ref string, size int64, random bool) (*File, error) {
@@ -173,6 +173,9 @@ func (s *Store) openFile(source, key, ref string, size int64, random bool) (*Fil
 func (f *File) Size() int64 { return f.check.size }
 
 func (f *File) ReadAt(buffer []byte, offset int64) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
 	if offset >= f.check.size {
 		return 0, io.EOF
 	}
@@ -190,7 +193,10 @@ func (f *File) ReadAt(buffer []byte, offset int64) (int, error) {
 		err = f.check.feed(buffer[fed-offset : read])
 	}
 	if errors.Is(err, ErrIntegrity) {
-		err = errors.Join(err, setAside(f.file.Name()))
+		// The bytes that failed the check never go out, so a damaged file
+		// cannot pass as a whole one.
+		f.err = fmt.Errorf("read %q: %w", f.key, errors.Join(err, setAside(f.file.Name())))
+		return 0, f.err
 	}
 	switch {
 	case err != nil:

@@ -3,8 +3,9 @@
   // HEIC/HEIF are transcoded server-side.
   const PREVIEW_IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif']);
 
-  // Mirrors videoType in internal/handler/media_preview.go.
+  // Both mirror streamType in internal/handler/media_preview.go.
   const PLAYABLE_VIDEO_EXT = new Set(['mov', 'mp4', 'm4v']);
+  const PLAYABLE_AUDIO_EXT = new Set(['m4a', 'mp3', 'aac', 'opus', 'ogg', 'wav']);
 
   const extOf = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
 
@@ -14,6 +15,10 @@
 
   export function isPlayableVideo(name: string): boolean {
     return PLAYABLE_VIDEO_EXT.has(extOf(name));
+  }
+
+  export function isPlayableAudio(name: string): boolean {
+    return PLAYABLE_AUDIO_EXT.has(extOf(name));
   }
 </script>
 

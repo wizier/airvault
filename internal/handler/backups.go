@@ -92,40 +92,15 @@ func (h *Handler) unlockBackup(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-type backupComponentsResponse struct {
-	Components []iosbackup.Component `json:"components"`
-}
-
-func (h *Handler) backupComponents(c *echo.Context) error {
-	held, err := h.svc.BackupComponents(c.Request().Context(), c.Param("snapshotId"))
-	if err != nil {
-		return err
+// backupJSON answers with what read finds in the restore point, as {"<key>": …}.
+func backupJSON[T any](key string, read func(ctx context.Context, snapshotID string) (T, error)) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		value, err := read(c.Request().Context(), c.Param("snapshotId"))
+		if err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, map[string]T{key: value})
 	}
-	return c.JSON(http.StatusOK, backupComponentsResponse{Components: held})
-}
-
-type backupCallsResponse struct {
-	Calls []iosbackup.Call `json:"calls"`
-}
-
-func (h *Handler) backupCalls(c *echo.Context) error {
-	calls, err := h.svc.BackupCalls(c.Request().Context(), c.Param("snapshotId"))
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, backupCallsResponse{Calls: calls})
-}
-
-type backupContactsResponse struct {
-	Contacts []iosbackup.Contact `json:"contacts"`
-}
-
-func (h *Handler) backupContacts(c *echo.Context) error {
-	contacts, err := h.svc.BackupContacts(c.Request().Context(), c.Param("snapshotId"))
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, backupContactsResponse{Contacts: contacts})
 }
 
 func (h *Handler) backupPhotos(c *echo.Context) error {
@@ -139,18 +114,6 @@ func (h *Handler) backupPhotos(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, galleryResponse{Assets: assets, Total: total})
-}
-
-type photoFiltersResponse struct {
-	Filters []service.PhotoFilter `json:"filters"`
-}
-
-func (h *Handler) backupPhotoFilters(c *echo.Context) error {
-	filters, err := h.svc.BackupPhotoFilters(c.Request().Context(), c.Param("snapshotId"))
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, photoFiltersResponse{Filters: filters})
 }
 
 type photoMonthsResponse struct {
@@ -177,20 +140,20 @@ func (h *Handler) backupPhotoThumbs(c *echo.Context) error {
 	return c.JSON(http.StatusOK, thumbBatchResponse{Thumbs: thumbs})
 }
 
-type backupChatsResponse struct {
-	Chats []iosbackup.Chat `json:"chats"`
+type backupMessagesResponse struct {
+	Messages []iosbackup.Message `json:"messages"`
 }
 
+// component is the part of the backup a route names; one it does not know
+// finds nothing.
+func component(c *echo.Context) iosbackup.Component { return iosbackup.Component(c.Param("component")) }
+
 func (h *Handler) backupChats(c *echo.Context) error {
-	chats, err := h.svc.BackupChats(c.Request().Context(), c.Param("snapshotId"))
+	chats, err := h.svc.BackupChats(c.Request().Context(), c.Param("snapshotId"), component(c))
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, backupChatsResponse{Chats: chats})
-}
-
-type backupMessagesResponse struct {
-	Messages []iosbackup.Message `json:"messages"`
+	return c.JSON(http.StatusOK, map[string][]iosbackup.Chat{"chats": chats})
 }
 
 func (h *Handler) backupMessages(c *echo.Context) error {
@@ -202,49 +165,45 @@ func (h *Handler) backupMessages(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	messages, err := h.svc.BackupMessages(c.Request().Context(), c.Param("snapshotId"), chatIDs, offset, limit)
+	messages, err := h.svc.BackupMessages(c.Request().Context(), c.Param("snapshotId"), component(c), chatIDs, offset, limit)
 	if err != nil {
 		return err
 	}
 	return c.JSON(http.StatusOK, backupMessagesResponse{Messages: messages})
 }
 
-// backupFileOpener opens a file a backup view serves, by its path.
-type backupFileOpener func(ctx context.Context, snapshotID, path string) (*service.BackupFileDownload, error)
-
-func backupFileStat(open backupFileOpener) echo.HandlerFunc {
-	return func(c *echo.Context) error {
-		download, err := open(c.Request().Context(), c.Param("snapshotId"), c.QueryParam("path"))
-		if err != nil {
-			return err
-		}
-		defer download.Close()
-		stat := service.DeviceFileStat{Size: download.Size()}
-		if modified := download.ModTime(); !modified.IsZero() {
-			stat.Modified = new(modified.Unix())
-		}
-		return c.JSON(http.StatusOK, stat)
-	}
+// openBackupFile opens the file of a component a request names, by its path.
+func (h *Handler) openBackupFile(c *echo.Context) (*service.BackupFileDownload, string, error) {
+	filePath := c.QueryParam("path")
+	download, err := h.svc.OpenBackupFile(c.Request().Context(), c.Param("snapshotId"), component(c), filePath)
+	return download, path.Base(filePath), err
 }
 
-func downloadBackupFile(open backupFileOpener) echo.HandlerFunc {
-	return func(c *echo.Context) error {
-		filePath := c.QueryParam("path")
-		download, err := open(c.Request().Context(), c.Param("snapshotId"), filePath)
-		if err != nil {
-			return err
-		}
-		return serveDownload(c, download, path.Base(filePath))
+func (h *Handler) backupFileStat(c *echo.Context) error {
+	download, _, err := h.openBackupFile(c)
+	if err != nil {
+		return err
 	}
+	defer download.Close()
+	stat := service.DeviceFileStat{Size: download.Size()}
+	if modified := download.ModTime(); !modified.IsZero() {
+		stat.Modified = new(modified.Unix())
+	}
+	return c.JSON(http.StatusOK, stat)
 }
 
-func previewBackupFile(open backupFileOpener) echo.HandlerFunc {
-	return func(c *echo.Context) error {
-		filePath := c.QueryParam("path")
-		download, err := open(c.Request().Context(), c.Param("snapshotId"), filePath)
-		if err != nil {
-			return err
-		}
-		return streamPreview(c, download, path.Base(filePath))
+func (h *Handler) downloadBackupFile(c *echo.Context) error {
+	download, name, err := h.openBackupFile(c)
+	if err != nil {
+		return err
 	}
+	return serveDownload(c, download, name)
+}
+
+func (h *Handler) previewBackupFile(c *echo.Context) error {
+	download, name, err := h.openBackupFile(c)
+	if err != nil {
+		return err
+	}
+	return streamPreview(c, download, name)
 }

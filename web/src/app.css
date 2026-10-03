@@ -85,8 +85,8 @@
     "Liberation Mono", monospace;
 }
 
-/* iOS Messages' bubbles whatever the app's theme: sent ones blue for iMessage
-   and green for SMS and RCS, received ones gray. */
+/* The apps' own bubbles whatever AirVault's theme: Messages' sent ones blue for
+   iMessage and green for SMS and RCS, WhatsApp's pale green, received gray. */
 @layer utilities {
   .chat-bubble-imessage {
     background-color: light-dark(#007aff, #0a84ff);
@@ -95,6 +95,10 @@
   .chat-bubble-sms {
     background-color: light-dark(#34c759, #30d158);
     color: #fff;
+  }
+  .chat-bubble-whatsapp {
+    background-color: light-dark(#d9fdd3, #005c4b);
+    color: light-dark(#111b21, #e9edef);
   }
   .chat-bubble-received {
     background-color: light-dark(#e9e9eb, #3a3a3c);
