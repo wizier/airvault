@@ -1,4 +1,4 @@
-import type { RunningProgress, RunStage } from './api/backups';
+import type { RunKind, RunningProgress, RunStage } from './api/backups';
 import type { AutoBackupDays, AutoBackupState, BatteryState, Connection, Device } from './api/devices';
 import type { IconName } from './components/icons';
 import { errorText } from './error-text';
@@ -373,6 +373,50 @@ const STAGE_LABELS: Record<RunStage, string> = {
 };
 
 /** A server ahead of this client can name a stage it has no label for. */
-export function stageUi(stage: RunStage | undefined, restore?: boolean): string {
-  return (stage && STAGE_LABELS[stage]) || (restore ? 'Restoring…' : 'Backing up…');
+export function stageUi(stage: RunStage | undefined, kind: RunKind = 'backup'): string {
+  return (stage && STAGE_LABELS[stage]) || RUN_COPY[kind].busy;
 }
+
+interface RunCopy {
+  /** Fallback stage label. */
+  busy: string;
+  running: string;
+  stopHint: string;
+  cancelTitle: string;
+  stopLabel: string;
+  stopEffect: string;
+  /** What the byte counter counts. */
+  counted: string;
+}
+
+export const RUN_COPY: Record<RunKind, RunCopy> = {
+  backup: {
+    busy: 'Backing up…',
+    running: 'A backup is running right now',
+    stopHint: 'Stop this attempt and discard the data received during it',
+    cancelTitle: 'Cancel this backup?',
+    stopLabel: 'Discard attempt',
+    stopEffect:
+      'This unfinished attempt and all data received during it will be discarded. Existing completed restore points will not be changed.',
+    counted: 'transferred',
+  },
+  restore: {
+    busy: 'Restoring…',
+    running: 'A restore is running right now',
+    stopHint: 'Stop this restore; the phone then reports it failed and restarts',
+    cancelTitle: 'Cancel this restore?',
+    stopLabel: 'Stop restore',
+    stopEffect:
+      'The phone stays on “Restore in Progress” until iOS gives up, then reports that the restore failed and restarts. The stored backup is not changed.',
+    counted: 'transferred',
+  },
+  verify: {
+    busy: 'Checking the stored backups…',
+    running: 'An integrity check is running right now',
+    stopHint: 'Stop the integrity check',
+    cancelTitle: 'Cancel this integrity check?',
+    stopLabel: 'Stop check',
+    stopEffect: 'The check will stop. What it has already found stays marked.',
+    counted: 'checked',
+  },
+};

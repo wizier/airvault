@@ -88,6 +88,11 @@ class Resource<T> {
     this.loading = false;
   }
 
+  /** Refreshes only while mounted; the next mount fetches anyway. */
+  invalidate(): void {
+    if (this.active) void this.refresh();
+  }
+
   /** For an already-confirmed projection; the SSE invalidation remains the
    *  canonical refresh. No-op until the first successful load. */
   mutate(updater: (current: T) => T): void {
@@ -129,8 +134,7 @@ class KeyedResources<T> {
   }
 
   invalidate(key: string): void {
-    const resource = this.#entries.get(key);
-    if (resource?.active) void resource.refresh();
+    this.#entries.get(key)?.invalidate();
   }
 
   mutate(key: string, updater: (current: T) => T): void {
@@ -138,9 +142,7 @@ class KeyedResources<T> {
   }
 
   invalidateActive(): void {
-    for (const resource of this.#entries.values()) {
-      if (resource.active) void resource.refresh();
-    }
+    for (const resource of this.#entries.values()) resource.invalidate();
   }
 }
 
@@ -162,16 +164,24 @@ export const pairStateStore = new Resource(getPairState);
 // Mutations below apply their confirmed result to every affected list at once;
 // the SSE events that follow confirm it idempotently.
 
+export function patchDevice(udid: string, patch: (device: Device) => Device): void {
+  devicesStore.mutate((devices) => devices.map((d) => (d.udid === udid ? patch(d) : d)));
+}
+
+export function dropDevice(udid: string): void {
+  devicesStore.mutate((devices) => devices.filter((d) => d.udid !== udid));
+}
+
 export async function unpair(udid: string, deleteBackups: boolean): Promise<void> {
   await unpairDevice(udid, { deleteBackups });
-  devicesStore.mutate((devices) => devices.filter((d) => d.udid !== udid));
+  dropDevice(udid);
 }
 
 /** The erased phone no longer knows this host, so like an unpaired one it
  *  leaves the list; its backups stay. */
 export async function erase(udid: string): Promise<void> {
   await eraseDevice(udid);
-  devicesStore.mutate((devices) => devices.filter((d) => d.udid !== udid));
+  dropDevice(udid);
 }
 
 /** An orphaned device exists only through its backups, so it leaves the list. */
@@ -180,15 +190,17 @@ export async function deleteAllBackups(device: Device): Promise<void> {
   await deleteDeviceBackups(udid);
   restorePointResources.mutate(udid, () => []);
   restoreSourcesStore.mutate((sources) => sources.filter((s) => s.udid !== udid));
-  devicesStore.mutate((devices) =>
-    device.orphaned
-      ? devices.filter((d) => d.udid !== udid)
-      : devices.map((d) =>
-          d.udid === udid
-            ? { ...d, diskBytes: undefined, restorePoints: undefined, lastBackup: undefined, lastRunErrors: undefined }
-            : d,
-        ),
-  );
+  if (device.orphaned) {
+    dropDevice(udid);
+    return;
+  }
+  patchDevice(udid, (d) => ({
+    ...d,
+    diskBytes: undefined,
+    restorePoints: undefined,
+    lastBackup: undefined,
+    lastRunErrors: undefined,
+  }));
 }
 
 /** Disk space frees in the background; a later backup.catalog event refreshes sizes. */

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { statusStore, devicesStore } from '../lib/stores.svelte';
+  import Alert from '../lib/components/Alert.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import DeviceTile from '../lib/components/DeviceTile.svelte';
   import OrphanBackups from '../lib/components/OrphanBackups.svelte';
@@ -38,18 +39,12 @@
   </div>
 
   {#if muxerDown}
-    <div role="alert" class="alert alert-warning alert-soft">
-      <Icon name="alert" size={18} />
-      <div>
-        <p class="font-medium">USB/Wi-Fi is unavailable</p>
-        <p class="text-sm opacity-80">
-          netmuxd isn't answering, so devices can't be reached. AirVault reconnects on its own.
-        </p>
-        {#if muxer?.error}
-          <p class="mt-1 font-mono text-xs opacity-60">{muxer.error}</p>
-        {/if}
-      </div>
-    </div>
+    <Alert tone="warning" title="USB/Wi-Fi is unavailable">
+      netmuxd isn't answering, so devices can't be reached. AirVault reconnects on its own.
+      {#if muxer?.error}
+        <p class="mt-1 font-mono text-xs opacity-75">{muxer.error}</p>
+      {/if}
+    </Alert>
   {/if}
 
   {#if showOffline}

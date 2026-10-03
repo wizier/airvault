@@ -1,12 +1,13 @@
 <script lang="ts">
   // Open while mounted; it owns busy and failure state, and a successful action
   // closes it.
-  import type { Snippet } from 'svelte';
-  import { errMsg } from '../api/client';
+  import { untrack, type Snippet } from 'svelte';
   import type { ErrorTextKey } from '../error-text';
+  import { Submit } from '../submit.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import type { IconName } from './icons';
+  import Modal from './Modal.svelte';
 
   let {
     title,
@@ -35,47 +36,26 @@
     children: Snippet;
   } = $props();
 
-  let dialog: HTMLDialogElement;
-  let busy = $state(false);
-  let error = $state<string | null>(null);
+  let modal: Modal;
+  // The failure fallback is fixed for the dialog's life.
+  const submit = new Submit(untrack(() => failureCode));
 
   async function confirm() {
-    busy = true;
-    error = null;
-    try {
-      await onconfirm();
-      dialog.close();
-    } catch (err) {
-      error = errMsg(err, failureCode);
-    } finally {
-      busy = false;
-    }
+    if (await submit.run(onconfirm)) modal.close();
   }
 </script>
 
-<dialog
-  class="modal"
-  bind:this={dialog}
-  {@attach (d) => d.showModal()}
-  oncancel={(event) => busy && event.preventDefault()}
-  {onclose}
->
-  <div class="modal-box">
-    <h3 class="text-lg font-bold">{title}</h3>
-    {@render children()}
-    <ErrorLine {error} className="mt-3" />
-    <div class="modal-action">
-      <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => dialog.close()}>{cancelLabel}</button>
-      <button type="button" class={`btn ${confirmClass}`} disabled={busy || confirmDisabled} onclick={confirm}>
-        {#if busy}
-          <span class="loading loading-spinner loading-xs"></span> {busyLabel}
-        {:else}
-          <Icon name={icon} size={15} /> {confirmLabel}
-        {/if}
-      </button>
-    </div>
-  </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close" disabled={busy}>close</button>
-  </form>
-</dialog>
+<Modal bind:this={modal} {title} locked={submit.busy} {onclose}>
+  {@render children()}
+  <ErrorLine error={submit.failure} className="mt-3" />
+  {#snippet actions()}
+    <button type="button" class="btn btn-ghost" disabled={submit.busy} onclick={() => modal.close()}>{cancelLabel}</button>
+    <button type="button" class={`btn ${confirmClass}`} disabled={submit.busy || confirmDisabled} onclick={confirm}>
+      {#if submit.busy}
+        <span class="loading loading-spinner loading-xs"></span> {busyLabel}
+      {:else}
+        <Icon name={icon} size={15} /> {confirmLabel}
+      {/if}
+    </button>
+  {/snippet}
+</Modal>

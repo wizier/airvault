@@ -5,8 +5,8 @@
   import { formatDateTime, relativeTime } from '../format';
   import { erase, hardwareResources } from '../stores.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import Alert from './Alert.svelte';
   import FindMyAlert from './FindMyAlert.svelte';
-  import Icon from './Icon.svelte';
 
   let { device, onclose }: { device: Device; onclose: () => void } = $props();
 
@@ -45,13 +45,7 @@
         <span class="font-medium text-base-content/80" title={formatDateTime(device.lastBackup)}>{relativeTime(device.lastBackup, $now)}</span>.
       </p>
     {:else}
-      <div role="alert" class="alert alert-error alert-soft">
-        <Icon name="alert" size={18} />
-        <div>
-          <p class="font-medium">This phone has no backup</p>
-          <p class="mt-1 opacity-80">Everything on it will be lost. Back it up first.</p>
-        </div>
-      </div>
+      <Alert tone="error" title="This phone has no backup">Everything on it will be lost. Back it up first.</Alert>
     {/if}
     {#if findMyOn}
       <FindMyAlert udid={device.udid} />

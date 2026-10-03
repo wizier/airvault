@@ -1,11 +1,13 @@
-import type { RunningProgress } from './api/backups';
+import type { RunKind, RunningProgress, RunStage } from './api/backups';
 import type { Connection } from './api/devices';
 import type { TrustStatus } from './api/pairing';
 import type { MuxerStatus } from './api/system';
 import {
   deviceAppsResources,
   devicesStore,
+  dropDevice,
   pairStateStore,
+  patchDevice,
   restoreSourcesStore,
   restorePointResources,
   statusStore,
@@ -46,8 +48,7 @@ interface UdidEvent {
 interface RunEvent {
   runId: string;
   udid: string;
-  restore?: boolean;
-  verify?: boolean;
+  kind: RunKind;
   /** Set on a terminal event of a run the automatic-backup trigger started. */
   auto?: boolean;
 }
@@ -73,42 +74,41 @@ function on<T>(es: EventSource, type: string, handler: (data: T) => void): void 
 }
 
 /** Coalesces bursty events (e.g. added+updated for one device) into one refetch. */
-function debouncedRefresh(store: { refresh(): Promise<void> }, ms = 250): () => void {
-  let timer: ReturnType<typeof setTimeout> | null = null;
+function debounced(refresh: () => void, ms = 250): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return () => {
-    if (timer !== null) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      void store.refresh();
-    }, ms);
+    clearTimeout(timer);
+    timer = setTimeout(refresh, ms);
   };
 }
 
-const refreshDevices = debouncedRefresh(devicesStore);
-const refreshStatus = debouncedRefresh(statusStore);
+const refreshDevices = debounced(() => void devicesStore.refresh());
+const refreshStatus = debounced(() => void statusStore.refresh());
 
 // /api/pair/state costs real lockdown traffic, so it refreshes only while the
 // pairing modal is mounted; a mount fetches anyway, so nothing is missed.
-const refreshPairStateDebounced = debouncedRefresh(pairStateStore, 120);
-function refreshPairState(): void {
-  if (pairStateStore.active) refreshPairStateDebounced();
-}
+const refreshPairState = debounced(() => pairStateStore.invalidate(), 120);
 
 /** Optimistic; a debounced refresh confirms the authoritative list shortly after. */
 function patchConnection(udid: string, connection: Connection): void {
-  devicesStore.mutate((list) =>
-    list.map((d) => (d.udid === udid ? { ...d, connection } : d)),
-  );
+  patchDevice(udid, (d) => ({ ...d, connection }));
 }
 
 /** GET /status also rebuilds live progress: terminal events may have been missed. */
 function resyncAll(): void {
   void statusStore.refresh();
   void devicesStore.refresh();
-  if (restoreSourcesStore.active) void restoreSourcesStore.refresh();
+  restoreSourcesStore.invalidate();
   restorePointResources.invalidateActive();
   deviceAppsResources.invalidateActive();
 }
+
+// The service's stage events land right after; these match its start states.
+const START_STAGE: Record<RunKind, RunStage> = {
+  backup: 'waiting_for_device',
+  restore: 'restoring',
+  verify: 'verifying',
+};
 
 function dropRun(udid: string): void {
   statusStore.mutate((s) => ({ ...s, running: s.running.filter((r) => r.udid !== udid) }));
@@ -117,25 +117,21 @@ function dropRun(udid: string): void {
 /** The failed patch is instant feel only; the server folds the last failed run
  *  into the device overview. */
 function backupFinished(
-  d: { udid: string; restore?: boolean; verify?: boolean; auto?: boolean; errorCode?: string },
+  d: RunEvent & { errorCode?: string },
   state: 'completed' | 'failed' | 'cancelled',
 ): void {
   dropRun(d.udid);
-  if (!d.restore && state === 'completed') {
+  if (d.kind !== 'restore' && state === 'completed') {
     restorePointResources.invalidate(d.udid);
-    if (restoreSourcesStore.active) void restoreSourcesStore.refresh();
+    restoreSourcesStore.invalidate();
   } else if (state === 'failed' && !(d.auto && d.errorCode === 'backup_not_confirmed')) {
     // Optimistic projection of the server's per-kind last-run error; the
     // refetch below confirms it. An unanswered automatic prompt is not one:
     // it only pauses the trigger.
-    const kind = d.restore ? 'restore' : d.verify ? 'verify' : 'backup';
-    devicesStore.mutate((devices) =>
-      devices.map((device) =>
-        device.udid === d.udid
-          ? { ...device, lastRunErrors: { ...device.lastRunErrors, [kind]: d.errorCode ?? `${kind}_failed` } }
-          : device,
-      ),
-    );
+    patchDevice(d.udid, (device) => ({
+      ...device,
+      lastRunErrors: { ...device.lastRunErrors, [d.kind]: d.errorCode ?? `${d.kind}_failed` },
+    }));
   }
   refreshDevices();
   refreshStatus();
@@ -188,7 +184,7 @@ class EventsClient {
     on<UdidEvent>(es, 'device.added', () => refreshDevices());
     on<UdidEvent>(es, 'device.removed', (d) => {
       dropRun(d.udid); // a forgotten device has no live progress
-      devicesStore.mutate((devices) => devices.filter((device) => device.udid !== d.udid));
+      dropDevice(d.udid);
     });
     on<DeviceUpdatedEvent>(es, 'device.updated', (d) => {
       if (d.connection) patchConnection(d.udid, d.connection);
@@ -209,14 +205,12 @@ class EventsClient {
         ...s,
         running: [
           ...s.running.filter((r) => r.udid !== d.udid),
-          // The service's stage events land right after; these match its start states.
           {
             runId: d.runId,
             udid: d.udid,
             progress: 0,
-            stage: d.restore ? 'restoring' : d.verify ? 'verifying' : 'waiting_for_device',
-            restore: d.restore,
-            verify: d.verify,
+            stage: START_STAGE[d.kind],
+            kind: d.kind,
             transferred: 0,
             speed: 0,
           },
@@ -236,7 +230,7 @@ class EventsClient {
     on<RunEvent>(es, 'backup.cancelled', (d) => backupFinished(d, 'cancelled'));
     on<UdidEvent>(es, 'backup.catalog', (d) => {
       restorePointResources.invalidate(d.udid);
-      if (restoreSourcesStore.active) void restoreSourcesStore.refresh();
+      restoreSourcesStore.invalidate();
       refreshDevices();
     });
     on<UdidEvent>(es, 'app.catalog', (d) => deviceAppsResources.invalidate(d.udid));

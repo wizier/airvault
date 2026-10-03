@@ -1,3 +1,4 @@
+import type { RunKind } from './backups';
 import { apiUrl, devicePath, request } from './client';
 
 export type Connection = 'wifi' | 'usb' | 'offline';
@@ -17,7 +18,7 @@ export interface Device {
   lastBackup?: string;
   /** Per-kind code of the most recent failed run; the displayed status is
    *  derived client-side. */
-  lastRunErrors?: { backup?: string; restore?: string; verify?: string };
+  lastRunErrors?: Partial<Record<RunKind, string>>;
   /** Unique object payload referenced by all restore points. */
   diskBytes?: number;
   restorePoints?: number;
@@ -111,11 +112,8 @@ export async function listDevices(signal?: AbortSignal): Promise<Device[]> {
 }
 
 export async function unpairDevice(udid: string, options: UnpairOptions = {}): Promise<void> {
-  const query = new URLSearchParams();
-  if (options.deleteBackups) query.set('deleteBackups', 'true');
-  const encodedQuery = query.toString();
-  const suffix = encodedQuery ? `?${encodedQuery}` : '';
-  await request<void>(`${devicePath(udid)}/pairing${suffix}`, { method: 'DELETE' });
+  const query = options.deleteBackups ? '?deleteBackups=true' : '';
+  await request<void>(`${devicePath(udid)}/pairing${query}`, { method: 'DELETE' });
 }
 
 export async function changeBackupPassword(

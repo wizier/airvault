@@ -3,13 +3,14 @@
   // last-restore-error); only errors of the start request itself show inline,
   // where they can be corrected.
   import { startRestore, type RestorePoint } from '../api/backups';
-  import { errorCode } from '../api/client';
-  import { errorText } from '../error-text';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
   import { hardwareResources, restoreSourcesStore } from '../stores.svelte';
+  import { Submit } from '../submit.svelte';
+  import Alert from './Alert.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import FindMyAlert from './FindMyAlert.svelte';
   import Icon from './Icon.svelte';
+  import Modal from './Modal.svelte';
   import PasswordField from './PasswordField.svelte';
 
   let {
@@ -31,7 +32,7 @@
     onclose: () => void;
   } = $props();
 
-  let dialog: HTMLDialogElement;
+  let modal: Modal;
   // Every on-disk backup that could be applied (own + other phones'), newest
   // first; a damaged one never can.
   $effect(() => restoreSourcesStore.start());
@@ -46,13 +47,19 @@
   let password = $state('');
   // Standard restore follows Finder's effective behavior. Advanced controls
   // are phrased as exceptions, so every enabled switch is deliberate.
-  let keepCurrentSettings = $state(false);
-  let skipSystemFiles = $state(false);
-  let keepItemsNotInBackup = $state(false);
-  let doNotRestart = $state(false);
-  let busy = $state(false);
-  let failureCode = $state<string | null>(null);
-  const failure = $derived(failureCode && errorText(failureCode, 'restore_start_failed'));
+  let overrides = $state({
+    keepCurrentSettings: false,
+    skipSystemFiles: false,
+    keepItemsNotInBackup: false,
+    doNotRestart: false,
+  });
+  const OVERRIDES: { key: keyof typeof overrides; label: string; hint: string }[] = [
+    { key: 'keepCurrentSettings', label: 'Keep current settings', hint: "Keep the phone's settings, not the backup's" },
+    { key: 'skipSystemFiles', label: 'Skip system files', hint: 'Do not restore system-level files stored in the backup' },
+    { key: 'keepItemsNotInBackup', label: 'Keep items not in the backup', hint: 'Merge backup data with existing phone content' },
+    { key: 'doNotRestart', label: 'Do not restart', hint: 'Restart the phone manually after the restore' },
+  ];
+  const submit = new Submit('restore_start_failed');
 
   // The source phones present on disk (one entry each), this phone first.
   const phones = $derived.by(() => {
@@ -67,13 +74,8 @@
   const points = $derived(sources.filter((s) => s.udid === selectedUdid));
   const sel = $derived(points.find((s) => s.snapshotId === selected) ?? null);
   const crossDevice = $derived(sel !== null && sel.udid !== udid);
-  const wrongPassword = $derived(failureCode === 'invalid_backup_password');
-  const overrideCount = $derived(
-    Number(keepCurrentSettings) +
-      Number(skipSystemFiles) +
-      Number(keepItemsNotInBackup) +
-      Number(doNotRestart),
-  );
+  const wrongPassword = $derived(submit.code === 'invalid_backup_password');
+  const overrideCount = $derived(Object.values(overrides).filter(Boolean).length);
 
   // Instant preflights: hardware gives Find My and storage capacity, the
   // catalog gives iOS versions. Unknown values never block — the server
@@ -118,48 +120,38 @@
   });
 
   async function confirm() {
-    if (busy || !sel) return;
-    busy = true;
-    failureCode = null;
-    try {
-      await startRestore(udid, {
-        snapshotId: sel.snapshotId,
-        password: sel.encrypted ? password : '',
-        systemFiles: !skipSystemFiles,
-        reboot: !doNotRestart,
-        settingsFromBackup: !keepCurrentSettings,
-        removeItemsNotRestored: !keepItemsNotInBackup,
-      });
-      password = '';
-      dialog.close();
-    } catch (err) {
-      failureCode = errorCode(err, 'restore_start_failed');
-    } finally {
-      busy = false;
-    }
+    if (submit.busy || !sel) return;
+    const options = {
+      snapshotId: sel.snapshotId,
+      password: sel.encrypted ? password : '',
+      systemFiles: !overrides.skipSystemFiles,
+      reboot: !overrides.doNotRestart,
+      settingsFromBackup: !overrides.keepCurrentSettings,
+      removeItemsNotRestored: !overrides.keepItemsNotInBackup,
+    };
+    if (!(await submit.run(() => startRestore(udid, options)))) return;
+    password = '';
+    modal.close();
   }
 </script>
 
-<dialog
-  class="modal"
-  bind:this={dialog}
-  {@attach (d) => d.showModal()}
-  oncancel={(event) => busy && event.preventDefault()}
+<Modal
+  bind:this={modal}
+  title={`Restore ${name}?`}
+  locked={submit.busy}
+  class="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
   {onclose}
 >
-  <div class="modal-box flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
-    <h3 class="shrink-0 text-lg font-bold">Restore {name}?</h3>
-
-    <!-- Content-height card would jump as warnings/options appear; a scrollable
-         middle keeps the box stable like the Files/Apps modals. -->
-    <div class="-mx-1 min-h-0 flex-1 overflow-auto px-1">
+  <!-- Content-height card would jump as warnings/options appear; a scrollable
+       middle keeps the box stable like the Files/Apps modals. -->
+  <div class="-mx-1 min-h-0 flex-1 overflow-auto px-1">
     <div class="mt-3 flex flex-col gap-3">
       <label class="flex flex-col gap-1.5">
         <span class="label">Restore from</span>
         <select
           class="select w-full"
           bind:value={selectedUdid}
-          disabled={busy}
+          disabled={submit.busy}
           onchange={() => (selected = '')}
         >
           <option value="" disabled>Select a phone…</option>
@@ -173,7 +165,7 @@
         <select
           class="select w-full"
           bind:value={selected}
-          disabled={busy || selectedUdid === ''}
+          disabled={submit.busy || selectedUdid === ''}
         >
           <option value="" disabled>{selectedUdid === '' ? 'Choose a phone first' : 'Select a backup…'}</option>
           {#each points as s (s.snapshotId)}
@@ -189,7 +181,7 @@
         label="Backup password"
         bind:value={password}
         placeholder="Required — the backup is encrypted"
-        disabled={busy}
+        disabled={submit.busy}
         error={wrongPassword ? 'That password does not unlock the selected backup. Try again.' : null}
         focus={wrongPassword}
       />
@@ -200,13 +192,10 @@
     {/if}
 
     {#if crossDevice}
-      <div role="alert" class="alert alert-warning alert-soft mt-3">
-        <Icon name="alert" size={18} />
-        <span class="text-sm">
-          <span class="font-medium">{name}</span> receives the backup of
-          <span class="font-medium">{sel?.deviceName || 'another phone'}</span>
-        </span>
-      </div>
+      <Alert tone="warning" class="mt-3 text-sm">
+        <span class="font-medium">{name}</span> receives the backup of
+        <span class="font-medium">{sel?.deviceName || 'another phone'}</span>
+      </Alert>
       <div class="mt-2 rounded-box bg-base-200 p-3 text-xs text-base-content/70">
         <p class="font-medium text-base-content/80">Moving to this phone</p>
         <p class="mt-1">
@@ -218,32 +207,23 @@
     {/if}
 
     {#if activationState === 'Unactivated'}
-      <div role="alert" class="alert alert-warning alert-soft mt-3">
-        <Icon name="alert" size={18} />
-        <p class="text-sm">
-          This phone isn't activated yet — it will be activated as the first step
-        </p>
-      </div>
+      <Alert tone="warning" class="mt-3 text-sm">
+        This phone isn't activated yet — it will be activated as the first step
+      </Alert>
     {/if}
 
     {#if versionBlocked}
-      <div role="alert" class="alert alert-error alert-soft mt-3">
-        <Icon name="alert" size={18} />
-        <p class="text-sm">
-          This backup was made on iOS {sel?.iosVersion}, newer than the phone's iOS
-          {iosVersion} — update the phone first.
-        </p>
-      </div>
+      <Alert tone="error" class="mt-3 text-sm">
+        This backup was made on iOS {sel?.iosVersion}, newer than the phone's iOS
+        {iosVersion} — update the phone first.
+      </Alert>
     {/if}
 
     {#if spaceShort && sel}
-      <div role="alert" class="alert alert-error alert-soft mt-3">
-        <Icon name="alert" size={18} />
-        <p class="text-sm">
-          The backup ({formatBytes(sel.sizeBytes)}) is larger than the phone's total storage
-          ({formatBytes(capacityBytes)}) — the restore will not fit on this phone.
-        </p>
-      </div>
+      <Alert tone="error" class="mt-3 text-sm">
+        The backup ({formatBytes(sel.sizeBytes)}) is larger than the phone's total storage
+        ({formatBytes(capacityBytes)}) — the restore will not fit on this phone.
+      </Alert>
     {/if}
 
     <details class="collapse collapse-arrow mt-3 border border-base-300 bg-base-100">
@@ -257,42 +237,15 @@
         <p class="text-xs text-base-content/60">
           Default restores settings and system files, removes items outside the backup, and restarts the phone
         </p>
-        <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={keepCurrentSettings} disabled={busy} />
-          <span class="text-sm leading-snug">
-            <span>Keep current settings</span>
-            <span class="mt-0.5 block text-xs text-base-content/60">
-              Keep the phone's settings, not the backup's
+        {#each OVERRIDES as o (o.key)}
+          <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">
+            <input type="checkbox" class="checkbox checkbox-sm" bind:checked={overrides[o.key]} disabled={submit.busy} />
+            <span class="text-sm leading-snug">
+              <span>{o.label}</span>
+              <span class="mt-0.5 block text-xs text-base-content/60">{o.hint}</span>
             </span>
-          </span>
-        </label>
-        <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={skipSystemFiles} disabled={busy} />
-          <span class="text-sm leading-snug">
-            <span>Skip system files</span>
-            <span class="mt-0.5 block text-xs text-base-content/60">
-              Do not restore system-level files stored in the backup
-            </span>
-          </span>
-        </label>
-        <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={keepItemsNotInBackup} disabled={busy} />
-          <span class="text-sm leading-snug">
-            <span>Keep items not in the backup</span>
-            <span class="mt-0.5 block text-xs text-base-content/60">
-              Merge backup data with existing phone content
-            </span>
-          </span>
-        </label>
-        <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={doNotRestart} disabled={busy} />
-          <span class="text-sm leading-snug">
-            <span>Do not restart</span>
-            <span class="mt-0.5 block text-xs text-base-content/60">
-              Restart the phone manually after the restore
-            </span>
-          </span>
-        </label>
+          </label>
+        {/each}
       </div>
     </details>
 
@@ -302,31 +255,27 @@
     </p>
 
     {#if !wrongPassword}
-      <ErrorLine error={failure} className="mt-3" />
+      <ErrorLine error={submit.failure} className="mt-3" />
     {/if}
-    </div>
-
-    <div class="modal-action shrink-0">
-      <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => dialog.close()}>Cancel</button>
-      <button
-        type="button"
-        class="btn btn-error"
-        disabled={busy || !sel || (sel.encrypted && !password) || versionBlocked || findMyOn}
-        onclick={confirm}
-      >
-        {#if busy}
-          <span class="loading loading-spinner loading-xs"></span>
-          Starting…
-        {:else if failure}
-          <Icon name="backup" size={15} /> Try restore again
-        {:else}
-          <Icon name="backup" size={15} />
-          Restore
-        {/if}
-      </button>
-    </div>
   </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close" disabled={busy}>close</button>
-  </form>
-</dialog>
+
+  {#snippet actions()}
+    <button type="button" class="btn btn-ghost" disabled={submit.busy} onclick={() => modal.close()}>Cancel</button>
+    <button
+      type="button"
+      class="btn btn-error"
+      disabled={submit.busy || !sel || (sel.encrypted && !password) || versionBlocked || findMyOn}
+      onclick={confirm}
+    >
+      {#if submit.busy}
+        <span class="loading loading-spinner loading-xs"></span>
+        Starting…
+      {:else if submit.failure}
+        <Icon name="backup" size={15} /> Try restore again
+      {:else}
+        <Icon name="backup" size={15} />
+        Restore
+      {/if}
+    </button>
+  {/snippet}
+</Modal>

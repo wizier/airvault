@@ -31,8 +31,7 @@ type RunProgress struct {
 	UDID        string   `json:"udid"`
 	Percent     int      `json:"progress"`
 	Stage       RunStage `json:"stage"`
-	Restore     bool     `json:"restore,omitempty"`
-	Verify      bool     `json:"verify,omitempty"`
+	Kind        runKind  `json:"kind"`
 	Auto        bool     `json:"auto,omitempty"`
 	Cancelling  bool     `json:"cancelling,omitempty"`
 	Transferred int64    `json:"transferred"`
@@ -64,8 +63,7 @@ func (r *runRegistry) announce(run *runReservation, stage RunStage) error {
 			fmt.Errorf("%w: a run is already active for this device", domain.ErrBusy))
 	}
 	r.active[run.udid] = &activeRun{run: run, progress: RunProgress{
-		RunID: run.id, UDID: run.udid, Stage: stage, Restore: run.kind == runKindRestore,
-		Verify: run.kind == runKindVerify, Auto: run.auto,
+		RunID: run.id, UDID: run.udid, Stage: stage, Kind: run.kind, Auto: run.auto,
 	}}
 	r.mu.Unlock()
 	logOperationStarted(run.ctx, run.kind, run.udid, run.logAttrs()...)
@@ -142,8 +140,8 @@ func (r *runRegistry) progressSink(run *runReservation, idleStage, activeStage R
 		if total > 0 {
 			percent = min(int(transferred*100/total), 100)
 		}
-		progress := RunProgress{RunID: run.id, UDID: run.udid, Restore: run.kind == runKindRestore,
-			Verify: run.kind == runKindVerify, Auto: run.auto, Percent: percent, Transferred: transferred}
+		progress := RunProgress{RunID: run.id, UDID: run.udid, Kind: run.kind, Auto: run.auto,
+			Percent: percent, Transferred: transferred}
 		emit := finalizing || time.Since(lastEmit) >= emitEvery
 		if emit && !lastEmit.IsZero() {
 			speed = int64(float64(transferred-emitted) / time.Since(lastEmit).Seconds())

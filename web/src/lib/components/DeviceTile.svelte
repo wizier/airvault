@@ -9,6 +9,7 @@
   import DeviceBattery from './DeviceBattery.svelte';
   import Icon from './Icon.svelte';
   import Pill from './Pill.svelte';
+  import ProgressBar from './ProgressBar.svelte';
 
   let { device }: { device: Device } = $props();
 
@@ -17,8 +18,7 @@
   const isRunning = $derived(live !== null);
   const speed = $derived(formatSpeed(live?.speed));
   const progress = $derived(live?.progress ?? 0);
-  const isRestore = $derived(live?.restore ?? false);
-  const currentStage = $derived(stageUi(live?.stage, isRestore));
+  const currentStage = $derived(stageUi(live?.stage, live?.kind));
   const lastFailure = $derived(lastBackupFailure(device, live));
 
   // Discovery fills this metadata asynchronously; the shortened UDID keeps a
@@ -84,7 +84,7 @@
         {#if isRunning}
           <div class="flex items-center justify-between gap-3">
             <span class="flex min-w-0 items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary">
-              <Icon name={isRestore ? 'refresh' : 'backup'} size={14} stroke={2} />
+              <Icon name={live?.kind === 'restore' ? 'refresh' : 'backup'} size={14} stroke={2} />
               <span class="truncate">{currentStage}</span>
             </span>
             <span class="flex shrink-0 items-center gap-1.5">
@@ -96,11 +96,9 @@
           </div>
 
           <div class="mt-2 flex min-h-7 items-center gap-2">
+            <ProgressBar value={progress || null} class="min-w-0 flex-1" />
             {#if progress > 0}
-              <progress class="progress progress-primary min-w-0 flex-1" value={progress} max="100"></progress>
               <span class="shrink-0 font-mono text-sm font-semibold tabular-nums">{progress}%</span>
-            {:else}
-              <progress class="progress progress-primary min-w-0 flex-1"></progress>
             {/if}
           </div>
         {:else}

@@ -4,7 +4,9 @@
   // stream, and scrolling up stops following the tail until Latest.
   import { consoleUrl, type ConsoleLevel, type ConsoleLine } from '../api/console';
   import { errorText } from '../error-text';
+  import Alert from './Alert.svelte';
   import Icon from './Icon.svelte';
+  import Modal from './Modal.svelte';
 
   const MAX_LINES = 2000;
   /** The os_trace stream is a firehose (hundreds of records/sec); batching caps
@@ -33,7 +35,6 @@
    *  pause never collide with the resumed stream's new ones. */
   let seq = 0;
 
-  let dialog: HTMLDialogElement;
   // A string: the parent's device object is replaced on every list refresh, and
   // an unchanged URL must not reopen the stream (a new os_trace session).
   const url = $derived(consoleUrl(udid));
@@ -161,118 +162,104 @@
   }
 </script>
 
-<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
-  <!-- Fixed height: a console is a terminal window — its size must not
-       breathe with how many rows currently match. -->
-  <div class="modal-box flex h-[85vh] w-11/12 max-w-5xl flex-col gap-3">
-    <div class="flex items-start justify-between gap-3">
-      <div>
-        <h3 class="flex items-center gap-2 text-lg font-bold">
-          <Icon name="terminal" size={18} />
-          Console
-          {#if connected || paused}
-            <span
-              class={`status ${paused ? 'status-warning' : 'status-success'}`}
-              title={paused ? 'Paused' : 'Streaming'}
-            ></span>
-          {/if}
-        </h3>
-        <p class="mt-0.5 text-sm text-base-content/60">
-          Live system log of {name}
-        </p>
-      </div>
-      <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => dialog.close()}>
-        <Icon name="x" size={16} />
-      </button>
-    </div>
+<!-- Fixed height: a console is a terminal window — its size must not
+     breathe with how many rows currently match. -->
+<Modal subtitle={`Live system log of ${name}`} closable class="flex h-[85vh] w-11/12 max-w-5xl flex-col gap-3" {onclose}>
+  {#snippet heading()}
+    <Icon name="terminal" size={18} />
+    Console
+    {#if connected || paused}
+      <span
+        class={`status ${paused ? 'status-warning' : 'status-success'}`}
+        title={paused ? 'Paused' : 'Streaming'}
+      ></span>
+    {/if}
+  {/snippet}
 
-    <div class="flex flex-wrap items-center gap-2">
-      <label class="input input-sm w-full sm:w-auto sm:min-w-40 sm:flex-1">
-        <input type="text" placeholder="Filter message / process / subsystem…" bind:value={filter} />
-        {#if filter}
-          <button type="button" class="btn btn-circle btn-ghost btn-xs" aria-label="Clear filter" onclick={() => (filter = '')}>
-            <Icon name="x" size={12} />
-          </button>
-        {/if}
-      </label>
-      <select class="select select-sm w-32 sm:w-36" bind:value={minLevel} aria-label="Level filter">
-        <option value="all">All levels</option>
-        <option value="notice">Notice &amp; up</option>
-        <option value="errors">Errors only</option>
-      </select>
-      <button
-        type="button"
-        class={`btn btn-sm ${paused ? 'btn-warning' : 'btn-ghost'}`}
-        onclick={togglePause}
-        title={paused ? 'Resume the log stream from the phone' : 'Stop the log stream from the phone'}
-      >
-        <Icon name={paused ? 'play' : 'pause'} size={13} />
-        <span class="hidden sm:inline">{paused ? 'Resume' : 'Pause'}</span>
-      </button>
-      <button type="button" class="btn btn-ghost btn-sm" title="Clear the buffered output" onclick={clear}>
-        <Icon name="trash" size={13} /> <span class="hidden sm:inline">Clear</span>
-      </button>
-    </div>
+  <div class="flex flex-wrap items-center gap-2">
+    <label class="input input-sm w-full sm:w-auto sm:min-w-40 sm:flex-1">
+      <input type="text" placeholder="Filter message / process / subsystem…" bind:value={filter} />
+      {#if filter}
+        <button type="button" class="btn btn-circle btn-ghost btn-xs" aria-label="Clear filter" onclick={() => (filter = '')}>
+          <Icon name="x" size={12} />
+        </button>
+      {/if}
+    </label>
+    <select class="select select-sm w-32 sm:w-36" bind:value={minLevel} aria-label="Level filter">
+      <option value="all">All levels</option>
+      <option value="notice">Notice &amp; up</option>
+      <option value="errors">Errors only</option>
+    </select>
+    <button
+      type="button"
+      class={`btn btn-sm ${paused ? 'btn-warning' : 'btn-ghost'}`}
+      onclick={togglePause}
+      title={paused ? 'Resume the log stream from the phone' : 'Stop the log stream from the phone'}
+    >
+      <Icon name={paused ? 'play' : 'pause'} size={13} />
+      <span class="hidden sm:inline">{paused ? 'Resume' : 'Pause'}</span>
+    </button>
+    <button type="button" class="btn btn-ghost btn-sm" title="Clear the buffered output" onclick={clear}>
+      <Icon name="trash" size={13} /> <span class="hidden sm:inline">Clear</span>
+    </button>
+  </div>
 
-    {#if streamError}
-      <div role="alert" class="alert alert-error alert-soft">
-        <Icon name="alert" size={16} />
-        <span class="text-sm">{streamError}</span>
+  {#if streamError}
+    <Alert tone="error" class="text-sm">
+      {streamError}
+      {#snippet actions()}
         <button type="button" class="btn btn-ghost btn-xs" onclick={() => (streamNonce += 1)}>
           <Icon name="refresh" size={12} />
           Reconnect
         </button>
-      </div>
-    {/if}
+      {/snippet}
+    </Alert>
+  {/if}
 
-    <div class="relative min-h-0 flex-1">
-      <div
-        bind:this={logEl}
-        onscroll={onLogScroll}
-        class="h-full overflow-auto rounded-box bg-base-200 p-3 font-mono text-[11px] leading-relaxed"
-      >
-        {#if visible.length === 0}
-          <p class="flex items-center gap-2 font-sans text-sm text-base-content/50">
-            {#if filtered}
-              No records match the filters
-            {:else if paused}
-              Paused
-            {:else}
-              <span class="loading loading-dots loading-xs"></span>
-              Waiting for log output…
-            {/if}
-          </p>
-        {:else}
-          {#each visible as l (l.seq)}
-            <div class={`whitespace-pre-wrap break-all ${LEVEL_CLASS[l.level]}`}>
-              <span class="text-base-content/40">{l.ts}</span>
-              <span class="text-base-content/60">{l.image}[{l.pid}]</span>
-              {l.message}
-            </div>
-          {/each}
-        {/if}
-      </div>
-      {#if !following}
-        <button
-          type="button"
-          class="btn btn-neutral btn-sm absolute bottom-3 right-5 shadow"
-          onclick={() => (following = true)}
-        >
-          <Icon name="arrowDown" size={13} /> Latest
-        </button>
+  <div class="relative min-h-0 flex-1">
+    <div
+      bind:this={logEl}
+      onscroll={onLogScroll}
+      class="h-full overflow-auto rounded-box bg-base-200 p-3 font-mono text-[11px] leading-relaxed"
+    >
+      {#if visible.length === 0}
+        <p class="flex items-center gap-2 font-sans text-sm text-base-content/50">
+          {#if filtered}
+            No records match the filters
+          {:else if paused}
+            Paused
+          {:else}
+            <span class="loading loading-dots loading-xs"></span>
+            Waiting for log output…
+          {/if}
+        </p>
+      {:else}
+        {#each visible as l (l.seq)}
+          <div class={`whitespace-pre-wrap break-all ${LEVEL_CLASS[l.level]}`}>
+            <span class="text-base-content/40">{l.ts}</span>
+            <span class="text-base-content/60">{l.image}[{l.pid}]</span>
+            {l.message}
+          </div>
+        {/each}
       {/if}
     </div>
-
-    <p class="text-xs text-base-content/40">
-      {#if filtered}
-        {visible.length.toLocaleString()} of {lines.length.toLocaleString()} buffered records match —
-        matching records are kept longest, the rest are dropped first.
-      {:else}
-        Keeps the last {MAX_LINES.toLocaleString()} records; older output is dropped.
-      {/if}
-    </p>
+    {#if !following}
+      <button
+        type="button"
+        class="btn btn-neutral btn-sm absolute bottom-3 right-5 shadow"
+        onclick={() => (following = true)}
+      >
+        <Icon name="arrowDown" size={13} /> Latest
+      </button>
+    {/if}
   </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close">close</button>
-  </form>
-</dialog>
+
+  <p class="text-xs text-base-content/40">
+    {#if filtered}
+      {visible.length.toLocaleString()} of {lines.length.toLocaleString()} buffered records match —
+      matching records are kept longest, the rest are dropped first.
+    {:else}
+      Keeps the last {MAX_LINES.toLocaleString()} records; older output is dropped.
+    {/if}
+  </p>
+</Modal>

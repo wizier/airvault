@@ -16,14 +16,15 @@ export type RunStage =
   | 'verifying'
   | 'cancelling_verify';
 
+/** A verify run is an integrity check of the stored backups, not a transfer. */
+export type RunKind = 'backup' | 'restore' | 'verify';
+
 export interface RunningProgress {
   runId: string;
   udid: string;
   progress: number;
   stage: RunStage;
-  restore?: boolean;
-  /** An integrity check of the stored backups, not a transfer. */
-  verify?: boolean;
+  kind: RunKind;
   /** Started by the automatic-backup trigger, not from the UI. */
   auto?: boolean;
   /** A cancel was accepted; the run is winding down. */

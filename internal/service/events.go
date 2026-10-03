@@ -68,17 +68,16 @@ func trustStep(runID, udid string, status engine.PairingOutcome, errorCode strin
 }
 
 type runStartEvent struct {
-	RunID      string `json:"runId"`
-	UDID       string `json:"udid"`
-	Restore    bool   `json:"restore,omitempty"`
-	Verify     bool   `json:"verify,omitempty"`
-	SnapshotID string `json:"snapshotId,omitempty"`
+	RunID      string  `json:"runId"`
+	UDID       string  `json:"udid"`
+	Kind       runKind `json:"kind"`
+	SnapshotID string  `json:"snapshotId,omitempty"`
 }
 
 // runStarted announces a backup, or a restore from snapshotID.
 func runStarted(run *runReservation, snapshotID string) events.Event {
 	return events.Event{Type: "backup.started", Data: runStartEvent{RunID: run.id, UDID: run.udid,
-		Restore: run.kind == runKindRestore, Verify: run.kind == runKindVerify, SnapshotID: snapshotID}}
+		Kind: run.kind, SnapshotID: snapshotID}}
 }
 
 // runProgressed is transient: the next frame supersedes it.
@@ -91,8 +90,7 @@ type runEndEvent struct {
 	RunID     string   `json:"runId"`
 	UDID      string   `json:"udid"`
 	State     runState `json:"state"`
-	Restore   bool     `json:"restore,omitempty"`
-	Verify    bool     `json:"verify,omitempty"`
+	Kind      runKind  `json:"kind"`
 	Auto      bool     `json:"auto,omitempty"`
 	ErrorCode string   `json:"errorCode,omitempty"`
 	SizeBytes int64    `json:"sizeBytes,omitempty"`
@@ -106,8 +104,7 @@ var runEndTypes = map[runState]string{
 
 func runEnded(run *runReservation, state runState, errorCode string, sizeBytes int64) events.Event {
 	return events.Event{Type: runEndTypes[state], Data: runEndEvent{RunID: run.id, UDID: run.udid, State: state,
-		Restore: run.kind == runKindRestore, Verify: run.kind == runKindVerify, Auto: run.auto,
-		ErrorCode: errorCode, SizeBytes: sizeBytes}}
+		Kind: run.kind, Auto: run.auto, ErrorCode: errorCode, SizeBytes: sizeBytes}}
 }
 
 func muxerChanged(status MuxerStatus) events.Event {

@@ -6,18 +6,20 @@
   import { createBatchLoader, nearViewport } from '../batch-loader.svelte';
   import { liveRun } from '../events.svelte';
   import { deviceAppsResources } from '../stores.svelte';
+  import Alert from './Alert.svelte';
   import FileBrowser from './FileBrowser.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
+  import Modal from './Modal.svelte';
+  import ProgressBar from './ProgressBar.svelte';
 
   let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
 
-  let dialog: HTMLDialogElement;
   let search = $state('');
   const appsResource = $derived(deviceAppsResources.for(udid));
   const live = $derived(liveRun(udid));
   const runActive = $derived(live !== null);
-  const restoreRunning = $derived(live?.restore ?? false);
+  const restoreRunning = $derived(live?.kind === 'restore');
   const apps = $derived(appsResource.data ?? []);
   const error = $derived(appsResource.loadError('app_list_failed'));
   const loading = $derived(!appsResource.ready && !error);
@@ -122,161 +124,144 @@
   onMount(() => () => iconLoader.reset());
 </script>
 
-<dialog class="modal" bind:this={dialog} {@attach (d) => d.showModal()} {onclose}>
-  <div class="modal-box flex h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden">
-    <div class="flex shrink-0 flex-col gap-3">
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <h3 class="text-lg font-bold">Apps</h3>
-          <p class="mt-0.5 text-sm text-base-content/60">Apps installed on {name}</p>
-        </div>
-        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Close" onclick={() => dialog.close()}>
-          <Icon name="x" size={16} />
-        </button>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2">
-        <label class="input input-sm flex-1">
-          <input type="text" placeholder="Search name or bundle id…" bind:value={search} />
-        </label>
-        {#if !loading && !error}
-          <span class="text-xs text-base-content/50">{visible.length} apps</span>
+<Modal
+  title="Apps"
+  subtitle={`Apps installed on ${name}`}
+  closable
+  class="flex h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden"
+  {onclose}
+>
+  <div class="flex shrink-0 flex-col gap-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <label class="input input-sm flex-1">
+        <input type="text" placeholder="Search name or bundle id…" bind:value={search} />
+      </label>
+      {#if !loading && !error}
+        <span class="text-xs text-base-content/50">{visible.length} apps</span>
+      {/if}
+      <label
+        class={`btn btn-outline btn-sm ${writeBusy ? 'pointer-events-none btn-disabled' : ''}`}
+        title={writeBusy ? 'The device is busy' : 'Install a user-provided .ipa'}
+      >
+        {#if installing}
+          <span class="loading loading-spinner loading-xs"></span>
+          Installing
+        {:else}
+          <Icon name="upload" size={14} /> Install .ipa…
         {/if}
-        <label
-          class={`btn btn-outline btn-sm ${writeBusy ? 'pointer-events-none btn-disabled' : ''}`}
-          title={writeBusy ? 'The device is busy' : 'Install a user-provided .ipa'}
-        >
-          {#if installing}
-            <span class="loading loading-spinner loading-xs"></span>
-            Installing
-          {:else}
-            <Icon name="upload" size={14} /> Install .ipa…
+        <input type="file" accept=".ipa" class="hidden" disabled={writeBusy} onchange={handleInstall} />
+      </label>
+    </div>
+    {#if installing}
+      <div class="flex flex-col gap-1.5">
+        <div class="flex items-center justify-between text-sm text-base-content/70">
+          <span>{installStage}</span>
+          {#if !installIndeterminate}
+            <span class="font-mono tabular-nums">{installPct}%</span>
           {/if}
-          <input type="file" accept=".ipa" class="hidden" disabled={writeBusy} onchange={handleInstall} />
-        </label>
+        </div>
+        <ProgressBar
+          value={installIndeterminate ? null : installPct}
+          label={installIndeterminate ? `${installStage} application` : `${installStage} application: ${installPct}%`}
+          class="w-full"
+        />
       </div>
-      {#if installing}
-        <div class="flex flex-col gap-1.5">
-          <div class="flex items-center justify-between text-sm text-base-content/70">
-            <span>{installStage}</span>
-            {#if !installIndeterminate}
-              <span class="font-mono tabular-nums">{installPct}%</span>
-            {/if}
-          </div>
-          {#if installIndeterminate}
-            <progress
-              class="progress progress-primary w-full"
-              aria-label={`${installStage} application`}
-            ></progress>
-          {:else}
-            <progress
-              class="progress progress-primary w-full"
-              aria-label={`${installStage} application: ${installPct}%`}
-              value={installPct}
-              max="100"
-            ></progress>
-          {/if}
-        </div>
-      {/if}
-      {#if note}
-        <div
-          role={note.tone === 'error' ? 'alert' : 'status'}
-          class={`alert py-2 ${note.tone === 'error' ? 'alert-error alert-soft' : 'alert-success alert-soft'}`}
-        >
-          <Icon name={note.tone === 'error' ? 'alert' : 'check'} size={13} stroke={2} />
-          <span class="text-sm">{note.text}</span>
-        </div>
-      {/if}
-    </div>
-
-    <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200" {@attach rows.root}>
-      {#if loading}
-        <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
-          <span class="loading loading-spinner loading-sm"></span>
-          Asking the phone…
-        </p>
-      {:else if error}
-        <ErrorLine {error} variant="alert" className="m-3" />
-      {:else if visible.length === 0}
-        <p class="p-4 text-sm text-base-content/50">
-          {search ? 'Nothing matches the search' : 'No apps reported'}
-        </p>
-      {:else}
-        <ul class="divide-y divide-base-300/60">
-          {#each visible as app (app.bundleId)}
-            <li class="flex items-center gap-3 px-4 py-2" {@attach rows.item(app.bundleId)}>
-              {#if icons[app.bundleId]}
-                <img
-                  src={icons[app.bundleId]}
-                  alt=""
-                  class="h-9 w-9 shrink-0 rounded-[22%] bg-base-300/60 object-cover"
-                  onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
-                />
-              {:else}
-                <!-- Grey tile while loading; an app without an icon keeps an empty slot. -->
-                <span
-                  class={`h-9 w-9 shrink-0 rounded-[22%] ${icons[app.bundleId] === undefined ? 'bg-base-300/60' : ''}`}
-                ></span>
-              {/if}
-              <div class="min-w-0 flex-1">
-                <p class="truncate text-sm font-medium">{app.name}</p>
-                <p class="truncate font-mono text-xs text-base-content/50">{app.bundleId}</p>
-              </div>
-              {#if app.version}
-                <span class="shrink-0 font-mono text-xs text-base-content/60">{app.version}</span>
-              {/if}
-              <div class="flex shrink-0 items-center gap-1">
-                {#if app.fileSharing}
-                  <button
-                    type="button"
-                    class="btn btn-square btn-ghost btn-xs"
-                    disabled={readBusy}
-                    title={readBusy ? 'The device is busy' : 'Browse files'}
-                    aria-label={`Browse ${app.name} files`}
-                    onclick={() => (filesApp = app)}
-                  >
-                    <Icon name="folder" size={15} />
-                  </button>
-                {/if}
-                {#if confirmUninstall === app.bundleId}
-                  <button
-                    type="button"
-                    class="btn btn-error btn-xs"
-                    disabled={writeBusy}
-                    onclick={() => doUninstall(app.bundleId)}
-                  >
-                    {#if uninstalling === app.bundleId}
-                      <span class="loading loading-spinner loading-xs"></span>
-                    {:else}
-                      Remove
-                    {/if}
-                  </button>
-                  <button type="button" class="btn btn-ghost btn-xs" disabled={uninstalling !== null} onclick={() => (confirmUninstall = null)}>
-                    Cancel
-                  </button>
-                {:else}
-                  <button
-                    type="button"
-                    class="btn btn-square btn-ghost btn-xs"
-                    disabled={writeBusy}
-                    title={writeBusy ? 'The device is busy' : 'Uninstall'}
-                    aria-label={`Uninstall ${app.name}`}
-                    onclick={() => (confirmUninstall = app.bundleId)}
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
-                {/if}
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
+    {/if}
+    {#if note}
+      <Alert
+        tone={note.tone === 'error' ? 'error' : 'success'}
+        icon={note.tone === 'error' ? 'alert' : 'check'}
+        class="py-2 text-sm"
+      >
+        {note.text}
+      </Alert>
+    {/if}
   </div>
-  <form method="dialog" class="modal-backdrop">
-    <button aria-label="Close">close</button>
-  </form>
-</dialog>
+
+  <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200" {@attach rows.root}>
+    {#if loading}
+      <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
+        <span class="loading loading-spinner loading-sm"></span>
+        Asking the phone…
+      </p>
+    {:else if error}
+      <ErrorLine {error} variant="alert" className="m-3" />
+    {:else if visible.length === 0}
+      <p class="p-4 text-sm text-base-content/50">
+        {search ? 'Nothing matches the search' : 'No apps reported'}
+      </p>
+    {:else}
+      <ul class="divide-y divide-base-300/60">
+        {#each visible as app (app.bundleId)}
+          <li class="flex items-center gap-3 px-4 py-2" {@attach rows.item(app.bundleId)}>
+            {#if icons[app.bundleId]}
+              <img
+                src={icons[app.bundleId]}
+                alt=""
+                class="h-9 w-9 shrink-0 rounded-[22%] bg-base-300/60 object-cover"
+                onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
+              />
+            {:else}
+              <!-- Grey tile while loading; an app without an icon keeps an empty slot. -->
+              <span
+                class={`h-9 w-9 shrink-0 rounded-[22%] ${icons[app.bundleId] === undefined ? 'bg-base-300/60' : ''}`}
+              ></span>
+            {/if}
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-medium">{app.name}</p>
+              <p class="truncate font-mono text-xs text-base-content/50">{app.bundleId}</p>
+            </div>
+            {#if app.version}
+              <span class="shrink-0 font-mono text-xs text-base-content/60">{app.version}</span>
+            {/if}
+            <div class="flex shrink-0 items-center gap-1">
+              {#if app.fileSharing}
+                <button
+                  type="button"
+                  class="btn btn-square btn-ghost btn-xs"
+                  disabled={readBusy}
+                  title={readBusy ? 'The device is busy' : 'Browse files'}
+                  aria-label={`Browse ${app.name} files`}
+                  onclick={() => (filesApp = app)}
+                >
+                  <Icon name="folder" size={15} />
+                </button>
+              {/if}
+              {#if confirmUninstall === app.bundleId}
+                <button
+                  type="button"
+                  class="btn btn-error btn-xs"
+                  disabled={writeBusy}
+                  onclick={() => doUninstall(app.bundleId)}
+                >
+                  {#if uninstalling === app.bundleId}
+                    <span class="loading loading-spinner loading-xs"></span>
+                  {:else}
+                    Remove
+                  {/if}
+                </button>
+                <button type="button" class="btn btn-ghost btn-xs" disabled={uninstalling !== null} onclick={() => (confirmUninstall = null)}>
+                  Cancel
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="btn btn-square btn-ghost btn-xs"
+                  disabled={writeBusy}
+                  title={writeBusy ? 'The device is busy' : 'Uninstall'}
+                  aria-label={`Uninstall ${app.name}`}
+                  onclick={() => (confirmUninstall = app.bundleId)}
+                >
+                  <Icon name="trash" size={15} />
+                </button>
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+</Modal>
 
 {#if filesApp && filesSource}
   <FileBrowser

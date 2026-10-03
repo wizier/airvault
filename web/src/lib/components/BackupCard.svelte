@@ -8,13 +8,14 @@
   import { restoreSourcesStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime } from '../format';
   import { now } from '../clock';
-  import { autoBackupStatus, blockedReason, lastBackupFailure, stageUi } from '../device-ui';
+  import { autoBackupStatus, blockedReason, lastBackupFailure, RUN_COPY, stageUi } from '../device-ui';
   import AutoBackupModal from './AutoBackupModal.svelte';
   import BackupPasswordModal, { type PasswordMode } from './BackupPasswordModal.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import Pill from './Pill.svelte';
+  import ProgressBar from './ProgressBar.svelte';
 
   let {
     device,
@@ -28,8 +29,6 @@
   const udid = $derived(device.udid);
   const reachable = $derived(device.connection !== 'offline');
   const live = $derived(liveRun(udid));
-  const isRestore = $derived(live?.restore ?? false);
-  const isVerify = $derived(live?.verify ?? false);
   const isCancelling = $derived(live?.cancelling ?? false);
   const isRunning = $derived(live !== null);
   const speed = $derived(formatSpeed(live?.speed));
@@ -109,6 +108,10 @@
   );
 </script>
 
+{#snippet onOff(on: boolean)}
+  <Pill tone={on ? 'green' : 'slate'} dot>{on ? 'On' : 'Off'}</Pill>
+{/snippet}
+
 <div class="card bg-base-100 shadow-sm">
   <div class="card-body gap-5 p-5">
     <div class="flex flex-wrap items-center justify-between gap-4">
@@ -123,14 +126,8 @@
             </span>
           {/if}
         </h2>
-        {#if isRunning}
-          <p class="mt-0.5 text-xs text-base-content/60">
-            {isRestore
-              ? 'A restore is running right now'
-              : isVerify
-                ? 'An integrity check is running right now'
-                : 'A backup is running right now'}
-          </p>
+        {#if live}
+          <p class="mt-0.5 text-xs text-base-content/60">{RUN_COPY[live.kind].running}</p>
         {:else if stored}
           <p class="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-base-content/60">
             <span title={formatDateTime(stored.created)} class="text-base-content/80">
@@ -177,11 +174,7 @@
           type="button"
           class="btn btn-ghost btn-sm text-error"
           onclick={() => (cancelAskedFor = live.runId)}
-          title={isRestore
-            ? 'Stop this restore; the phone then reports it failed and restarts'
-            : isVerify
-              ? 'Stop the integrity check'
-              : 'Stop this attempt and discard the data received during it'}
+          title={RUN_COPY[live.kind].stopHint}
         >
           <Icon name="x" size={15} />
           Cancel…
@@ -241,33 +234,29 @@
       <div class="flex flex-col gap-2 rounded-box bg-base-200 p-3">
         <div>
           <div class="mb-1 flex items-center justify-between gap-2 text-xs">
-            <span class="truncate text-base-content/60">{stageUi(live.stage, isRestore)}</span>
+            <span class="truncate text-base-content/60">{stageUi(live.stage, live.kind)}</span>
             {#if percent > 0}
               <span class="shrink-0 font-mono tabular-nums">{percent}%</span>
             {/if}
           </div>
-          {#if percent > 0}
-            <progress class="progress progress-primary" value={percent} max="100"></progress>
-          {:else}
-            <progress class="progress progress-primary"></progress>
-          {/if}
+          <ProgressBar value={percent || null} />
         </div>
         {#if live.transferred > 0 || speed}
           <div class="flex items-center justify-between gap-2 font-mono text-xs tabular-nums text-base-content/60">
             <span class="truncate">
               {#if live.transferred > 0}
-                {formatBytes(live.transferred)} {isVerify ? 'checked' : 'transferred'}
+                {formatBytes(live.transferred)} {RUN_COPY[live.kind].counted}
               {/if}
             </span>
             {#if speed}<span class="shrink-0">{speed}</span>{/if}
           </div>
         {/if}
-        {#if live.stage === 'waiting_for_device' && !isRestore}
+        {#if live.stage === 'waiting_for_device' && live.kind !== 'restore'}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
             Wake the phone or connect it by USB — the backup starts as soon as it appears.
           </p>
-        {:else if live.stage === 'preparing' && !isRestore}
+        {:else if live.stage === 'preparing' && live.kind !== 'restore'}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
             {live.auto
@@ -285,7 +274,7 @@
         <div class="min-w-0">
           <p class="flex items-center gap-2 text-sm font-semibold">
             Encryption
-            {#if device.encrypted}<Pill tone="green" dot>On</Pill>{:else}<Pill tone="slate" dot>Off</Pill>{/if}
+            {@render onOff(device.encrypted)}
           </p>
           <p class="mt-0.5 text-xs text-base-content/60">
             {device.encrypted
@@ -302,7 +291,7 @@
               title={blocked}
               onclick={() => (passwordMode = 'change')}
             >
-              Change password…
+              <Icon name="key" size={14} /> Change password…
             </button>
             <button
               type="button"
@@ -311,7 +300,7 @@
               title={blocked}
               onclick={() => (passwordMode = 'disable')}
             >
-              Turn off…
+              <Icon name="unlocked" size={14} /> Turn off…
             </button>
           {:else}
             <button
@@ -335,7 +324,7 @@
       <div class="min-w-0">
         <p class="flex items-center gap-2 text-sm font-semibold">
           Automatic backup
-          {#if autoStatus}<Pill tone="green" dot>On</Pill>{:else}<Pill tone="slate" dot>Off</Pill>{/if}
+          {@render onOff(autoStatus !== null)}
         </p>
         {#if autoStatus}
           <p class="mt-0.5 text-xs text-base-content/60">
@@ -364,26 +353,18 @@
 
 {#if cancelOpen && live}
   {@const runId = live.runId}
+  {@const copy = RUN_COPY[live.kind]}
   <ConfirmDialog
-    title={`Cancel this ${isRestore ? 'restore' : isVerify ? 'integrity check' : 'backup'}?`}
+    title={copy.cancelTitle}
     icon="x"
-    confirmLabel={isRestore ? 'Stop restore' : isVerify ? 'Stop check' : 'Discard attempt'}
+    confirmLabel={copy.stopLabel}
     busyLabel="Cancelling…"
     cancelLabel="Keep running"
     failureCode="backup_cancel_failed"
     onconfirm={() => cancelCurrentRun(runId)}
     onclose={() => (cancelAskedFor = null)}
   >
-    <p class="py-3 text-sm text-base-content/70">
-      {#if isRestore}
-        The phone stays on “Restore in Progress” until iOS gives up, then reports that the restore failed and
-        restarts. The stored backup is not changed.
-      {:else if isVerify}
-        The check will stop. What it has already found stays marked.
-      {:else}
-        This unfinished attempt and all data received during it will be discarded. Existing completed restore points will not be changed.
-      {/if}
-    </p>
+    <p class="py-3 text-sm text-base-content/70">{copy.stopEffect}</p>
   </ConfirmDialog>
 {/if}
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   // Renders nothing while error is null, so callers just pass their error state.
+  import Alert from './Alert.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -16,10 +17,7 @@
 </script>
 
 {#if error && variant === 'alert'}
-  <div role="alert" class={`alert alert-error alert-soft ${className}`}>
-    <Icon name="alert" size={16} />
-    <span>{error}</span>
-  </div>
+  <Alert tone="error" class={className}>{error}</Alert>
 {:else if error}
   <p class={`${className} flex items-center gap-1.5 text-error ${size === 'xs' ? 'text-xs' : 'text-sm'}`}>
     <Icon name="alert" size={size === 'xs' ? 13 : 14} stroke={2} />

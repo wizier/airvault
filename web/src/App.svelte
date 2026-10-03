@@ -1,7 +1,7 @@
 <script lang="ts">
   import Router, { router } from 'svelte-spa-router';
   import Nav from './lib/components/Nav.svelte';
-  import Icon from './lib/components/Icon.svelte';
+  import Alert from './lib/components/Alert.svelte';
   import { statusStore } from './lib/stores.svelte';
   import Devices from './routes/Devices.svelte';
   import DeviceDetail from './routes/DeviceDetail.svelte';
@@ -31,10 +31,7 @@
 
   {#if showOfflineBanner}
     <div class="mx-auto w-full max-w-6xl px-4 pt-4 sm:px-6">
-      <div role="alert" class="alert alert-warning alert-soft">
-        <Icon name="offline" size={16} stroke={2} />
-        <span>Can't reach the AirVault backend. Retrying automatically&hellip;</span>
-      </div>
+      <Alert tone="warning" icon="offline">Can't reach the AirVault backend. Retrying automatically&hellip;</Alert>
     </div>
   {/if}
 
