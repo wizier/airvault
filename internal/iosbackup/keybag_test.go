@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"testing"
 )
 
@@ -52,7 +53,7 @@ func u32(value uint32) []byte {
 }
 
 // buildKeybag wraps one class key for the password using the same derivation
-// verifyBackupPassword performs; tiny iteration counts keep the test fast.
+// unlockKeybag performs; tiny iteration counts keep the test fast.
 func buildKeybag(t *testing.T, password string, modern bool) []byte {
 	t.Helper()
 	dpsl := bytes.Repeat([]byte{0xd5}, 20)
@@ -109,34 +110,29 @@ func TestAESUnwrapRFC3394Vector(t *testing.T) {
 	}
 }
 
-func TestVerifyBackupPasswordAgainstKeybag(t *testing.T) {
+func TestUnlockKeybag(t *testing.T) {
 	for _, modern := range []bool{true, false} {
 		bag := buildKeybag(t, "correct horse", modern)
-		valid, err := verifyBackupPassword(bag, "correct horse")
-		if err != nil || !valid {
-			t.Fatalf("modern=%v correct password: valid=%v err=%v", modern, valid, err)
+		keys, err := unlockKeybag(bag, "correct horse")
+		if err != nil || !bytes.Equal(keys[2], bytes.Repeat([]byte{0xc1}, 32)) || len(keys) != 1 {
+			t.Fatalf("modern=%v correct password: keys=%x err=%v", modern, keys, err)
 		}
-		valid, err = verifyBackupPassword(bag, "battery staple")
-		if err != nil || valid {
-			t.Fatalf("modern=%v wrong password: valid=%v err=%v", modern, valid, err)
+		if _, err := unlockKeybag(bag, "battery staple"); !errors.Is(err, ErrWrongPassword) {
+			t.Fatalf("modern=%v wrong password: err=%v, want ErrWrongPassword", modern, err)
 		}
 	}
 }
 
-func TestVerifyBackupPasswordRejectsUnusableKeybags(t *testing.T) {
-	if _, err := verifyBackupPassword([]byte("garbage!"), "pw"); err == nil {
-		t.Fatal("garbage keybag did not error")
-	}
+func TestUnlockKeybagRejectsUnusableKeybags(t *testing.T) {
 	noParams := append(tlv("VERS", u32(4)), tlv("CLAS", u32(2))...)
-	if _, err := verifyBackupPassword(noParams, "pw"); err == nil {
-		t.Fatal("keybag without derivation parameters did not error")
-	}
 	// Only device-wrapped class keys: nothing can prove the password.
 	onlyDevice := append(tlv("SALT", bytes.Repeat([]byte{1}, 20)), tlv("ITER", u32(5))...)
 	onlyDevice = append(onlyDevice, tlv("CLAS", u32(1))...)
 	onlyDevice = append(onlyDevice, tlv("WRAP", u32(1))...)
 	onlyDevice = append(onlyDevice, tlv("WPKY", bytes.Repeat([]byte{2}, 40))...)
-	if _, err := verifyBackupPassword(onlyDevice, "pw"); err == nil {
-		t.Fatal("keybag without password-wrapped keys did not error")
+	for name, bag := range map[string][]byte{"garbage": []byte("garbage!"), "no parameters": noParams, "device keys only": onlyDevice} {
+		if _, err := unlockKeybag(bag, "pw"); err == nil || errors.Is(err, ErrWrongPassword) {
+			t.Fatalf("%s keybag: err=%v, want an error other than ErrWrongPassword", name, err)
+		}
 	}
 }

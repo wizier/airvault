@@ -150,3 +150,55 @@ func (r *objectReader) failed(err error) error {
 }
 
 func (r *objectReader) Close() error { return r.file.Close() }
+
+// File reads a stored file at any offset. Content read in order from its start
+// is checked, overlapping reads included. A read that skips ahead hashes the
+// skipped part first, so a resumed download is still verified by the time its
+// last byte goes out; a random File leaves it unchecked instead.
+type File struct {
+	key    string
+	file   *os.File
+	check  *contentCheck
+	random bool
+}
+
+func (s *Store) openFile(source, key, ref string, size int64, random bool) (*File, error) {
+	file, err := s.openObject(source, ref, size)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open %q: %v", ErrIntegrity, key, err)
+	}
+	return &File{key: key, file: file, check: newContentCheck(ref, size), random: random}, nil
+}
+
+func (f *File) Size() int64 { return f.check.size }
+
+func (f *File) ReadAt(buffer []byte, offset int64) (int, error) {
+	if offset >= f.check.size {
+		return 0, io.EOF
+	}
+	wanted := len(buffer)
+	buffer = buffer[:min(int64(wanted), f.check.size-offset)]
+	var err error
+	if f.check.fed < offset && !f.random {
+		_, err = io.Copy(checkWriter{f.check}, io.NewSectionReader(f.file, f.check.fed, offset-f.check.fed))
+	}
+	var read int
+	if err == nil {
+		read, err = f.file.ReadAt(buffer, offset)
+	}
+	if fed := f.check.fed; err == nil && offset <= fed && fed < offset+int64(read) {
+		err = f.check.feed(buffer[fed-offset : read])
+	}
+	if errors.Is(err, ErrIntegrity) {
+		err = errors.Join(err, setAside(f.file.Name()))
+	}
+	switch {
+	case err != nil:
+		return read, fmt.Errorf("read %q: %w", f.key, err)
+	case read < wanted:
+		return read, io.EOF
+	}
+	return read, nil
+}
+
+func (f *File) Close() error { return f.file.Close() }

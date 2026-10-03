@@ -11,6 +11,7 @@
   import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatDuration, relativeTime } from '../format';
   import { now } from '../clock';
+  import BackupBrowser from './BackupBrowser.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import EmptyState from './EmptyState.svelte';
   import ErrorLine from './ErrorLine.svelte';
@@ -45,6 +46,7 @@
   // The snapshot whose download is being checked before the browser takes it.
   let downloading = $state<string | null>(null);
   let downloadError = $state<string | null>(null);
+  let browsing = $state<RestorePoint | null>(null);
 
   const PAGE_SIZE = 10;
   let page = $state(1);
@@ -214,7 +216,17 @@
                       : (restoreBlocked ?? 'Restore this snapshot onto the phone')}
                     aria-label="Restore this snapshot"
                   >
-                    <Icon name="backup" size={13} />
+                    <Icon name="restore" size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-xs"
+                    disabled={!!point.damage}
+                    onclick={() => (browsing = point)}
+                    title={point.damage ? "A damaged restore point can't be opened" : 'Browse this snapshot'}
+                    aria-label="Browse this snapshot"
+                  >
+                    <Icon name="browse" size={13} />
                   </button>
                   <button
                     type="button"
@@ -278,6 +290,10 @@
     {/if}
   {/if}
 </section>
+
+{#if browsing}
+  <BackupBrowser point={browsing} deviceName={device.name} onclose={() => (browsing = null)} />
+{/if}
 
 {#if pending.length > 0}
   <ConfirmDialog

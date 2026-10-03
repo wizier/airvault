@@ -205,7 +205,7 @@
               onclick={onrestore}
               title={blocked ?? 'Put a stored backup onto this phone'}
             >
-              <Icon name="backup" size={14} /> Restore…
+              <Icon name="restore" size={14} /> Restore…
             </button>
           {/if}
           <button

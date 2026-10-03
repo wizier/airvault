@@ -1,23 +1,48 @@
 <script lang="ts">
-  // Backed by the phone's own thumbnails, so it stays cheap for tens of thousands
-  // of photos: tiles fetch thumbs near the viewport, far-off thumbs are evicted,
-  // and the roll pages in on scroll.
+  // Backed by iOS's own thumbnails (from the phone or a backup), so it stays
+  // cheap for tens of thousands of photos: tiles fetch thumbs near the viewport,
+  // far-off thumbs are evicted, and the roll pages in on scroll.
   import { onMount } from 'svelte';
   import { ApiError, errMsg } from '../api/client';
-  import { galleryPage, mediaThumbsBatch, type GalleryAsset } from '../api/gallery';
-  import { deviceFileSource, downloadFile, type FileStat } from '../api/files';
+  import type { GalleryAsset, GalleryFilter, GalleryMonth, GallerySource } from '../api/gallery';
+  import { downloadFile, type FileStat } from '../api/files';
   import { createBatchLoader, nearViewport } from '../batch-loader.svelte';
-  import { fileFacts } from '../format';
+  import { fileFacts, formatDateTime } from '../format';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import PreviewImage, { isPreviewableImage } from './PreviewImage.svelte';
+  import PreviewImage, { isPlayableVideo, isPreviewableImage } from './PreviewImage.svelte';
 
-  let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
+  let {
+    source,
+    title,
+    subtitle = 'Camera roll',
+    rescan = true,
+    onclose,
+  }: {
+    source: GallerySource;
+    title: string;
+    subtitle?: string;
+    /** A phone's roll changes under the gallery; a backup's never does. */
+    rescan?: boolean;
+    onclose: () => void;
+  } = $props();
+
+  let filter = $state('');
+  let month = $state(''); // "2026-10"; '' is every date
+  let months = $state<GalleryMonth[]>([]);
+  let filters = $state<GalleryFilter[]>([]);
+  const chips = $derived(filters.filter((f) => !f.group));
+  const chipGroup = $props.id();
+  const pickerGroups = $derived.by(() => {
+    const groups = new Map<string, GalleryFilter[]>();
+    for (const f of filters) if (f.group) groups.set(f.group, [...(groups.get(f.group) ?? []), f]);
+    return [...groups];
+  });
 
   const PAGE = 120;
-  // Full-res image previews and Save downloads ride the media-partition FileSource.
-  const media = $derived(deviceFileSource(udid));
+  // Full-res image previews and Save downloads.
+  const media = $derived(source.files);
   let assets = $state<GalleryAsset[]>([]);
   let total = $state(0);
   let revision = $state('');
@@ -36,7 +61,7 @@
   const thumbLoader = createBatchLoader<string>({
     batchSize: 30,
     debounceMs: 120,
-    fetchBatch: (paths, signal) => mediaThumbsBatch(udid, paths, signal),
+    fetchBatch: (paths, signal) => source.thumbs(paths, signal),
     onBatch: (_paths, urls) => {
       for (const [path, url] of Object.entries(urls)) {
         if (near.has(path)) thumbs[path] = url;
@@ -72,6 +97,8 @@
   }
 
   let lightbox = $state<GalleryAsset | null>(null);
+  let videoFailed = $state(false);
+  let livePlaying = $state(false);
   let lbStat = $state<Promise<FileStat>>();
   let saving = $state(false);
   let saveError = $state<string | null>(null);
@@ -80,7 +107,36 @@
   const lbIndex = $derived(lightbox ? assets.findIndex((a) => a.path === lightbox!.path) : -1);
 
   function canPreview(a: GalleryAsset): boolean {
-    return a.kind === 'photo' && isPreviewableImage(a.name);
+    return a.kind === 'photo' && !a.missing && isPreviewableImage(a.name);
+  }
+
+  function canPlay(a: GalleryAsset): boolean {
+    return a.kind === 'video' && !a.missing && isPlayableVideo(a.name);
+  }
+
+  // taken carries the server's zone, the one months are counted in.
+  function monthOf(a: GalleryAsset | undefined): string {
+    return a?.taken?.slice(0, 7) ?? '';
+  }
+
+  function monthLabel(key: string): string {
+    const [year, mon] = key.split('-').map(Number);
+    return new Date(year, mon - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  }
+
+  async function loadMonths(): Promise<void> {
+    months = [];
+    if (!source.months) return;
+    const asked = filter;
+    const list = await source.months(asked).catch(() => []); // the picker just stays hidden
+    if (asked === filter) months = list;
+  }
+
+  function setFilter(key: string): void {
+    filter = key;
+    month = '';
+    void load();
+    void loadMonths();
   }
 
   async function load(): Promise<void> {
@@ -96,7 +152,9 @@
     total = 0;
     revision = '';
     try {
-      const page = await galleryPage(udid, {
+      const page = await source.page({
+        filter,
+        month,
         offset: 0,
         limit: PAGE,
         signal: ctrl.signal,
@@ -122,7 +180,9 @@
     loadingMore = true;
     moreError = null;
     try {
-      const page = await galleryPage(udid, {
+      const page = await source.page({
+        filter,
+        month,
         offset: assets.length,
         limit: PAGE,
         revision,
@@ -148,8 +208,10 @@
     lightbox = a;
     // Size + date come from a single on-demand stat; {#await} ignores the
     // answer for a photo the user has already stepped past.
-    lbStat = media.stat(a.path);
+    lbStat = a.missing ? undefined : media.stat(a.path);
     saveError = null;
+    videoFailed = false;
+    livePlaying = false;
   }
 
   // Step to the previous/next asset in the roll (prefetch a page near the end).
@@ -175,7 +237,7 @@
 
   function assetType(a: GalleryAsset): string {
     if (a.kind === 'video') return 'Video';
-    return a.live ? 'Live Photo' : 'Photo';
+    return a.liveVideo ? 'Live Photo' : 'Photo';
   }
   function assetFormat(a: GalleryAsset): string {
     return a.name.includes('.') ? (a.name.split('.').pop() ?? '').toUpperCase() : '';
@@ -185,6 +247,8 @@
   // belongs to this component instance rather than to a reactive state effect.
   onMount(() => {
     void load();
+    void loadMonths();
+    void source.filters?.().then((list) => (filters = list), () => {}); // the filters just stay hidden
     return () => {
       pageCtrl?.abort();
       pageCtrl = null;
@@ -222,24 +286,71 @@
 />
 
 <Modal
-  title={`Media — ${name}`}
-  subtitle={total ? `${total.toLocaleString()} items` : 'Camera roll'}
+  {title}
+  subtitle={total ? `${total.toLocaleString()} items` : subtitle}
   closable
   class="relative flex h-[90vh] max-h-[90vh] w-full max-w-5xl flex-col gap-3"
   {onclose}
 >
   {#snippet headerActions()}
-    <button
-      type="button"
-      class="btn btn-square btn-ghost btn-sm"
-      title="Rescan"
-      aria-label="Rescan"
-      disabled={loading}
-      onclick={() => load()}
-    >
-      <Icon name="refresh" size={16} />
-    </button>
+    {#if rescan}
+      <button
+        type="button"
+        class="btn btn-square btn-ghost btn-sm"
+        title="Rescan"
+        aria-label="Rescan"
+        disabled={loading}
+        onclick={() => load()}
+      >
+        <Icon name="refresh" size={16} />
+      </button>
+    {/if}
   {/snippet}
+
+  {#if filters.length > 0 || months.length > 0}
+    <div class="flex shrink-0 flex-wrap items-center gap-1">
+      {#each chips as f (f.key)}
+        <input
+          type="radio"
+          class="btn btn-xs"
+          name={chipGroup}
+          aria-label={`${f.label} ${f.count.toLocaleString()}`}
+          checked={filter === f.key}
+          onchange={() => setFilter(f.key)}
+        />
+      {/each}
+      {#if pickerGroups.length > 0}
+        <select
+          class="select select-xs ml-auto w-auto"
+          aria-label="Album"
+          value={filters.some((f) => f.group && f.key === filter) ? filter : ''}
+          onchange={(e) => setFilter(e.currentTarget.value)}
+        >
+          <option value="">Albums…</option>
+          {#each pickerGroups as [group, list] (group)}
+            <optgroup label={group}>
+              {#each list as f (f.key)}
+                <option value={f.key}>{f.label} · {f.count}</option>
+              {/each}
+            </optgroup>
+          {/each}
+        </select>
+      {/if}
+      {#if months.length > 0}
+        <select
+          class={`select select-xs w-auto ${pickerGroups.length > 0 ? '' : 'ml-auto'}`}
+          aria-label="Month"
+          bind:value={month}
+          onchange={() => load()}
+        >
+          <option value="">All dates</option>
+          {#each months as m (m.month)}
+            <option value={m.month}>{monthLabel(m.month)} · {m.count}</option>
+          {/each}
+        </select>
+      {/if}
+    </div>
+  {/if}
 
   <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200 p-1" bind:this={scroller} {@attach tiles.root}>
     {#if loading}
@@ -250,10 +361,13 @@
     {:else if error}
       <ErrorLine {error} variant="alert" className="m-3" />
     {:else if assets.length === 0}
-      <p class="p-4 text-sm text-base-content/50">Nothing here.</p>
+      <p class="p-4 text-sm text-base-content/50">Nothing here</p>
     {:else}
       <div class="grid grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6">
-        {#each assets as a (a.path)}
+        {#each assets as a, i (a.path)}
+          {#if monthOf(a) && monthOf(a) !== monthOf(assets[i - 1])}
+            <h3 class="col-span-full px-1 pb-1 pt-3 text-sm font-semibold first:pt-1">{monthLabel(monthOf(a))}</h3>
+          {/if}
           <button
             type="button"
             class="group relative aspect-square overflow-hidden rounded bg-base-300"
@@ -271,7 +385,7 @@
                 onerror={hideBroken}
               />
             {/if}
-            {#if a.live}
+            {#if a.liveVideo}
               <span
                 class="absolute left-1 top-1 rounded bg-black/55 px-1 text-[10px] font-semibold leading-tight text-white"
               >
@@ -281,6 +395,14 @@
             {#if a.kind === 'video'}
               <span class="absolute bottom-1 right-1 rounded-full bg-black/55 p-0.5 text-white">
                 <Icon name="play" size={12} />
+              </span>
+            {/if}
+            {#if a.missing}
+              <span
+                class="absolute bottom-1 left-1 rounded-full bg-black/55 p-0.5 text-white"
+                title="The original is only in iCloud"
+              >
+                <Icon name="cloud" size={12} />
               </span>
             {/if}
           </button>
@@ -345,16 +467,53 @@
               <img src={thumbs[a.path]} alt={a.name} class="max-h-[55vh] max-w-full rounded" onerror={hideBroken} />
             {/if}
             <p class="text-sm text-base-content/60">
-              {a.kind === 'video' ? 'Video — Save to view it.' : "Couldn't render a preview — Save the original."}
+              {#if a.missing}
+                The original is only in iCloud; this backup keeps just the thumbnail.
+              {:else if a.kind === 'video'}
+                This video can't play in the browser — Save it to watch.
+              {:else}
+                Couldn't render a preview — Save the original.
+              {/if}
             </p>
           </div>
         {/snippet}
-        {#if canPreview(a)}
+        {#if canPlay(a) && !videoFailed}
           {#key a.path}
-            <PreviewImage src={media.previewUrl(a.path)} alt={a.name} fallback={noPreview} />
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              src={media.previewUrl(a.path)}
+              class="max-h-full max-w-full rounded"
+              controls
+              autoplay
+              playsinline
+              onerror={() => (videoFailed = true)}
+            ></video>
+          {/key}
+        {:else if livePlaying && a.liveVideo}
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video
+            src={media.previewUrl(a.liveVideo)}
+            class="max-h-full max-w-full rounded"
+            autoplay
+            playsinline
+            onended={() => (livePlaying = false)}
+            onerror={() => (livePlaying = false)}
+          ></video>
+        {:else if canPreview(a)}
+          {#key a.path}
+            <PreviewImage src={media.previewUrl(a.path)} alt={a.name} placeholder={thumbs[a.path]} fallback={noPreview} />
           {/key}
         {:else}
           {@render noPreview()}
+        {/if}
+        {#if a.liveVideo && canPreview(a) && !livePlaying}
+          <button
+            type="button"
+            class="btn btn-xs absolute left-2 top-2 z-10 border-none bg-black/55 text-white"
+            onclick={() => (livePlaying = true)}
+          >
+            <Icon name="play" size={12} /> LIVE
+          </button>
         {/if}
       </div>
 
@@ -362,7 +521,9 @@
         <div class="min-w-0">
           <p class="truncate text-sm font-medium">{a.name}</p>
           <p class="truncate text-xs text-base-content/60">
-            {assetType(a)}{assetFormat(a) ? ` · ${assetFormat(a)}` : ''}
+            {assetType(a)}{assetFormat(a) ? ` · ${assetFormat(a)}` : ''}{a.taken
+              ? ` · Taken ${formatDateTime(a.taken)}`
+              : ''}
           </p>
           <!-- A failed stat leaves size and date out; the empty catch keeps it handled. -->
           {#await lbStat then stat}
@@ -370,7 +531,12 @@
           {:catch}{/await}
           <ErrorLine error={saveError} size="xs" />
         </div>
-        <button type="button" class="btn btn-primary btn-sm shrink-0" disabled={saving} onclick={() => save(a)}>
+        <button
+          type="button"
+          class="btn btn-primary btn-sm shrink-0"
+          disabled={saving || a.missing}
+          onclick={() => save(a)}
+        >
           {#if saving}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}

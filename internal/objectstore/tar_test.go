@@ -139,3 +139,45 @@ func TestTarSeeksToAnyOffset(t *testing.T) {
 		}
 	}
 }
+
+// Reads that overlap, as decryption's block-sized lookbehind makes, still
+// check the whole object; a random File skips what a jump leaves unread.
+func TestFileChecksOverlappingReadsAndRandomJumps(t *testing.T) {
+	snapshot, files := newTarTestSnapshot(t)
+	content := files["Manifest.db"]
+	object, err := snapshot.store.resolveObjectRef(snapshot.Source(), refOf(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(object, []byte(strings.ToUpper(content)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readOverlapping := func(file *File) error {
+		buffer := make([]byte, 100)
+		for offset := int64(0); offset < file.Size(); offset += 84 {
+			if _, err := file.ReadAt(buffer, max(offset-16, 0)); err != nil && err != io.EOF {
+				return err
+			}
+		}
+		return nil
+	}
+	file, err := snapshot.OpenRandom("Manifest.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := readOverlapping(file); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("overlapping reads of a damaged object: err=%v, want ErrIntegrity", err)
+	}
+	_ = file.Close()
+	_ = os.Rename(object+damagedSuffix, object) // set aside by the failed check
+
+	file, err = snapshot.OpenRandom("Manifest.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	tail := make([]byte, 10)
+	if _, err := file.ReadAt(tail, file.Size()-10); err != nil && err != io.EOF {
+		t.Fatalf("a random jump read the skipped part: %v", err)
+	}
+}

@@ -2,6 +2,7 @@
   import { errMsg } from '../api/client';
   import { powerDevice, type Device } from '../api/devices';
   import { deviceFileSource } from '../api/files';
+  import { deviceGallerySource } from '../api/gallery';
   import { blockedReason, connectionUi, modelDisplayName, osName } from '../device-ui';
   import { liveRun } from '../events.svelte';
   import { formatDateTime, relativeTime } from '../format';
@@ -163,7 +164,7 @@
     onclose={closeTool}
   />
 {:else if openTool === 'media'}
-  <Gallery udid={device.udid} name={device.name} onclose={closeTool} />
+  <Gallery source={deviceGallerySource(device.udid)} title={`Media — ${device.name}`} onclose={closeTool} />
 {/if}
 
 {#if powerAsked}

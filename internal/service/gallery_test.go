@@ -60,7 +60,7 @@ func TestGroupAlbumRecognizesLivePhotosVideosAndProRAW(t *testing.T) {
 	if len(assets) != 3 {
 		t.Fatalf("assets = %#v, want 3", assets)
 	}
-	if assets[0].Kind != "photo" || !assets[0].Live || assets[0].Path != "DCIM/100APPLE/IMG_0001.HEIC" {
+	if assets[0].Kind != "photo" || assets[0].LiveVideo != "DCIM/100APPLE/IMG_0001.MOV" || assets[0].Path != "DCIM/100APPLE/IMG_0001.HEIC" {
 		t.Fatalf("live photo = %#v", assets[0])
 	}
 	if assets[1].Kind != "video" || assets[1].Name != "IMG_0002.MOV" {

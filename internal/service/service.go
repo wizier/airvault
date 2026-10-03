@@ -22,12 +22,13 @@ type Service struct {
 	files   *devicefs.Manager
 	uploads string
 
-	ops     *operationManager
-	runs    *runRegistry
-	live    *deviceRuntimeStore
-	lockObs *lockObserverMgr
-	gallery *galleryIndex
-	wg      sync.WaitGroup
+	ops      *operationManager
+	runs     *runRegistry
+	live     *deviceRuntimeStore
+	lockObs  *lockObserverMgr
+	gallery  *galleryIndex
+	unlocked unlockedBackup
+	wg       sync.WaitGroup
 
 	deviceTransitionMu sync.Mutex
 	deviceRefreshMu    sync.Mutex

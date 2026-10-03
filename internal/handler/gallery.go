@@ -14,12 +14,16 @@ type galleryResponse struct {
 	Revision string                 `json:"revision"`
 }
 
-func (h *Handler) galleryList(c *echo.Context) error {
-	offset, err := echo.QueryParamOr(c, "offset", 0)
-	if err != nil {
-		return err
+func pageQuery(c *echo.Context) (offset, limit int, err error) {
+	if offset, err = echo.QueryParamOr(c, "offset", 0); err != nil {
+		return 0, 0, err
 	}
-	limit, err := echo.QueryParamOr(c, "limit", 120)
+	limit, err = echo.QueryParamOr(c, "limit", 120)
+	return offset, limit, err
+}
+
+func (h *Handler) galleryList(c *echo.Context) error {
+	offset, limit, err := pageQuery(c)
 	if err != nil {
 		return err
 	}

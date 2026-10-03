@@ -3,9 +3,17 @@
   // HEIC/HEIF are transcoded server-side.
   const PREVIEW_IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif']);
 
+  // Mirrors videoType in internal/handler/media_preview.go.
+  const PLAYABLE_VIDEO_EXT = new Set(['mov', 'mp4', 'm4v']);
+
+  const extOf = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
+
   export function isPreviewableImage(name: string): boolean {
-    const ext = name.split('.').pop()?.toLowerCase() ?? '';
-    return PREVIEW_IMAGE_EXT.has(ext);
+    return PREVIEW_IMAGE_EXT.has(extOf(name));
+  }
+
+  export function isPlayableVideo(name: string): boolean {
+    return PLAYABLE_VIDEO_EXT.has(extOf(name));
   }
 </script>
 
@@ -14,7 +22,13 @@
   // inherits another's load state.
   import type { Snippet } from 'svelte';
 
-  let { src, alt, fallback }: { src: string; alt: string; fallback: Snippet } = $props();
+  let { src, alt, placeholder, fallback }: {
+    src: string;
+    alt: string;
+    /** Shown while src loads: a thumbnail already at hand. */
+    placeholder?: string;
+    fallback: Snippet;
+  } = $props();
 
   let loading = $state(true);
   let failed = $state(false);
@@ -23,7 +37,9 @@
 {#if failed}
   {@render fallback()}
 {:else}
-  {#if loading}
+  {#if loading && placeholder}
+    <img class="h-full w-full rounded object-contain" src={placeholder} {alt} />
+  {:else if loading}
     <span class="loading loading-spinner loading-md"></span>
   {/if}
   <img

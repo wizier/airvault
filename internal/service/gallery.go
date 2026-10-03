@@ -22,7 +22,12 @@ type GalleryAsset struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
 	Kind string `json:"kind"` // "photo" | "video"
-	Live bool   `json:"live,omitempty"`
+	// LiveVideo is a Live Photo's video, by path like the photo's.
+	LiveVideo string `json:"liveVideo,omitempty"`
+	// A backup's library knows when a photo was taken, and which originals
+	// stayed only in iCloud.
+	Taken   *time.Time `json:"taken,omitempty"`
+	Missing bool       `json:"missing,omitempty"`
 }
 
 const galleryCacheTTL = 5 * time.Minute
@@ -85,9 +90,16 @@ func galleryRevision(assets []GalleryAsset) string {
 	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
-func (s *Service) GalleryPage(ctx context.Context, udid string, offset, limit int, revision string) ([]GalleryAsset, int, string, error) {
+func validPage(offset, limit int) error {
 	if offset < 0 || limit < 1 || limit > 500 {
-		return nil, 0, "", &domain.ValidationError{Code: "invalid_gallery_page", Message: "offset must be non-negative and limit must be 1-500"}
+		return &domain.ValidationError{Code: "invalid_page", Message: "offset must be non-negative and limit must be 1-500"}
+	}
+	return nil
+}
+
+func (s *Service) GalleryPage(ctx context.Context, udid string, offset, limit int, revision string) ([]GalleryAsset, int, string, error) {
+	if err := validPage(offset, limit); err != nil {
+		return nil, 0, "", err
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, 0, "", err
@@ -191,10 +203,10 @@ func groupAlbum(files []devicefs.Path) []GalleryAsset {
 		switch {
 		case it.image.String() != "":
 			out = append(out, GalleryAsset{
-				Path: it.image.String(),
-				Name: it.image.Name(),
-				Kind: "photo",
-				Live: it.video.String() != "",
+				Path:      it.image.String(),
+				Name:      it.image.Name(),
+				Kind:      "photo",
+				LiveVideo: it.video.String(),
 			})
 		case it.video.String() != "":
 			out = append(out, GalleryAsset{

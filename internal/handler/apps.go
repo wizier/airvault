@@ -84,7 +84,7 @@ func (h *Handler) previewAppFile(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return streamImagePreview(c, download, path.Base(devPath))
+	return streamPreview(c, download, path.Base(devPath))
 }
 
 func (h *Handler) deleteAppFile(c *echo.Context) error {

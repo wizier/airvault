@@ -85,6 +85,23 @@
     "Liberation Mono", monospace;
 }
 
+/* iOS Messages' bubbles whatever the app's theme: sent ones blue for iMessage
+   and green for SMS and RCS, received ones gray. */
+@layer utilities {
+  .chat-bubble-imessage {
+    background-color: light-dark(#007aff, #0a84ff);
+    color: #fff;
+  }
+  .chat-bubble-sms {
+    background-color: light-dark(#34c759, #30d158);
+    color: #fff;
+  }
+  .chat-bubble-received {
+    background-color: light-dark(#e9e9eb, #3a3a3c);
+    color: light-dark(#000, #fff);
+  }
+}
+
 /* One height for every device so tiles line up; the model's aspect gives the
    width, and everything else is a fraction of it. Phone proportions follow
    daisyUI's mockup-phone. */

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"slices"
 
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
@@ -53,6 +54,7 @@ func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
 	if err != nil {
 		return err
 	}
+	s.unlocked.closeIf(func(_, source string) bool { return source == udid })
 	if err := s.library.DeleteSource(ctx, udid, release); err != nil {
 		return err
 	}
@@ -66,6 +68,7 @@ func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs 
 	if err != nil {
 		return err
 	}
+	s.unlocked.closeIf(func(id, _ string) bool { return slices.Contains(snapshotIDs, id) })
 	return s.library.DeleteSnapshots(ctx, udid, snapshotIDs, release)
 }
 
@@ -80,16 +83,9 @@ func (s *Service) SnapshotsReclaimable(ctx context.Context, udid string, snapsho
 	return s.library.Reclaimable(ctx, udid, snapshotIDs)
 }
 
-// Damage a download finds is recorded unless a backup, check or deletion holds
-// the source: its own collection records it.
 func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*BackupExport, error) {
 	return s.library.Export(ctx, snapshotID, func(source string, err error) {
-		release, busy := s.ops.acquire("backup download", snapshotReadResource(source))
-		if busy != nil {
-			return
-		}
-		defer release()
-		s.library.NoticeDamage(ctx, source, err)
+		s.noticeReadDamage(ctx, source, err)
 	})
 }
 

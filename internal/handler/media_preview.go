@@ -21,6 +21,13 @@ var nativeImageType = map[string]string{
 
 var transcodeImageExt = map[string]bool{".heic": true, ".heif": true}
 
+// Mirrors PLAYABLE_VIDEO_EXT in web/src/lib/components/PreviewImage.svelte.
+var videoType = map[string]string{
+	".mov": "video/quicktime",
+	".mp4": "video/mp4",
+	".m4v": "video/x-m4v",
+}
+
 // Force the embedded WASM decoder (pure Go, no cgo, no external libheif) so
 // preview rendering is identical on every host.
 func init() { heic.ForceWasmMode = true }

@@ -21,7 +21,9 @@ export interface FileSource {
   remove?(path: string): Promise<void>;
 }
 
-function afcFileSource(base: string, writable: boolean): FileSource {
+/** Files served by ?path=… at base/stat, base/download and base/preview; the
+ *  listing, where there is one, at base itself. */
+export function endpointFileSource(base: string, writable = false): FileSource {
   const at = (endpoint: string, path: string) => `${base}${endpoint}?${new URLSearchParams({ path })}`;
   return {
     list: async (path, signal) => (await request<{ entries: AFCEntry[] }>(at('', path), { signal })).entries,
@@ -33,11 +35,11 @@ function afcFileSource(base: string, writable: boolean): FileSource {
 }
 
 export function appFileSource(udid: string, bundleId: string, writable: boolean): FileSource {
-  return afcFileSource(`${devicePath(udid)}/apps/${encodeURIComponent(bundleId)}/files`, writable);
+  return endpointFileSource(`${devicePath(udid)}/apps/${encodeURIComponent(bundleId)}/files`, writable);
 }
 
 export function deviceFileSource(udid: string): FileSource {
-  return afcFileSource(`${devicePath(udid)}/media`, false);
+  return endpointFileSource(`${devicePath(udid)}/media`);
 }
 
 /** Stats the file first, so an offline, locked or busy phone reports in the UI

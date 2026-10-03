@@ -68,7 +68,10 @@ export function formatDuration(startIso?: string, endIso?: string): string {
   const a = new Date(startIso).getTime();
   const b = new Date(endIso).getTime();
   if (Number.isNaN(a) || Number.isNaN(b) || b < a) return '—';
-  let secs = Math.round((b - a) / 1000);
+  return formatSeconds(Math.round((b - a) / 1000));
+}
+
+export function formatSeconds(secs: number): string {
   const h = Math.floor(secs / 3600);
   secs -= h * 3600;
   const m = Math.floor(secs / 60);

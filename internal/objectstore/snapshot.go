@@ -91,6 +91,27 @@ func (snap *Snapshot) Open(key string) (io.ReadCloser, error) {
 	return snap.store.openReader(snap.Source(), key, entry.ObjectRef, entry.Size, nil)
 }
 
+// OpenFile opens a file for reads at any offset, a resumed download's
+// included: it is checked whole however it is read.
+func (snap *Snapshot) OpenFile(key string) (*File, error) {
+	return snap.openFile(key, false)
+}
+
+// OpenRandom opens a file for the scattered reads of a database or a video
+// player: what is read in order from the start is still checked, but a jump
+// ahead no longer reads everything before it.
+func (snap *Snapshot) OpenRandom(key string) (*File, error) {
+	return snap.openFile(key, true)
+}
+
+func (snap *Snapshot) openFile(key string, random bool) (*File, error) {
+	entry, ok := snap.manifest.Entries[key]
+	if !ok || entry.Kind != entryFile {
+		return nil, fs.ErrNotExist
+	}
+	return snap.store.openFile(snap.Source(), key, entry.ObjectRef, entry.Size, random)
+}
+
 func (s *Store) OpenSnapshot(source, snapshotID string) (*Snapshot, error) {
 	return s.openManifest(source, snapshotID, snapshotManifestRelative(source, snapshotID))
 }

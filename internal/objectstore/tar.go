@@ -3,11 +3,9 @@ package objectstore
 import (
 	"archive/tar"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -32,12 +30,9 @@ type Tar struct {
 	file *tarFile
 }
 
-// Content read in order from its start is checked, so a damaged object fails
-// the read instead of passing as a complete copy.
 type tarFile struct {
 	index int
-	file  *os.File
-	check *contentCheck
+	*File
 }
 
 func (snap *Snapshot) Tar(root string) (*Tar, error) {
@@ -107,34 +102,17 @@ func (t *Tar) readEntry(index int, offset int64, buffer []byte) (int, error) {
 }
 
 func (t *Tar) readContent(index int, offset int64, buffer []byte) (int, error) {
-	entry := t.snapshot.manifest.Entries[t.paths[index]]
 	if t.file == nil || t.file.index != index {
 		t.closeFile()
-		file, err := t.snapshot.store.openObject(t.snapshot.Source(), entry.ObjectRef, entry.Size)
+		file, err := t.snapshot.OpenFile(t.paths[index])
 		if err != nil {
-			return 0, fmt.Errorf("%w: pack %q: %v", ErrIntegrity, t.paths[index], err)
+			return 0, fmt.Errorf("pack: %w", err)
 		}
-		t.file = &tarFile{index: index, file: file, check: newContentCheck(entry.ObjectRef, entry.Size)}
+		t.file = &tarFile{index: index, File: file}
 	}
-	f := t.file
-	var read int
-	var err error
-	// A resumed download starts mid-file: hash the part it skips first, so the
-	// file is still verified by the time its last byte goes out.
-	if f.check.fed < offset {
-		_, err = io.Copy(checkWriter{f.check}, io.NewSectionReader(f.file, f.check.fed, offset-f.check.fed))
-	}
-	if err == nil {
-		read, err = f.file.ReadAt(buffer, offset)
-	}
-	if err == nil && f.check.fed == offset {
-		err = f.check.feed(buffer[:read])
-	}
-	if errors.Is(err, ErrIntegrity) {
-		err = errors.Join(err, setAside(f.file.Name()))
-	}
+	read, err := t.file.ReadAt(buffer, offset)
 	if err != nil {
-		return read, fmt.Errorf("pack %q: %w", t.paths[index], err)
+		return read, fmt.Errorf("pack: %w", err)
 	}
 	return read, nil
 }
@@ -149,7 +127,7 @@ func (t *Tar) Close() {
 
 func (t *Tar) closeFile() {
 	if t.file != nil {
-		_ = t.file.file.Close()
+		_ = t.file.Close()
 		t.file = nil
 	}
 }

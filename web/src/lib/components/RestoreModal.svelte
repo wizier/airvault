@@ -271,9 +271,9 @@
         <span class="loading loading-spinner loading-xs"></span>
         Starting…
       {:else if submit.failure}
-        <Icon name="backup" size={15} /> Try restore again
+        <Icon name="restore" size={15} /> Try restore again
       {:else}
-        <Icon name="backup" size={15} />
+        <Icon name="restore" size={15} />
         Restore
       {/if}
     </button>

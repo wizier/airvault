@@ -74,10 +74,11 @@ func WriteInfo(draft *objectstore.Draft, info *Info) error {
 // Backup is an iOS backup stored in a snapshot, checked complete.
 type Backup struct {
 	*objectstore.Snapshot
-	Info       Info
-	Encrypted  bool
-	IOSVersion string
-	keybag     []byte
+	Info        Info
+	Encrypted   bool
+	IOSVersion  string
+	keybag      []byte
+	manifestKey []byte // absent before iOS 10.2, whose Manifest.db is plaintext
 }
 
 // Open reads a snapshot's backup plists and checks the backup is complete
@@ -86,6 +87,7 @@ func Open(snapshot *objectstore.Snapshot) (*Backup, error) {
 	var manifest struct {
 		IsEncrypted  bool   `plist:"IsEncrypted"`
 		BackupKeyBag []byte `plist:"BackupKeyBag"`
+		ManifestKey  []byte `plist:"ManifestKey"`
 		Lockdown     struct {
 			ProductVersion string `plist:"ProductVersion"`
 		} `plist:"Lockdown"`
@@ -103,7 +105,7 @@ func Open(snapshot *objectstore.Snapshot) (*Backup, error) {
 		return nil, fmt.Errorf("backup Status.plist SnapshotState is %q, want %q", status.SnapshotState, "finished")
 	}
 	backup := &Backup{Snapshot: snapshot, Encrypted: manifest.IsEncrypted, IOSVersion: manifest.Lockdown.ProductVersion,
-		keybag: manifest.BackupKeyBag}
+		keybag: manifest.BackupKeyBag, manifestKey: manifest.ManifestKey}
 	if err := readPlist(snapshot, infoPlist, &backup.Info); err != nil {
 		return nil, fmt.Errorf("read Info.plist: %w", err)
 	}

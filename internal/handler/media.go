@@ -42,7 +42,7 @@ func (h *Handler) previewMedia(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return streamImagePreview(c, download, path.Base(devPath))
+	return streamPreview(c, download, path.Base(devPath))
 }
 
 type deviceDownload interface {
@@ -85,13 +85,24 @@ func (r *readFailure) Read(buffer []byte) (int, error) {
 	return read, err
 }
 
-func streamImagePreview(c *echo.Context, download deviceDownload, name string) error {
+// Videos stream as they are, Range and all, so the browser can seek.
+func streamPreview(c *echo.Context, download deviceDownload, name string) error {
 	context.AfterFunc(c.Request().Context(), download.Close)
 	defer download.Close()
 	ext := strings.ToLower(path.Ext(name))
+	if contentType, video := videoType[ext]; video {
+		return serveDeviceFile(c, download, name, contentType, "inline")
+	}
 	contentType, native := nativeImageType[ext]
 	if !native && !transcodeImageExt[ext] {
 		return echo.ErrUnsupportedMediaType
+	}
+	// Safari shows HEIC itself and says so in Accept; the transcode is for the rest.
+	if transcodeImageExt[ext] {
+		c.Response().Header().Add("Vary", "Accept")
+		if strings.Contains(c.Request().Header.Get("Accept"), "image/heic") {
+			contentType, native = "image/heic", true
+		}
 	}
 	const maxPreviewBytes = 256 << 20
 	if download.Size() > maxPreviewBytes {
