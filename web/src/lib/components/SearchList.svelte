@@ -1,8 +1,9 @@
-<script lang="ts" generics="T">
+<script lang="ts" generics="T, F">
   // A list read from a backup at once, narrowed by chips and a search over each
   // item's text; the caller draws the rows.
   import { onMount, type Snippet } from 'svelte';
   import { errMsg } from '../api/client';
+  import { debouncedSearch } from '../search.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Modal from './Modal.svelte';
 
@@ -15,6 +16,7 @@
     text,
     chips = [],
     row,
+    search,
     onclose,
   }: {
     title: string;
@@ -28,6 +30,8 @@
     /** Views of the list; the first is the default. */
     chips?: { label: string; shows: (item: T) => boolean }[];
     row: Snippet<[T]>;
+    /** Looks further as the query settles, such as in messages: what it finds goes below the items. */
+    search?: { title: string; find: (query: string, signal: AbortSignal) => Promise<F[]>; row: Snippet<[F, string]> };
     onclose: () => void;
   } = $props();
 
@@ -37,13 +41,18 @@
   let chip = $state(0);
   const chipGroup = $props.id();
 
+  const term = $derived(query.trim());
   const shown = $derived.by(() => {
-    const q = query.trim().toLowerCase();
+    const q = term.toLowerCase();
     const shows = chips[chip]?.shows ?? (() => true);
     return (items ?? []).filter(
       (item) => shows(item) && (!q || text(item).some((field) => field?.toLowerCase().includes(q))),
     );
   });
+  const searched = debouncedSearch(
+    () => (search ? query : ''),
+    (q, signal) => search?.find(q, signal) ?? Promise.resolve([]),
+  );
 
   onMount(() => {
     const ctrl = new AbortController();
@@ -79,15 +88,34 @@
         <span class="loading loading-spinner loading-sm"></span>
         Reading the backup…
       </p>
-    {:else if shown.length === 0}
-      <p class="p-4 text-sm text-base-content/50">{items.length ? 'Nothing matches' : `No ${noun} in this backup`}</p>
     {:else}
-      <!-- Each row's children are list-row columns: list-col-grow takes the width, list-col-wrap a line below. -->
-      <ul class="list">
-        {#each shown as item (item)}
-          <li class="list-row items-center py-2.5">{@render row(item)}</li>
-        {/each}
-      </ul>
+      {#if shown.length}
+        <!-- Each row's children are list-row columns: list-col-grow takes the width, list-col-wrap a line below. -->
+        <ul class="list">
+          {#each shown as item (item)}
+            <li class="list-row items-center py-2.5">{@render row(item)}</li>
+          {/each}
+        </ul>
+      {:else if !searched.active}
+        <p class="p-4 text-sm text-base-content/50">{items.length ? 'Nothing matches' : `No ${noun} in this backup`}</p>
+      {/if}
+      {#if search && searched.active}
+        {@const result = searched.result}
+        <ul class="list">
+          <li class="flex items-center gap-2 px-4 pt-3 pb-1 text-xs tracking-wide text-base-content/60">
+            {search.title}
+            {#if !result}<span class="loading loading-spinner loading-xs"></span>{/if}
+          </li>
+          {#if result?.error}
+            <li class="px-4 pb-3"><ErrorLine error={result.error} size="xs" /></li>
+          {:else if result?.value?.length === 0}
+            <li class="px-4 pb-3 text-sm text-base-content/50">Nothing matches</li>
+          {/if}
+          {#each result?.value ?? [] as f, i (i)}
+            <li class="list-row items-center py-2.5">{@render search.row(f, result!.query)}</li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </div>
 </Modal>

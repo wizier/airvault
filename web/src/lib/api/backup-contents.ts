@@ -151,6 +151,13 @@ export interface ChatEvent {
 export const listBackupChats = (snapshotId: string, app: ChatApp, signal?: AbortSignal) =>
   list<BackupChat>(snapshotId, `${app}/chats`, signal);
 
+/** The query naming a conversation's chats, with params. */
+function chatQuery(chat: BackupChat, params: Record<string, string>): URLSearchParams {
+  const q = new URLSearchParams(params);
+  for (const id of chat.ids) q.append('chat', String(id));
+  return q;
+}
+
 /** A page of a conversation's messages, the latest first. */
 export function listBackupMessages(
   snapshotId: string,
@@ -160,10 +167,33 @@ export function listBackupMessages(
   limit: number,
   signal?: AbortSignal,
 ): Promise<ChatMessage[]> {
-  const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
-  for (const id of chat.ids) q.append('chat', String(id));
+  const q = chatQuery(chat, { offset: String(offset), limit: String(limit) });
   return list<ChatMessage>(snapshotId, `${app}/chats/messages`, signal, q);
 }
+
+/** A message a search found in a conversation, where it stands in its pages. */
+export interface ChatMatch {
+  id: number;
+  offset: number;
+}
+
+/** The messages of a conversation that show query, whatever its case, the latest first. */
+export const searchBackupChat = (
+  snapshotId: string,
+  app: ChatApp,
+  chat: BackupChat,
+  query: string,
+  signal?: AbortSignal,
+) => list<ChatMatch>(snapshotId, `${app}/chats/matches`, signal, chatQuery(chat, { q: query }));
+
+/** A message a search found, in the chat with the ID `chat`. */
+export interface FoundMessage extends Pick<ChatMessage, 'id' | 'text' | 'time' | 'fromMe'> {
+  chat: number;
+}
+
+/** An app's messages that show query, whatever its case: the latest 200. */
+export const searchBackupMessages = (snapshotId: string, app: ChatApp, query: string, signal?: AbortSignal) =>
+  list<FoundMessage>(snapshotId, `${app}/matches`, signal, new URLSearchParams({ q: query }));
 
 // Keys are the server's photo filters (see Go service.photoFilters).
 const PHOTO_FILTERS: Record<string, string> = {

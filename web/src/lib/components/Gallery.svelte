@@ -8,6 +8,7 @@
   import { downloadFile, type FileStat } from '../api/files';
   import { createBatchLoader, nearViewport } from '../batch-loader.svelte';
   import { fileFacts, formatDateTime } from '../format';
+  import { pullNear } from '../pull-near';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
@@ -50,8 +51,6 @@
   let loadingMore = $state(false);
   let error = $state<string | null>(null);
   let moreError = $state<string | null>(null);
-  let sentinel = $state<HTMLElement | null>(null);
-  let scroller = $state<HTMLElement | null>(null);
   let pageCtrl: AbortController | null = null;
 
   // JPEG data URLs keyed by path; MAX_THUMBS bounds how many stay alive.
@@ -257,21 +256,6 @@
     };
   });
 
-  // Infinite scroll: pull the next page when the sentinel nears the grid's
-  // visible box. A fresh observer per page reports the sentinel's current
-  // state, so a short page that leaves it in view pulls the next one too.
-  $effect(() => {
-    if (!sentinel || !scroller || loadingMore || moreError || assets.length >= total) return;
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) void loadMore();
-      },
-      { root: scroller, rootMargin: '600px' },
-    );
-    io.observe(sentinel);
-    return () => io.disconnect();
-  });
-
   function hideBroken(e: Event): void {
     (e.currentTarget as HTMLImageElement).style.visibility = 'hidden';
   }
@@ -353,7 +337,7 @@
     </div>
   {/if}
 
-  <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200 p-1" bind:this={scroller} {@attach tiles.root}>
+  <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-200 p-1" {@attach tiles.root}>
     {#if loading}
       <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
         <span class="loading loading-spinner loading-sm"></span>
@@ -409,7 +393,10 @@
           </button>
         {/each}
       </div>
-      <div bind:this={sentinel} class="h-px"></div>
+      <!-- The next page pulls in as the end of the grid nears the view. -->
+      {#if !loadingMore && !moreError && assets.length < total}
+        <div {@attach pullNear(loadMore, '600px')} class="h-px"></div>
+      {/if}
       {#if loadingMore}
         <p class="flex items-center justify-center gap-2 p-3 text-sm text-base-content/60">
           <span class="loading loading-spinner loading-sm"></span>

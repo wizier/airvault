@@ -8,11 +8,14 @@
   import { formatBytes } from '../format';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
+  import Marked from './Marked.svelte';
   import { isPlayableAudio, isPlayableVideo, isPreviewableImage } from './PreviewImage.svelte';
 
-  let { file, files }: {
+  let { file, files, term }: {
     file: BackupAttachment;
     files: FileSource;
+    /** What a search found, marked in the file's name. */
+    term?: string;
   } = $props();
 
   let error = $state<string | null>(null);
@@ -35,7 +38,7 @@
   {:else}
     <span class="flex items-center gap-1 text-xs opacity-70" title={file.missing ? 'Not in the backup' : undefined}>
       {#if file.missing}<Icon name="cloud" size={12} />{/if}
-      {file.name}
+      <Marked text={file.name} {term} />
     </span>
   {/if}
 {:else if isPreviewableImage(file.name)}
@@ -50,7 +53,7 @@
 {:else}
   <button type="button" class="btn btn-sm max-w-full justify-start" onclick={() => save(file.path!)}>
     <Icon name="download" size={14} />
-    <span class="truncate">{file.name}</span>
+    <span class="truncate"><Marked text={file.name} {term} /></span>
     {#if file.size}<span class="opacity-60">{formatBytes(file.size)}</span>{/if}
   </button>
   <ErrorLine {error} size="xs" />
