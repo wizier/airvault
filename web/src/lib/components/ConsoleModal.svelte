@@ -164,7 +164,7 @@
 
 <!-- Fixed height: a console is a terminal window — its size must not
      breathe with how many rows currently match. -->
-<Modal subtitle={`Live system log of ${name}`} closable class="flex h-[85vh] w-11/12 max-w-5xl flex-col gap-3" {onclose}>
+<Modal subtitle={`Live system log of ${name}`} closable size="wide" class="gap-3" {onclose}>
   {#snippet heading()}
     <Icon name="terminal" size={18} />
     Console

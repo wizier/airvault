@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { listBackupContacts, type BackupContact } from '../api/backup-contents';
+  import { listBackupContacts, pictureUrl, type BackupContact } from '../api/backup-contents';
+  import Avatar from './Avatar.svelte';
   import SearchList from './SearchList.svelte';
 
   let { title, subtitle, snapshotId, onclose }: {
@@ -9,7 +10,7 @@
     onclose: () => void;
   } = $props();
 
-  let expanded = $state<BackupContact | null>(null);
+  let expanded = $state<number | null>(null); // the contact's ID
 
   function heading(c: BackupContact): string {
     return c.name || c.organization || 'No name';
@@ -30,11 +31,18 @@
   {onclose}
 >
   {#snippet row(c)}
-    <button type="button" class="list-col-grow min-w-0 text-left" onclick={() => (expanded = expanded === c ? null : c)}>
-      <p class="truncate font-medium">{heading(c)}</p>
-      <p class="truncate text-xs text-base-content/50">{secondLine(c)}</p>
+    <button
+      type="button"
+      class="list-col-grow flex min-w-0 items-center gap-3 text-left"
+      onclick={() => (expanded = expanded === c.id ? null : c.id)}
+    >
+      <Avatar src={pictureUrl(snapshotId, 'contacts', c)} name={heading(c)} />
+      <span class="min-w-0 flex-1">
+        <span class="block truncate font-medium">{heading(c)}</span>
+        <span class="block truncate text-xs text-base-content/50">{secondLine(c)}</span>
+      </span>
     </button>
-    {#if expanded === c}
+    {#if expanded === c.id}
       <dl class="list-col-wrap grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
         {#if c.jobTitle}
           <dt class="text-base-content/50">Job title</dt>

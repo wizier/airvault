@@ -1,12 +1,15 @@
-import { request } from './client';
+import { apiUrl, request } from './client';
 import { endpointFileSource, type FileSource } from './files';
 import { gallerySource, type GalleryMonth, type GallerySource } from './gallery';
 
 /** What a restore point holds, browsed under /backups/<id>. */
-const backupPath = (snapshotId: string) => `/backups/${encodeURIComponent(snapshotId)}`;
+export const backupPath = (snapshotId: string) => `/backups/${encodeURIComponent(snapshotId)}`;
 
-async function list<T>(snapshotId: string, what: string, signal?: AbortSignal): Promise<T[]> {
-  return (await request<Record<string, T[]>>(`${backupPath(snapshotId)}/${what}`, { signal }))[what];
+/** A list comes as {"<the path's last segment>": […]}. */
+async function list<T>(snapshotId: string, what: string, signal?: AbortSignal, query?: URLSearchParams): Promise<T[]> {
+  const key = what.slice(what.lastIndexOf('/') + 1);
+  const q = query?.size ? `?${query}` : '';
+  return (await request<Record<string, T[]>>(`${backupPath(snapshotId)}/${what}${q}`, { signal }))[key];
 }
 
 /** Opens a restore point's files for browsing; an encrypted one needs its
@@ -30,6 +33,19 @@ export function backupFiles(snapshotId: string, component: BackupComponent): Fil
   return endpointFileSource(`${backupPath(snapshotId)}/${component}/files`);
 }
 
+/** Where a person's or a chat's picture is. */
+export interface Picture {
+  /** A file among the app's. */
+  avatar?: string;
+  /** The contact whose photo shows them, when it has one. */
+  contactId?: number;
+}
+
+export function pictureUrl(snapshotId: string, component: BackupComponent, p?: Picture): string | undefined {
+  if (p?.avatar) return backupFiles(snapshotId, component).previewUrl(p.avatar);
+  return p?.contactId ? apiUrl(`${backupPath(snapshotId)}/contacts/${p.contactId}/photo`) : undefined;
+}
+
 /** A file a message or a note carries: one without a path is a link, a table
  *  or kept only in iCloud; a scanned document has pages. */
 export interface BackupAttachment {
@@ -40,7 +56,8 @@ export interface BackupAttachment {
   pages?: BackupAttachment[];
 }
 
-export interface BackupContact {
+export interface BackupContact extends Picture {
+  id: number;
   name: string;
   organization?: string;
   jobTitle?: string;
@@ -66,39 +83,38 @@ export interface BackupNote {
 
 export const listBackupNotes = (snapshotId: string, signal?: AbortSignal) => list<BackupNote>(snapshotId, 'notes', signal);
 
-export interface BackupCall {
+export interface BackupCall extends Picture {
   /** A phone number or an email; absent when withheld. */
   address?: string;
   name?: string;
-  time: string;
+  /** None for a call a chat records. */
+  time?: string;
   /** Seconds. */
   duration: number;
   outgoing?: boolean;
   answered?: boolean;
   /** 'phone', 'facetime' or the calling app's bundle ID. */
   service: string;
+  /** The calling app's name, when the backup holds the app. */
+  app?: string;
   video?: boolean;
 }
 
 export const listBackupCalls = (snapshotId: string, signal?: AbortSignal) => list<BackupCall>(snapshotId, 'calls', signal);
 
-export interface Participant {
+export interface Participant extends Picture {
   address: string;
   name?: string;
-  /** A picture among the files. */
-  avatar?: string;
 }
 
 /** A conversation as the app shows it: Messages joins one person's iMessage,
  *  SMS and RCS chats, WhatsApp their chats under a number and a LID. */
-export interface BackupChat {
+export interface BackupChat extends Picture {
   /** Its chats in the backup. */
   ids: number[];
   /** The group's name, else who is in it. */
   title: string;
   participants?: Participant[];
-  /** A picture among the files. */
-  avatar?: string;
   /** How many shown, when the app counts them. */
   messages?: number;
   last: string;
@@ -136,7 +152,7 @@ export const listBackupChats = (snapshotId: string, app: ChatApp, signal?: Abort
   list<BackupChat>(snapshotId, `${app}/chats`, signal);
 
 /** A page of a conversation's messages, the latest first. */
-export async function listBackupMessages(
+export function listBackupMessages(
   snapshotId: string,
   app: ChatApp,
   chat: BackupChat,
@@ -146,10 +162,7 @@ export async function listBackupMessages(
 ): Promise<ChatMessage[]> {
   const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
   for (const id of chat.ids) q.append('chat', String(id));
-  const response = await request<{ messages: ChatMessage[] }>(`${backupPath(snapshotId)}/${app}/chats/messages?${q}`, {
-    signal,
-  });
-  return response.messages;
+  return list<ChatMessage>(snapshotId, `${app}/chats/messages`, signal, q);
 }
 
 // Keys are the server's photo filters (see Go service.photoFilters).
@@ -172,25 +185,23 @@ const FILTER_GROUPS: Record<string, string | undefined> = { media: 'Media Types'
 
 /** A restore point's photo library; an asset's path is its id. */
 export function backupGallerySource(snapshotId: string): GallerySource {
-  const base = `${backupPath(snapshotId)}/photos`;
   return {
-    ...gallerySource(base),
+    ...gallerySource(`${backupPath(snapshotId)}/photos`),
     files: backupFiles(snapshotId, 'photos'),
     filters: async (signal) => {
-      const response = await request<{ filters: { filter: string; group: string; title?: string; count: number }[] }>(
-        `${base}/filters`,
-        { signal },
+      const filters = await list<{ filter: string; group: string; title?: string; count: number }>(
+        snapshotId,
+        'photos/filters',
+        signal,
       );
-      return response.filters.map((f) => ({
+      return filters.map((f) => ({
         key: f.filter,
         label: f.title ?? PHOTO_FILTERS[f.filter] ?? f.filter,
         count: f.count,
         group: FILTER_GROUPS[f.group],
       }));
     },
-    months: async (filter, signal) => {
-      const q = filter ? `?${new URLSearchParams({ filter })}` : '';
-      return (await request<{ months: GalleryMonth[] }>(`${base}/months${q}`, { signal })).months;
-    },
+    months: (filter, signal) =>
+      list<GalleryMonth>(snapshotId, 'photos/months', signal, new URLSearchParams(filter ? { filter } : {})),
   };
 }

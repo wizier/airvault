@@ -139,7 +139,8 @@
   bind:this={modal}
   title={`Restore ${name}?`}
   locked={submit.busy}
-  class="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden"
+  size="medium"
+  class="overflow-hidden"
   {onclose}
 >
   <!-- Content-height card would jump as warnings/options appear; a scrollable

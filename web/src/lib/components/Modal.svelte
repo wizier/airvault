@@ -5,12 +5,23 @@
   import type { Snippet } from 'svelte';
   import Icon from './Icon.svelte';
 
+  // Beyond daisyUI's own dialog, a column: medium grows with what it shows,
+  // tall stays as high while a list loads and scrolls, wide is for a chat,
+  // photos or a log.
+  const SIZES = {
+    medium: 'flex max-h-[85vh] max-w-2xl flex-col',
+    tall: 'flex h-[85vh] max-w-2xl flex-col',
+    wide: 'flex h-[90vh] w-11/12 max-w-5xl flex-col',
+  };
+
   let {
     title,
     heading,
+    leading,
     subtitle,
     closable = false,
     locked = false,
+    size,
     class: cls = '',
     onclose,
     headerActions,
@@ -20,11 +31,14 @@
     title?: string;
     /** Replaces the plain title text. */
     heading?: Snippet;
+    /** Before the title and the subtitle, such as a picture. */
+    leading?: Snippet;
     subtitle?: string;
     /** A ✕ in the header, for windows without a Cancel button. */
     closable?: boolean;
     locked?: boolean;
-    /** Sizing and layout of the box. */
+    size?: keyof typeof SIZES;
+    /** The layout of the box. */
     class?: string;
     onclose: () => void;
     headerActions?: Snippet;
@@ -47,16 +61,19 @@
   oncancel={(event) => locked && event.preventDefault()}
   {onclose}
 >
-  <div class={`modal-box ${cls}`}>
+  <div class={`modal-box ${size ? SIZES[size] : ''} ${cls}`}>
     {#if title || heading}
       <div class="flex shrink-0 items-start justify-between gap-3">
-        <div class="min-w-0">
-          <h3 class="flex items-center gap-2 text-lg font-bold">
-            {#if heading}{@render heading()}{:else}{title}{/if}
-          </h3>
-          {#if subtitle}
-            <p class="mt-0.5 text-sm text-base-content/60">{subtitle}</p>
-          {/if}
+        <div class="flex min-w-0 items-center gap-3">
+          {@render leading?.()}
+          <div class="min-w-0">
+            <h3 class="flex items-center gap-2 text-lg font-bold">
+              {#if heading}{@render heading()}{:else}{title}{/if}
+            </h3>
+            {#if subtitle}
+              <p class="mt-0.5 text-sm text-base-content/60">{subtitle}</p>
+            {/if}
+          </div>
         </div>
         {#if closable || headerActions}
           <div class="flex shrink-0 items-center gap-1">

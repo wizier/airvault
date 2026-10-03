@@ -1,7 +1,7 @@
 <script module lang="ts">
   // Mirrors nativeImageType + transcodeImageExt in internal/handler/media_preview.go;
   // HEIC/HEIF are transcoded server-side.
-  const PREVIEW_IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif']);
+  const PREVIEW_IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'thumb']);
 
   // Both mirror streamType in internal/handler/media_preview.go.
   const PLAYABLE_VIDEO_EXT = new Set(['mov', 'mp4', 'm4v']);

@@ -3,19 +3,23 @@
   // scrolls up. The column is reversed, so a page added on top leaves the view
   // where it was.
   import { onMount } from 'svelte';
-  import type { ChatEvent, ChatMessage, Participant } from '../api/backup-contents';
+  import type { ChatEvent, ChatMessage, Participant, Picture } from '../api/backup-contents';
   import { errMsg } from '../api/client';
   import type { FileSource } from '../api/files';
-  import ErrorLine from './ErrorLine.svelte';
   import { formatSeconds } from '../format';
   import Avatar from './Avatar.svelte';
+  import CallIcon from './CallIcon.svelte';
+  import ErrorLine from './ErrorLine.svelte';
   import FileAttachment from './FileAttachment.svelte';
-  import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
 
-  let { title, subtitle, load, files, members, onclose }: {
+  let { title, subtitle, avatar, picture, load, files, members, onclose }: {
     title: string;
     subtitle: string;
+    /** The chat's picture. */
+    avatar?: string;
+    /** A member's picture. */
+    picture: (p?: Picture) => string | undefined;
     load: (offset: number, limit: number, signal: AbortSignal) => Promise<ChatMessage[]>;
     /** Where the attachments are, by path. */
     files: FileSource;
@@ -25,7 +29,7 @@
   } = $props();
 
   const PAGE = 100;
-  let messages = $state<ChatMessage[]>([]);
+  let messages = $state.raw<ChatMessage[]>([]);
   let loading = $state(false);
   let done = $state(false);
   let error = $state<string | null>(null);
@@ -57,14 +61,18 @@
   };
   const LABELS: Record<string, string> = { iMessage: 'iMessage', SMS: 'Text Message · SMS', RCS: 'Text Message · RCS' };
   const bubble = (m: ChatMessage) => (m.fromMe ? (SENT[m.service ?? ''] ?? 'chat-bubble-primary') : 'chat-bubble-received');
-  // What a message that is not just text says in its bubble.
+  // What a message says in its bubble when it has neither text nor a place.
   const PLACEHOLDERS: Record<string, string> = {
     waiting: 'Waiting for this message',
     viewOncePhoto: 'View once photo',
     viewOnceVideo: 'View once video',
     viewOnceVoice: 'View once voice message',
+    poll: 'Poll',
+    contact: 'Contact',
+    location: 'Location',
   };
   function placeholder(m: ChatMessage): string {
+    if (m.text || m.location) return '';
     if (m.kind === 'deleted') return m.fromMe ? 'You deleted this message' : 'This message was deleted';
     return PLACEHOLDERS[m.kind ?? ''] ?? '';
   }
@@ -115,6 +123,12 @@
   const mapUrl = (l: NonNullable<ChatMessage['location']>) =>
     `https://www.openstreetmap.org/?mlat=${l.latitude}&mlon=${l.longitude}#map=16/${l.latitude}/${l.longitude}`;
 
+  // Only what renders counts for the day dividers, service labels and runs;
+  // paging counts every message.
+  const shows = (m: ChatMessage) =>
+    m.event ? !!eventText(m.event) : !!(m.text || m.attachments?.length || m.call || m.location || placeholder(m));
+  const shown = $derived(messages.filter(shows));
+
   // As in WhatsApp, a member's messages in a row share a colored name, atop the
   // first, and a picture, beside the last; the column runs newest first.
   const member = (address?: string) => members?.find((p) => p.address === address);
@@ -149,39 +163,32 @@
   });
 </script>
 
-<Modal {title} {subtitle} closable class="flex h-[90vh] max-h-[90vh] w-full max-w-2xl flex-col gap-3" {onclose}>
+<Modal {title} {subtitle} closable size="wide" class="gap-3" {onclose}>
+  {#snippet leading()}
+    <Avatar src={avatar} name={title} class="w-10" />
+  {/snippet}
   <div class="flex min-h-0 flex-1 flex-col-reverse overflow-auto rounded-box bg-base-200 p-3" bind:this={scroller}>
-    <ErrorLine {error} variant="alert" />
-    {#each messages as m, i (m.id)}
+    {#each shown as m, i (m.id)}
       {#if m.event}
-        {#if eventText(m.event)}
-          <p class="py-1 text-center text-xs text-base-content/60">{eventText(m.event)}</p>
-        {/if}
-      {:else if m.text || m.attachments?.length || m.call || m.location || placeholder(m)}
+        <p class="py-1 text-center text-xs text-base-content/60">{eventText(m.event)}</p>
+      {:else}
         {@const author = member(m.sender)}
         <div class={`chat ${m.fromMe ? 'chat-end' : 'chat-start'}`}>
           {#if members && !m.fromMe}
             <div class="chat-image">
-              {#if sameAuthor(messages[i - 1], m)}
+              {#if sameAuthor(shown[i - 1], m)}
                 <div class="w-8"></div>
               {:else}
-                <Avatar src={author?.avatar && files.previewUrl(author.avatar)} name={author?.name ?? ''} class="w-8" />
+                <Avatar src={picture(author)} name={author?.name ?? ''} class="w-8" />
               {/if}
             </div>
           {/if}
           <div class={`chat-bubble flex min-w-0 flex-col gap-1 ${bubble(m)}`}>
-            {#if members && !m.fromMe && !sameAuthor(m, messages[i + 1])}
+            {#if members && !m.fromMe && !sameAuthor(m, shown[i + 1])}
               <span class={`text-xs font-semibold ${nameColor(m.sender)}`}>{author?.name || m.sender || 'Unknown'}</span>
             {/if}
             {#if m.call}
-              <span class="flex items-center gap-2">
-                <Icon
-                  name={!m.call.answered && !m.call.outgoing ? 'callMissed' : m.call.outgoing ? 'callOutgoing' : 'callIncoming'}
-                  size={15}
-                  class={!m.call.answered && !m.call.outgoing ? 'text-error' : ''}
-                />
-                {callLabel(m.call)}
-              </span>
+              <span class="flex items-center gap-2"><CallIcon call={m.call} size={15} />{callLabel(m.call)}</span>
             {:else if m.location}
               <a href={mapUrl(m.location)} target="_blank" rel="noopener noreferrer" class="link">
                 📍 {m.location.name || `${m.location.latitude.toFixed(5)}, ${m.location.longitude.toFixed(5)}`}
@@ -199,26 +206,30 @@
           <div class="chat-footer opacity-50"><time datetime={m.time}>{timeLabel(m.time)}</time></div>
         </div>
       {/if}
-      {#if m.service && LABELS[m.service] && m.service !== messages[i + 1]?.service}
+      {#if m.service && LABELS[m.service] && m.service !== shown[i + 1]?.service}
         <p class="pt-1 text-center text-[11px] font-medium text-base-content/50">{LABELS[m.service]}</p>
       {/if}
-      {#if dayOf(m) !== dayOf(messages[i + 1])}
+      {#if dayOf(m) !== dayOf(shown[i + 1])}
         <div class="divider my-2 text-xs text-base-content/50">{dayLabel(m.time)}</div>
       {/if}
     {/each}
     {#if loading}
       <p class="flex justify-center p-3"><span class="loading loading-spinner loading-sm"></span></p>
-    {:else if done && messages.length === 0}
+    {:else if error}
+      <!-- At the top, where the page that failed belongs. -->
+      <div class="flex flex-col items-center gap-2 p-3">
+        <ErrorLine {error} variant="alert" />
+        <button
+          type="button"
+          class="btn btn-ghost btn-xs"
+          onclick={() => {
+            error = null;
+            void more();
+          }}>Retry</button
+        >
+      </div>
+    {:else if done && shown.length === 0}
       <p class="p-4 text-sm text-base-content/50">No messages</p>
-    {:else if error && !done}
-      <button
-        type="button"
-        class="btn btn-ghost btn-xs self-center"
-        onclick={() => {
-          error = null;
-          void more();
-        }}>Retry</button
-      >
     {:else if !done}
       <div bind:this={sentinel} class="h-px shrink-0"></div>
     {/if}

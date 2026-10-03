@@ -76,7 +76,6 @@
     title={`Backup of ${deviceName}`}
     subtitle={created}
     closable
-    class="max-w-lg"
     {onclose}
   >
     <div class="flex flex-wrap gap-1.5 pt-2">

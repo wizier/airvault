@@ -128,7 +128,8 @@
   title="Apps"
   subtitle={`Apps installed on ${name}`}
   closable
-  class="flex h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden"
+  size="tall"
+  class="gap-3 overflow-hidden"
   {onclose}
 >
   <div class="flex shrink-0 flex-col gap-3">

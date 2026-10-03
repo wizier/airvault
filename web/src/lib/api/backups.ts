@@ -1,3 +1,4 @@
+import { backupPath } from './backup-contents';
 import { ApiError, apiUrl, devicePath, request } from './client';
 import { saveUrl } from './files';
 import type { AcceptedRun } from './runs';
@@ -114,7 +115,7 @@ export async function snapshotsReclaimable(
 /** A HEAD check first reports a vanished snapshot or an expired session in the
  *  UI; the browser then streams the archive and can resume it. */
 export async function downloadBackup(snapshotId: string): Promise<void> {
-  const path = `/backups/${encodeURIComponent(snapshotId)}/download`;
+  const path = `${backupPath(snapshotId)}/download`;
   try {
     await request<void>(path, { method: 'HEAD' });
   } catch (err) {

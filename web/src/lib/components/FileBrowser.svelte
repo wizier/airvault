@@ -105,7 +105,7 @@
   }
 </script>
 
-<Modal {title} {subtitle} closable class="flex h-[85vh] max-w-2xl flex-col gap-3 overflow-hidden" {onclose}>
+<Modal {title} {subtitle} closable size="tall" class="gap-3 overflow-hidden" {onclose}>
   <ErrorLine error={deleteError} size="xs" className="shrink-0" />
   <ErrorLine error={saveError} size="xs" className="shrink-0" />
 

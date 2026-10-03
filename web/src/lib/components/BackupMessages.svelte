@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { backupFiles, listBackupChats, listBackupMessages, type BackupChat, type ChatApp } from '../api/backup-contents';
+  import {
+    backupFiles,
+    listBackupChats,
+    listBackupMessages,
+    pictureUrl,
+    type BackupChat,
+    type ChatApp,
+    type Picture,
+  } from '../api/backup-contents';
   import { formatDateTime } from '../format';
   import Avatar from './Avatar.svelte';
   import ChatView from './ChatView.svelte';
@@ -15,13 +23,14 @@
 
   const files = $derived(backupFiles(snapshotId, app));
 
-  let open = $state<BackupChat | null>(null);
+  let open = $state.raw<BackupChat | null>(null);
+
+  const picture = (p?: Picture) => pictureUrl(snapshotId, app, p);
 
   function chatSubtitle(chat: BackupChat): string {
     const people = chat.participants ?? [];
     return people.length > 1 ? `${people.length} people` : (people[0]?.address ?? '');
   }
-
 </script>
 
 <SearchList
@@ -35,7 +44,7 @@
 >
   {#snippet row(c)}
     <button type="button" class="list-col-grow flex min-w-0 items-center gap-3 text-left" onclick={() => (open = c)}>
-      <Avatar src={c.avatar && files.previewUrl(c.avatar)} name={c.title} />
+      <Avatar src={picture(c)} name={c.title} />
       <span class="min-w-0 flex-1">
         <span class="block truncate font-medium">{c.title}</span>
         <span class="block truncate text-xs text-base-content/50">
@@ -52,6 +61,8 @@
   <ChatView
     title={chat.title}
     subtitle={chatSubtitle(chat)}
+    avatar={picture(chat)}
+    {picture}
     load={(offset, limit, signal) => listBackupMessages(snapshotId, app, chat, offset, limit, signal)}
     {files}
     members={(chat.participants?.length ?? 0) > 1 ? chat.participants : undefined}

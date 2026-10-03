@@ -13,7 +13,7 @@
     onclose: () => void;
   } = $props();
 
-  let open = $state<BackupNote | null>(null);
+  let open = $state.raw<BackupNote | null>(null);
   const files = $derived(backupFiles(snapshotId, 'notes'));
   // Where an attachment sits in a note's text.
   const PLACEHOLDER = '\uFFFC';
@@ -24,7 +24,6 @@
     (n.text ?? '')
       .replaceAll(PLACEHOLDER, '')
       .split('\n')
-      .slice(1)
       .find((line) => line.trim()) ?? '';
 </script>
 
@@ -39,13 +38,13 @@
 >
   {#snippet row(n)}
     <button type="button" class="list-col-grow min-w-0 text-left" onclick={() => (open = n)}>
-      <p class="flex items-center gap-1.5 truncate font-medium">
+      <span class="flex items-center gap-1.5 truncate font-medium">
         {#if n.locked}<Icon name="lock" size={13} class="shrink-0 text-base-content/50" />{/if}
         <span class="truncate">{n.title || 'New Note'}</span>
-      </p>
-      <p class="truncate text-xs text-base-content/50">
+      </span>
+      <span class="block truncate text-xs text-base-content/50">
         {[when(n), n.folder, preview(n)].filter(Boolean).join(' · ')}
-      </p>
+      </span>
     </button>
   {/snippet}
 </SearchList>
@@ -62,7 +61,8 @@
     title={open.title || 'New Note'}
     subtitle={[open.folder, when(open)].filter(Boolean).join(' · ')}
     closable
-    class="flex max-h-[85vh] max-w-xl flex-col gap-3"
+    size="medium"
+    class="gap-3"
     onclose={() => (open = null)}
   >
     <div class="min-h-0 overflow-auto rounded-box bg-base-200 p-4 text-sm">

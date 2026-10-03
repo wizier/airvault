@@ -29,17 +29,17 @@
   }
 </script>
 
-{#if !file.path}
+{#if file.missing || !file.path}
   {#if /^https?:\/\//.test(file.name)}
     <a href={file.name} target="_blank" rel="noopener noreferrer" class="link wrap-anywhere">{file.name}</a>
   {:else}
-    <span class="flex items-center gap-1 text-xs opacity-70" title={file.missing ? 'Kept only in iCloud' : undefined}>
+    <span class="flex items-center gap-1 text-xs opacity-70" title={file.missing ? 'Not in the backup' : undefined}>
       {#if file.missing}<Icon name="cloud" size={12} />{/if}
       {file.name}
     </span>
   {/if}
 {:else if isPreviewableImage(file.name)}
-  <a href={files.previewUrl(file.path)} target="_blank" rel="noopener" class="block">
+  <a href={files.previewUrl(file.path)} target="_blank" rel="noopener noreferrer" class="block">
     <img src={files.previewUrl(file.path)} alt={file.name} loading="lazy" class="max-h-60 max-w-full rounded" />
   </a>
 {:else if isPlayableVideo(file.name)}

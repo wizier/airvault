@@ -289,7 +289,8 @@
   {title}
   subtitle={total ? `${total.toLocaleString()} items` : subtitle}
   closable
-  class="relative flex h-[90vh] max-h-[90vh] w-full max-w-5xl flex-col gap-3"
+  size="wide"
+  class="relative gap-3"
   {onclose}
 >
   {#snippet headerActions()}

@@ -123,7 +123,7 @@
   title="Pair an iPhone"
   subtitle="A one-time USB setup — after it, the phone is reachable over Wi-Fi"
   closable
-  class="max-w-2xl"
+  size="medium"
   {onclose}
 >
   <div class="mt-4 flex flex-col gap-4">

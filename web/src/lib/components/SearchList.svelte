@@ -31,7 +31,7 @@
     onclose: () => void;
   } = $props();
 
-  let items = $state<T[] | null>(null);
+  let items = $state.raw<T[] | null>(null);
   let error = $state<string | null>(null);
   let query = $state('');
   let chip = $state(0);
@@ -60,7 +60,8 @@
   {title}
   subtitle={items ? `${items.length.toLocaleString()} ${noun}` : subtitle}
   closable
-  class="flex h-[85vh] max-w-xl flex-col gap-3"
+  size="tall"
+  class="gap-3"
   {onclose}
 >
   <div class="flex shrink-0 items-center gap-1">
