@@ -40,6 +40,9 @@ func lockScreenChanged(udid string, lockScreen bool) events.Event {
 func backupCatalogChanged(udid string) events.Event { return deviceEventOf("backup.catalog", udid) }
 func appCatalogChanged(udid string) events.Event    { return deviceEventOf("app.catalog", udid) }
 
+// backupsUnlockedChanged: one of the device's backups opened for browsing or closed.
+func backupsUnlockedChanged(udid string) events.Event { return deviceEventOf("backup.unlocked", udid) }
+
 // pairEvent tells the pairing wizard to reread its state; Paired is set when
 // the pairing itself changed.
 type pairEvent struct {

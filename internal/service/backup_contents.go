@@ -20,13 +20,14 @@ import (
 // used longest ago closes.
 const (
 	browseIdle  = 15 * time.Minute
-	maxUnlocked = 3
+	maxUnlocked = 5
 )
 
 type unlockedBackups struct {
 	unlocking sync.Mutex // one password's key stretch at a time: each costs seconds of CPU
 	mu        sync.Mutex
 	open      []*unlockedBackup // the latest used first
+	changed   func(source string)
 }
 
 type unlockedBackup struct {
@@ -43,6 +44,13 @@ func (u *unlockedBackups) get(snapshotID string) *iosbackup.Contents {
 		return b.contents
 	}
 	return nil
+}
+
+// has leaves the backup's idle time running: only browsing keeps it open.
+func (u *unlockedBackups) has(snapshotID string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.ContainsFunc(u.open, func(b *unlockedBackup) bool { return b.snapshotID == snapshotID })
 }
 
 // use puts a snapshot's open backup first, idle anew; nil when none is open.
@@ -73,8 +81,9 @@ func (u *unlockedBackups) put(snapshotID, source string, contents *iosbackup.Con
 		u.closeIf(func(open *unlockedBackup) bool { return open == b && time.Since(b.used) >= browseIdle })
 	})
 	u.open = slices.Insert(u.open, 0, b)
+	u.changed(source)
 	if len(u.open) > maxUnlocked {
-		u.open[maxUnlocked].close()
+		u.close(u.open[maxUnlocked])
 		clear(u.open[maxUnlocked:])
 		u.open = u.open[:maxUnlocked]
 	}
@@ -87,7 +96,7 @@ func (u *unlockedBackups) closeIf(match func(*unlockedBackup) bool) {
 	kept := u.open[:0]
 	for _, b := range u.open {
 		if match(b) {
-			b.close()
+			u.close(b)
 		} else {
 			kept = append(kept, b)
 		}
@@ -97,9 +106,10 @@ func (u *unlockedBackups) closeIf(match func(*unlockedBackup) bool) {
 }
 
 // close lets the requests in flight finish first, without holding the list.
-func (b *unlockedBackup) close() {
+func (u *unlockedBackups) close(b *unlockedBackup) {
 	b.idle.Stop()
 	go b.contents.Close()
+	u.changed(b.source)
 }
 
 func backupLocked() error {

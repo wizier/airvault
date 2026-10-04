@@ -66,6 +66,8 @@ type RestorePoint struct {
 	Damage       string     `json:"damage,omitempty"`
 	DamagedFiles int        `json:"damagedFiles,omitempty"`
 	VerifiedAt   *time.Time `json:"verifiedAt,omitempty"`
+	// Unlocked is an encrypted backup held open: it browses without the password.
+	Unlocked bool `json:"unlocked,omitempty"`
 }
 
 func restorePoint(row *model.Backup) RestorePoint {
@@ -144,7 +146,9 @@ func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoin
 	}
 	points := make([]RestorePoint, 0, len(rows))
 	for i := range rows {
-		points = append(points, restorePoint(&rows[i]))
+		point := restorePoint(&rows[i])
+		point.Unlocked = point.Encrypted && s.unlocked.has(point.SnapshotID)
+		points = append(points, point)
 	}
 	return points, nil
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/wizier/airvault/internal/domain"
@@ -31,26 +32,33 @@ func TestPhotoFilter(t *testing.T) {
 }
 
 func TestUnlockedBackups(t *testing.T) {
-	var u unlockedBackups
+	changes := 0
+	u := unlockedBackups{changed: func(string) { changes++ }}
 	defer u.closeIf(func(*unlockedBackup) bool { return true })
+	ids := make([]string, maxUnlocked)
 	opened := map[string]*iosbackup.Contents{}
-	for _, id := range []string{"a", "b", "c"} {
-		opened[id] = u.put(id, "phone", &iosbackup.Contents{})
+	for i := range ids {
+		ids[i] = strconv.Itoa(i)
+		opened[ids[i]] = u.put(ids[i], "phone", &iosbackup.Contents{})
 	}
 	// A second open of a snapshot keeps the first, and counts as its use.
-	if again := u.put("a", "phone", &iosbackup.Contents{}); again != opened["a"] {
+	if again := u.put(ids[0], "phone", &iosbackup.Contents{}); again != opened[ids[0]] {
 		t.Fatal("a second open replaced the first")
 	}
-	// A fourth closes the one used longest ago.
-	u.put("d", "phone", &iosbackup.Contents{})
-	for id, want := range map[string]bool{"a": true, "b": false, "c": true, "d": true} {
-		if open := u.get(id) != nil; open != want {
+	// One more closes the one used longest ago.
+	u.put("extra", "phone", &iosbackup.Contents{})
+	for _, id := range append(ids, "extra") {
+		if open, want := u.get(id) != nil, id != ids[1]; open != want {
 			t.Errorf("%s open = %v, want %v", id, open, want)
 		}
 	}
-	u.closeIf(func(b *unlockedBackup) bool { return b.snapshotID == "c" })
-	if u.get("c") != nil || u.get("a") != opened["a"] {
+	u.closeIf(func(b *unlockedBackup) bool { return b.snapshotID == ids[2] })
+	if u.get(ids[2]) != nil || u.get(ids[0]) != opened[ids[0]] {
 		t.Error("closeIf closed the wrong backups")
+	}
+	// Each open and close counts once; the repeated open changed nothing.
+	if want := maxUnlocked + 1 + 2; changes != want {
+		t.Errorf("changes = %d, want %d", changes, want)
 	}
 }
 

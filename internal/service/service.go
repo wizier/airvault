@@ -50,6 +50,7 @@ func New(app context.Context, store *storage.Store, eng *engine.Engine,
 		uploads:           uploads,
 		runs:              newRunRegistry(bus),
 		live:              newDeviceRuntimeStore(),
+		unlocked:          unlockedBackups{changed: func(source string) { bus.Emit(backupsUnlockedChanged(source)) }},
 		deviceRefreshKick: make(chan struct{}, 1),
 		autoBackupKick:    make(chan struct{}, 1),
 	}
