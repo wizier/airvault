@@ -220,13 +220,25 @@
                   </button>
                   <button
                     type="button"
-                    class="btn btn-ghost btn-xs"
+                    class="btn btn-ghost btn-xs relative"
                     disabled={!!point.damage}
                     onclick={() => (browsing = point)}
-                    title={point.damage ? "A damaged restore point can't be opened" : 'Browse this snapshot'}
-                    aria-label="Browse this snapshot"
+                    title={point.damage
+                      ? "A damaged restore point can't be opened"
+                      : point.unlocked
+                        ? 'Browse this snapshot — unlocked, no password needed'
+                        : 'Browse this snapshot'}
+                    aria-label={point.unlocked ? 'Browse this snapshot (unlocked)' : 'Browse this snapshot'}
                   >
                     <Icon name="browse" size={13} />
+                    {#if point.unlocked}
+                      <Icon
+                        name="unlocked"
+                        size={10}
+                        stroke={2.5}
+                        class="absolute right-0 top-0 rounded-full bg-base-100 text-success"
+                      />
+                    {/if}
                   </button>
                   <button
                     type="button"

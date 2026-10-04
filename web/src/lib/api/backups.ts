@@ -52,6 +52,8 @@ export interface RestorePoint {
   damagedFiles?: number;
   /** When an integrity check last read everything it needs. */
   verifiedAt?: string;
+  /** Encrypted and held open by the server: it browses without the password. */
+  unlocked?: boolean;
 }
 
 export type RestoreSource = RestorePoint & { udid: string };

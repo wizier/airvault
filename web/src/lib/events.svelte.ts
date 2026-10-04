@@ -233,6 +233,7 @@ class EventsClient {
       restoreSourcesStore.invalidate();
       refreshDevices();
     });
+    on<UdidEvent>(es, 'backup.unlocked', (d) => restorePointResources.invalidate(d.udid));
     on<UdidEvent>(es, 'app.catalog', (d) => deviceAppsResources.invalidate(d.udid));
 
     on<UdidEvent>(es, 'pair.changed', () => refreshPairState());
