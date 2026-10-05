@@ -30,6 +30,21 @@ func listOf[T any](ctx context.Context, db sqlx.QueryerContext, query string, ar
 	return rows, nil
 }
 
+// updatedOne is an UPDATE's outcome: ErrNotFound when it matched no row.
+func updatedOne(result sql.Result, err error, op string) error {
+	if err != nil {
+		return wrap(err, op)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return wrap(err, op)
+	}
+	if affected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func wrap(err error, op string) error {
 	if err == nil {
 		return nil

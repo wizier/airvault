@@ -11,6 +11,7 @@ type Device struct {
 	Encrypted   bool   `db:"encrypted"`
 	LastSeenAt  *int64 `db:"last_seen_at"`
 	AutoBackup
+	Cleanup
 }
 
 // The window is minutes after midnight in the server's zone (TZ) and may cross
@@ -20,6 +21,15 @@ type AutoBackup struct {
 	Days        int    `db:"auto_backup_days"`
 	WindowStart *int64 `db:"auto_backup_window_start"`
 	WindowEnd   *int64 `db:"auto_backup_window_end"`
+}
+
+// Restore points of the last KeepDays days, counted back from the latest
+// backup, stay; older ones thin to one per Thin period ("week", "month") or go
+// ("none").
+type Cleanup struct {
+	Enabled  bool   `db:"cleanup"`
+	KeepDays int    `db:"cleanup_keep_days"`
+	Thin     string `db:"cleanup_thin"`
 }
 
 // SourceUDID survives device deletion; CreatedAt is the authoritative time.

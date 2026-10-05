@@ -93,6 +93,11 @@ const english = {
   auto_backup_save_failed: 'The automatic backup settings could not be saved',
   invalid_auto_backup_interval: 'Choose how often to back up',
   invalid_auto_backup_window: 'Choose two different times for the window',
+  cleanup_save_failed: 'The automatic cleanup settings could not be saved',
+  cleanup_plan_failed: 'Could not work out which backups would be removed',
+  invalid_cleanup_days: 'Choose how many of the last days to keep every backup from',
+  cleanup_remove_failed: 'The settings are saved, but these backups could not be removed right now; the next backup removes them',
+  invalid_cleanup_thin: 'Choose what to keep of older backups',
 
   backup_start_failed: 'Failed to start backup',
   backup_cancel_failed: 'Failed to cancel',

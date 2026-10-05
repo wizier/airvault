@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -89,7 +91,7 @@ func TestPublishListsTheRestorePoint(t *testing.T) {
 	}
 	started, transferred := int64(1_700_000_000), int64(4096)
 	row.StartedAt, row.TransferredBytes = &started, &transferred
-	if err := lib.Publish(ctx, staged, row); err != nil {
+	if err := lib.Publish(ctx, staged, row, nil); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := lib.catalog.Backup.Get(ctx, testSnapshot)
@@ -115,6 +117,43 @@ func TestPublishListsTheRestorePoint(t *testing.T) {
 	if base, err := lib.LatestBase(ctx, source); err != nil || base == nil || base.ID() != testSnapshot {
 		t.Fatalf("LatestBase = %v, %v", base, err)
 	}
+}
+
+// Publishing removes what prune picks from every restore point, the new one
+// included, and the one collection that follows reclaims what only it held.
+func TestPublishPrunesInTheSamePass(t *testing.T) {
+	lib, root := newTestLibrary(t)
+	const source = "testphoneudid0062"
+	const older = "bbbbbbbb-0000-4000-8000-000000000002"
+	ctx := context.Background()
+	publish := func(id string, files map[string]string, prune func([]model.Backup) []string) {
+		t.Helper()
+		staged := sealFiles(t, lib, source, id, files)
+		row, err := Project(&staged.Snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := lib.Publish(ctx, staged, row, prune); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withPhoto := maps.Clone(fixtureFiles)
+	withPhoto["photo"] = "a photo deleted since"
+	publish(older, withPhoto, nil)
+
+	var offered []string
+	publish(testSnapshot, fixtureFiles, func(points []model.Backup) []string {
+		for _, point := range points {
+			offered = append(offered, point.ID)
+		}
+		return []string{older}
+	})
+	if !slices.Contains(offered, testSnapshot) || !slices.Contains(offered, older) {
+		t.Fatalf("prune was offered %v, want both restore points", offered)
+	}
+	requireNotCataloged(t, lib, older)
+	requireAbsent(t, filepath.Join(root, source, "snapshots", older+".json"))
+	requireAbsent(t, objectPath(root, source, "a photo deleted since"))
 }
 
 // A discarded snapshot leaves nothing: not its staging, not what it pooled.

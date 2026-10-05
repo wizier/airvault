@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 
-	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/model"
 )
 
@@ -12,7 +11,8 @@ type DeviceRepo struct{ s *Store }
 // Columns are named explicitly so scanning does not depend on the table's
 // physical column set.
 const deviceColumns = `udid, name, product_type, ios_version, paired, encrypted, last_seen_at,
-	auto_backup, auto_backup_days, auto_backup_window_start, auto_backup_window_end`
+	auto_backup, auto_backup_days, auto_backup_window_start, auto_backup_window_end,
+	cleanup, cleanup_keep_days, cleanup_thin`
 
 func (r *DeviceRepo) List(ctx context.Context) ([]model.Device, error) {
 	return listOf[model.Device](ctx, r.s.ext(),
@@ -63,15 +63,19 @@ func (r *DeviceRepo) SetAutoBackup(ctx context.Context, udid string, settings mo
 			auto_backup_window_end   = ?
 		WHERE udid = ?`,
 		settings.Enabled, settings.Days, settings.WindowStart, settings.WindowEnd, udid)
-	if err != nil {
-		return wrap(err, "set auto backup")
-	}
-	if affected, err := result.RowsAffected(); err != nil {
-		return wrap(err, "set auto backup")
-	} else if affected == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
+	return updatedOne(result, err, "set auto backup")
+}
+
+// ErrNotFound when the device is gone.
+func (r *DeviceRepo) SetCleanup(ctx context.Context, udid string, settings model.Cleanup) error {
+	result, err := r.s.ext().ExecContext(ctx, `
+		UPDATE devices SET
+			cleanup           = ?,
+			cleanup_keep_days = ?,
+			cleanup_thin      = ?
+		WHERE udid = ?`,
+		settings.Enabled, settings.KeepDays, settings.Thin, udid)
+	return updatedOne(result, err, "set cleanup")
 }
 
 // Backups are independent of the device row.

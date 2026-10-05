@@ -52,9 +52,11 @@ func (l *Library) Begin(source, id string, base *iosbackup.Backup) (*objectstore
 }
 
 // Publish makes a sealed snapshot a restore point with row as its catalog
-// entry, then collects the source. A failure past the manifest's rename still
+// entry, removes the restore points prune picks, then collects the source: one
+// pass reclaims what both left. A failure past the manifest's rename still
 // leaves a restore point, so it is recovered instead of discarded.
-func (l *Library) Publish(ctx context.Context, staged *objectstore.StagedSnapshot, row model.Backup) error {
+func (l *Library) Publish(ctx context.Context, staged *objectstore.StagedSnapshot, row model.Backup,
+	prune func(points []model.Backup) []string) error {
 	if _, err := l.objects.Publish(staged); err != nil {
 		recovered, settleErr := l.settle(ctx, row)
 		if recovered && settleErr == nil {
@@ -71,8 +73,27 @@ func (l *Library) Publish(ctx context.Context, staged *objectstore.StagedSnapsho
 		}
 		slog.WarnContext(ctx, "backup: catalog commit returned an error but is durable", "snapshot_id", row.ID, "error", err)
 	}
+	l.prune(ctx, row.SourceUDID, prune)
 	l.collectDeferred(ctx, row.SourceUDID)
 	return nil
+}
+
+// prune removes the restore points pick chooses, leaving their objects to the
+// collection that follows. A failure is left to the next publication.
+func (l *Library) prune(ctx context.Context, source string, pick func(points []model.Backup) []string) {
+	if pick == nil {
+		return
+	}
+	points, err := l.RestorePoints(ctx, source)
+	if err == nil {
+		ids := pick(points)
+		if _, err = l.removeSnapshots(ctx, source, ids); err == nil && len(ids) > 0 {
+			slog.InfoContext(ctx, "cleanup: old restore points removed", "source", source, "count", len(ids))
+		}
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "cleanup: deferred to the next backup", "source", source, "error", err)
+	}
 }
 
 // collectDeferred measures the source a publication grew or a discard left,

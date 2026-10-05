@@ -104,7 +104,8 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	// beginCommit is the cancellation boundary: past it the backup is published.
 	if err == nil && s.runs.beginCommit(run) {
 		row.StartedAt, row.TransferredBytes = &startedAt, new(s.runs.transferred(run))
-		if err := s.library.Publish(finalCtx, staged, row); err != nil {
+		prune := func(points []model.Backup) []string { return s.cleanupAfterBackup(finalCtx, udid, points) }
+		if err := s.library.Publish(finalCtx, staged, row, prune); err != nil {
 			return runOutcome{}, fmt.Errorf("publish backup: %w", err)
 		}
 		slog.DebugContext(finalCtx, "backup: done", "device", device.Name, "size_bytes", row.SizeBytes)

@@ -33,8 +33,10 @@ type DeviceOverview struct {
 	// Live objects plus published manifests; nil means unknown.
 	DiskBytes     *int64 `json:"diskBytes,omitempty"`
 	RestorePoints int    `json:"restorePoints,omitempty"`
-	// AutoBackup is absent for orphaned sources, which have no settings.
-	AutoBackup *AutoBackupView `json:"autoBackup,omitempty"`
+	// AutoBackup and Cleanup are absent for orphaned sources, which have no
+	// settings.
+	AutoBackup *AutoBackupView  `json:"autoBackup,omitempty"`
+	Cleanup    *CleanupSettings `json:"cleanup,omitempty"`
 	// Orphaned marks a source with restore points on disk but no registry row —
 	// its phone was removed while the backups stayed.
 	Orphaned bool `json:"orphaned,omitempty"`
@@ -109,6 +111,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 			ov.RestorePoints = gs.RestorePoints
 		}
 		ov.AutoBackup = s.autoBackupView(d, summary[d.UDID], now)
+		ov.Cleanup = new(cleanupSettingsOf(d.Cleanup))
 		out = append(out, ov)
 	}
 	// SQLite's device registry is disposable. A source rebuilt from manifests

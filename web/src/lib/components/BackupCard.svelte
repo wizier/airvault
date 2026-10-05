@@ -8,9 +8,10 @@
   import { restoreSourcesStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime } from '../format';
   import { now } from '../clock';
-  import { autoBackupStatus, blockedReason, lastBackupFailure, RUN_COPY, stageUi } from '../device-ui';
+  import { autoBackupStatus, blockedReason, cleanupStatus, lastBackupFailure, RUN_COPY, stageUi } from '../device-ui';
   import AutoBackupModal from './AutoBackupModal.svelte';
   import BackupPasswordModal, { type PasswordMode } from './BackupPasswordModal.svelte';
+  import CleanupModal from './CleanupModal.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
@@ -81,6 +82,8 @@
   let passwordMode = $state<PasswordMode | null>(null);
   let autoBackupOpen = $state(false);
   const autoStatus = $derived(autoBackupStatus(device.autoBackup, $now));
+  let cleanupOpen = $state(false);
+  const cleanupText = $derived(cleanupStatus(device.cleanup));
 
   $effect(() => restoreSourcesStore.start());
   const sources = $derived(restoreSourcesStore.data ?? []);
@@ -348,6 +351,28 @@
         {autoStatus ? 'Change…' : 'Set up…'}
       </button>
     </div>
+
+    {#if device.cleanup}
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-base-300 pt-4">
+        <div class="min-w-0">
+          <p class="flex items-center gap-2 text-sm font-semibold">
+            Automatic cleanup
+            {@render onOff(cleanupText !== null)}
+          </p>
+          <p class="mt-0.5 text-xs text-base-content/60">
+            {#if cleanupText}
+              <span class="text-base-content/80">{cleanupText}</span>
+            {:else}
+              Every backup is kept; turn this on to thin out old ones
+            {/if}
+          </p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick={() => (cleanupOpen = true)}>
+          <Icon name="history" size={14} />
+          {cleanupText ? 'Change…' : 'Set up…'}
+        </button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -378,5 +403,13 @@
     name={device.name}
     current={device.autoBackup}
     onclose={() => (autoBackupOpen = false)}
+  />
+{/if}
+{#if cleanupOpen}
+  <CleanupModal
+    udid={device.udid}
+    name={device.name}
+    current={device.cleanup}
+    onclose={() => (cleanupOpen = false)}
   />
 {/if}

@@ -24,8 +24,10 @@ export interface Device {
   restorePoints?: number;
   /** Restore points exist on disk but the phone is no longer registered. */
   orphaned?: boolean;
-  /** Absent for orphaned sources, which have no settings. */
+  /** autoBackup and cleanup are absent for orphaned sources, which have no
+   *  settings. */
   autoBackup?: AutoBackupState;
+  cleanup?: CleanupSettings;
 }
 
 export const AUTO_BACKUP_PRESETS = [1, 3, 7] as const;
@@ -54,6 +56,18 @@ export interface AutoBackupState extends AutoBackupSettings {
    *  starts a backup. */
   wait?: AutoBackupWait;
   notBefore?: string;
+}
+
+export const CLEANUP_DAY_PRESETS = [7, 14, 30, 60] as const;
+export type CleanupDays = (typeof CLEANUP_DAY_PRESETS)[number];
+
+/** How often a backup older than the latest ones stays. */
+export type ThinPeriod = 'week' | 'month' | 'none';
+
+export interface CleanupSettings {
+  enabled: boolean;
+  keepDays: CleanupDays;
+  thin: ThinPeriod;
 }
 
 export interface BatteryState {
@@ -135,6 +149,22 @@ export async function setAutoBackup(
   signal?: AbortSignal,
 ): Promise<void> {
   await request<void>(`${devicePath(udid)}/auto-backup`, { method: 'PUT', body: settings, signal });
+}
+
+/** Each backup of the phone applies the settings. */
+export async function setCleanup(udid: string, settings: CleanupSettings, signal?: AbortSignal): Promise<void> {
+  await request<void>(`${devicePath(udid)}/cleanup`, { method: 'PUT', body: settings, signal });
+}
+
+/** The restore points cleanup with these settings would remove now. */
+export async function planCleanup(
+  udid: string,
+  { keepDays, thin }: Omit<CleanupSettings, 'enabled'>,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const query = new URLSearchParams({ keepDays: String(keepDays), thin });
+  const response = await request<{ remove: string[] }>(`${devicePath(udid)}/cleanup/plan?${query}`, { signal });
+  return response.remove;
 }
 
 export async function powerDevice(udid: string, action: PowerAction): Promise<void> {

@@ -1,5 +1,13 @@
 import type { RunKind, RunningProgress, RunStage } from './api/backups';
-import type { AutoBackupDays, AutoBackupState, BatteryState, Connection, Device } from './api/devices';
+import type {
+  AutoBackupDays,
+  AutoBackupState,
+  BatteryState,
+  CleanupSettings,
+  Connection,
+  Device,
+  ThinPeriod,
+} from './api/devices';
 import type { IconName } from './components/icons';
 import { errorText } from './error-text';
 import { relativeTime } from './format';
@@ -61,6 +69,26 @@ export function autoBackupStatus(
   }
   const inWindow = window ? ` between ${window.start} and ${window.end}` : '';
   return { schedule, next: `Due — starts on the next unlock at home${inWindow}` };
+}
+
+export const CLEANUP_THIN: Record<ThinPeriod, { label: string; hint: string }> = {
+  week: { label: 'keep one a week', hint: 'The last backup of each week stays' },
+  month: { label: 'keep one a month', hint: 'The last backup of each month stays' },
+  none: { label: 'remove them', hint: 'Only the backups of the last days stay' },
+};
+
+/** What the cleanup row of the backup card says; null while cleanup is off. */
+export function cleanupStatus(cleanup: CleanupSettings | undefined): string | null {
+  if (!cleanup?.enabled) return null;
+  const last = `Every backup of the last ${cleanup.keepDays} days`;
+  switch (cleanup.thin) {
+    case 'week':
+      return `${last}, then one a week`;
+    case 'month':
+      return `${last}, then one a month`;
+    case 'none':
+      return `Only the backups of the last ${cleanup.keepDays} days`;
+  }
 }
 
 export function connectionUi(c: Connection): { tone: Tone; label: string; icon: IconName } {

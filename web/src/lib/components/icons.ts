@@ -26,6 +26,7 @@ import {
   File,
   Folder,
   FolderOpen,
+  History,
   Image,
   Info,
   KeyRound,
@@ -120,6 +121,7 @@ export const ICONS = {
   upload: Upload,
   eye: Eye,
   eyeOff: EyeOff,
+  history: History,
 } as const;
 
 export type IconName = keyof typeof ICONS;

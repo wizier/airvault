@@ -101,21 +101,8 @@ func (l *Library) DeleteSnapshots(ctx context.Context, source string, ids []stri
 		return err
 	}
 	finalCtx := context.WithoutCancel(ctx)
-	removed := false
-	var deleteErr error
-	for _, id := range ids {
-		if deleteErr = l.objects.RemoveSnapshot(source, id); deleteErr != nil {
-			deleteErr = fmt.Errorf("remove snapshot manifest: %w", deleteErr)
-			break
-		}
-		// Unlinking the manifest is the commit point: the restore point is gone
-		// even if its catalog row survives, so the recount and sweep below must
-		// run either way.
-		removed = true
-		if deleteErr = l.forgetSnapshot(finalCtx, source, id); deleteErr != nil {
-			break
-		}
-	}
+	// The recount and sweep below must run once any manifest is gone.
+	removed, deleteErr := l.removeSnapshots(finalCtx, source, ids)
 	if !removed {
 		return deleteErr
 	}
@@ -137,6 +124,22 @@ func (l *Library) DeleteSnapshots(ctx context.Context, source string, ids []stri
 		return l.objects.Sweep(scan)
 	})
 	return deleteErr
+}
+
+// removeSnapshots unlinks restore points one by one. Unlinking the manifest is
+// the commit point: the restore point is gone even if its catalog row survives,
+// so removed reports whether any went.
+func (l *Library) removeSnapshots(ctx context.Context, source string, ids []string) (removed bool, err error) {
+	for _, id := range ids {
+		if err := l.objects.RemoveSnapshot(source, id); err != nil {
+			return removed, fmt.Errorf("remove snapshot manifest: %w", err)
+		}
+		removed = true
+		if err := l.forgetSnapshot(ctx, source, id); err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
 }
 
 // DeleteSource removes every restore point of source at once; the tree is

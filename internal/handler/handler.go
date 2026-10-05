@@ -118,6 +118,8 @@ func (h *Handler) Router() *echo.Echo {
 	device.DELETE("/pairing", h.unpairDevice)
 	device.POST("/backup-password", h.changeBackupPassword)
 	device.PUT("/auto-backup", h.setAutoBackup)
+	device.PUT("/cleanup", h.setCleanup)
+	device.GET("/cleanup/plan", h.planCleanup)
 	device.POST("/power", h.controlPower)
 	device.POST("/erase", h.eraseDevice)
 	device.GET("/battery", h.getDeviceBattery)
