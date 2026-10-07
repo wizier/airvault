@@ -16,6 +16,7 @@ import {
   ChevronUp,
   Clock,
   Cloud,
+  Copy,
   CornerLeftUp,
   DatabaseArrowDown,
   DatabaseBackup,
@@ -26,6 +27,7 @@ import {
   File,
   Folder,
   FolderOpen,
+  Globe,
   History,
   Image,
   Info,
@@ -121,6 +123,8 @@ export const ICONS = {
   upload: Upload,
   eye: Eye,
   eyeOff: EyeOff,
+  copy: Copy,
+  globe: Globe,
   history: History,
 } as const;
 

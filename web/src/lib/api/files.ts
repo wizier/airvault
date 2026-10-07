@@ -6,6 +6,8 @@ export interface AFCEntry {
   kind: 'file' | 'directory';
   size?: number;
   modified?: number;
+  /** Backup files only: listed, but the backup does not hold the content. */
+  missing?: boolean;
 }
 
 export interface FileStat {

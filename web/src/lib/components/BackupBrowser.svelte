@@ -3,7 +3,7 @@
   // backup the server holds locked asks for the password alone, and no password
   // closes it all. One locked later, for idleness, shows as a view's error.
   import { onMount } from 'svelte';
-  import { backupGallerySource, listBackupComponents, type BackupComponent } from '../api/backup-contents';
+  import { backupFiles, backupGallerySource, listBackupComponents, type BackupComponent } from '../api/backup-contents';
   import type { RestorePoint } from '../api/backups';
   import { ApiError, errMsg } from '../api/client';
   import { formatBytes, formatDateTime } from '../format';
@@ -11,7 +11,9 @@
   import BackupContacts from './BackupContacts.svelte';
   import BackupMessages from './BackupMessages.svelte';
   import BackupNotes from './BackupNotes.svelte';
+  import BackupPasswords from './BackupPasswords.svelte';
   import ErrorLine from './ErrorLine.svelte';
+  import FileBrowser from './FileBrowser.svelte';
   import Gallery from './Gallery.svelte';
   import Icon from './Icon.svelte';
   import type { IconName } from './icons';
@@ -28,11 +30,13 @@
   // Tones echo the iPhone apps' icons.
   const COMPONENTS: Record<BackupComponent, { icon: IconName; tone: string; title: string; description: string }> = {
     photos: { icon: 'image', tone: 'bg-primary/10 text-primary', title: 'Photos', description: 'Photos, videos and Live Photos by month and album' },
+    notes: { icon: 'notes', tone: 'bg-warning/15 text-warning', title: 'Notes', description: 'Notes by folder; locked ones stay locked' },
+    files: { icon: 'folder', tone: 'bg-info/15 text-info', title: 'Files', description: 'Documents kept On My iPhone, by folder' },
     messages: { icon: 'messages', tone: 'bg-success/15 text-success', title: 'Messages', description: 'iMessage, SMS and RCS chats with attachments' },
     whatsapp: { icon: 'chat', tone: 'bg-success/15 text-success', title: 'WhatsApp', description: 'Chats, groups, photos, voice and documents' },
-    notes: { icon: 'notes', tone: 'bg-warning/15 text-warning', title: 'Notes', description: 'Notes by folder; locked ones stay locked' },
-    contacts: { icon: 'contacts', tone: 'bg-info/15 text-info', title: 'Contacts', description: 'Names, phone numbers and emails' },
     calls: { icon: 'call', tone: 'bg-accent/15 text-accent', title: 'Calls', description: 'Phone, FaceTime and app calls' },
+    contacts: { icon: 'contacts', tone: 'bg-info/15 text-info', title: 'Contacts', description: 'Names, phone numbers and emails' },
+    passwords: { icon: 'key', tone: 'bg-secondary/15 text-secondary', title: 'Passwords', description: 'Saved Wi-Fi networks, app and site passwords' },
   };
 
   let components = $state<BackupComponent[] | null>(null);
@@ -76,6 +80,7 @@
     title={`Backup of ${deviceName}`}
     subtitle={created}
     closable
+    size="medium"
     {onclose}
   >
     <div class="flex flex-wrap gap-1.5 pt-2">
@@ -83,6 +88,9 @@
       {#if point.iosVersion}<Pill>iOS {point.iosVersion}</Pill>{/if}
       <Pill>{formatBytes(point.sizeBytes)}</Pill>
     </div>
+    {#if !point.encrypted}
+      <p class="text-xs text-base-content/50">Saved passwords and Wi-Fi are only kept in encrypted backups. Turn on a backup password to include them.</p>
+    {/if}
     <div class="py-3">
       {#if error}
         <ErrorLine {error} variant="alert" />
@@ -95,7 +103,7 @@
       {:else if components.length === 0}
         <p class="text-sm text-base-content/60">This backup holds nothing AirVault can show yet.</p>
       {:else}
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {#each components as component (component)}
             {@const view = COMPONENTS[component]}
             <button
@@ -135,5 +143,9 @@
     <BackupContacts {snapshotId} {...view} />
   {:else if open === 'calls'}
     <BackupCalls {snapshotId} {...view} />
+  {:else if open === 'passwords'}
+    <BackupPasswords {snapshotId} {...view} />
+  {:else if open === 'files'}
+    <FileBrowser source={backupFiles(snapshotId, 'files')} rootLabel="On My iPhone" loadingText="Reading the backup…" {...view} />
   {/if}
 {/if}

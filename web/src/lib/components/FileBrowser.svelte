@@ -8,19 +8,21 @@
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import PreviewImage, { isPreviewableImage } from './PreviewImage.svelte';
+  import PreviewImage, { isPlayableAudio, isPlayableVideo, isPreviewableImage } from './PreviewImage.svelte';
 
   let {
     source,
     title,
     subtitle,
     rootLabel = 'Files',
+    loadingText = 'Asking the phone…',
     onclose,
   }: {
     source: FileSource;
     title: string;
     subtitle: string;
     rootLabel?: string;
+    loadingText?: string;
     onclose: () => void;
   } = $props();
 
@@ -37,6 +39,11 @@
   let deleting = $state<string | null>(null);
 
   let preview = $state<AFCEntry | null>(null);
+
+  // A file the backup (or device) can render in place: an image, or a video or
+  // audio clip it streams. A missing one has no content to show.
+  const canPreview = (e: AFCEntry) =>
+    !e.missing && (isPreviewableImage(e.name) || isPlayableVideo(e.name) || isPlayableAudio(e.name));
 
   // The file whose download is being prepared (its stat is in flight).
   let saving = $state<string | null>(null);
@@ -134,14 +141,21 @@
       </button>
     </div>
     <div class="flex min-h-0 basis-48 grow shrink items-center justify-center overflow-auto rounded-box bg-base-200 p-2">
-      <PreviewImage src={source.previewUrl(child(p.name))} alt={p.name}>
-        {#snippet fallback()}
-          <div class="p-6 text-center text-sm text-base-content/60">
-            <Icon name="alert" size={24} class="mx-auto mb-2 opacity-50" />
-            Couldn't render a preview. Use Save to download the original.
-          </div>
-        {/snippet}
-      </PreviewImage>
+      {#if isPlayableVideo(p.name)}
+        <!-- svelte-ignore a11y_media_has_caption -->
+        <video class="max-h-full max-w-full rounded" src={source.previewUrl(child(p.name))} controls autoplay></video>
+      {:else if isPlayableAudio(p.name)}
+        <audio class="w-full" src={source.previewUrl(child(p.name))} controls autoplay></audio>
+      {:else}
+        <PreviewImage src={source.previewUrl(child(p.name))} alt={p.name}>
+          {#snippet fallback()}
+            <div class="p-6 text-center text-sm text-base-content/60">
+              <Icon name="alert" size={24} class="mx-auto mb-2 opacity-50" />
+              Couldn't render a preview. Use Save to download the original.
+            </div>
+          {/snippet}
+        </PreviewImage>
+      {/if}
     </div>
   {:else}
     <div class="breadcrumbs shrink-0 text-sm">
@@ -159,7 +173,7 @@
       {#if loading}
         <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
           <span class="loading loading-spinner loading-sm"></span>
-          Asking the phone…
+          {loadingText}
         </p>
       {:else if error}
         <ErrorLine {error} variant="alert" className="m-3" />
@@ -190,24 +204,26 @@
                   <span class="min-w-0 flex-1 truncate text-sm font-medium">{entry.name}</span>
                   <Icon name="arrowRight" size={14} class="shrink-0 text-base-content/40" />
                 </button>
-              {:else if isPreviewableImage(entry.name)}
+              {:else if canPreview(entry)}
                 <button
                   type="button"
                   class="flex min-w-0 flex-1 items-center gap-3 text-left"
                   title="Preview"
                   onclick={() => (preview = entry)}
                 >
-                  <Icon name="image" size={18} class="shrink-0 text-primary/80" />
+                  <Icon name={isPreviewableImage(entry.name) ? 'image' : 'play'} size={18} class="shrink-0 text-primary/80" />
                   <div class="min-w-0 flex-1">
                     <p class="truncate text-sm">{entry.name}</p>
                     <p class="truncate text-xs text-base-content/50">{fileFacts(entry)}</p>
                   </div>
                 </button>
               {:else}
-                <Icon name="file" size={18} class="shrink-0 text-base-content/40" />
+                <Icon name={entry.missing ? 'cloud' : 'file'} size={18} class="shrink-0 text-base-content/40" />
                 <div class="min-w-0 flex-1">
                   <p class="truncate text-sm">{entry.name}</p>
-                  <p class="truncate text-xs text-base-content/50">{fileFacts(entry)}</p>
+                  <p class="truncate text-xs text-base-content/50">
+                    {#if entry.missing}Not in the backup{:else}{fileFacts(entry)}{/if}
+                  </p>
                 </div>
               {/if}
 
@@ -236,9 +252,9 @@
                   <button
                     type="button"
                     class="btn btn-square btn-ghost btn-xs"
-                    title="Download"
+                    title={entry.missing ? 'Not in the backup' : 'Download'}
                     aria-label={`Download ${entry.name}`}
-                    disabled={saving === entry.name}
+                    disabled={saving === entry.name || entry.missing}
                     onclick={() => save(entry.name)}
                   >
                     {#if saving === entry.name}

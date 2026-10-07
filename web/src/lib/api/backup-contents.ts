@@ -19,7 +19,7 @@ export function unlockBackup(snapshotId: string, password: string, signal?: Abor
 }
 
 /** Server component names (see Go iosbackup.Component*); labels live in the UI. */
-export type BackupComponent = 'photos' | 'messages' | 'whatsapp' | 'notes' | 'contacts' | 'calls';
+export type BackupComponent = 'photos' | 'messages' | 'whatsapp' | 'notes' | 'contacts' | 'calls' | 'passwords' | 'files';
 
 /** The messaging apps a backup holds chats of. */
 export type ChatApp = 'messages' | 'whatsapp';
@@ -28,7 +28,7 @@ export type ChatApp = 'messages' | 'whatsapp';
 export const listBackupComponents = (snapshotId: string, signal?: AbortSignal) =>
   list<BackupComponent>(snapshotId, 'components', signal);
 
-/** The files a component's items carry, by path. */
+/** A component's files by path, and its folders by the same paths. */
 export function backupFiles(snapshotId: string, component: BackupComponent): FileSource {
   return endpointFileSource(`${backupPath(snapshotId)}/${component}/files`);
 }
@@ -101,6 +101,35 @@ export interface BackupCall extends Picture {
 }
 
 export const listBackupCalls = (snapshotId: string, signal?: AbortSignal) => list<BackupCall>(snapshotId, 'calls', signal);
+
+/** A saved password from the keychain: a Wi-Fi network, or an app's or a site's. */
+export interface BackupSecret {
+  id: number;
+  kind: 'wifi' | 'app' | 'web';
+  /** The network name, the service or the site. */
+  title: string;
+  /** The user name, when the item names one. */
+  account?: string;
+  password: string;
+  /** A site's URL scheme: 'https', 'smb', … */
+  protocol?: string;
+  /** A site's port, when the item names one. */
+  port?: number;
+  /** A site's sign-in: 'form', 'basic', 'digest', … */
+  auth?: string;
+  /** What saved it: Safari, an app's name, else its bundle ID or keychain group. */
+  app?: string;
+  /** The app's, when the backup holds its icon. */
+  bundleId?: string;
+}
+
+/** The icon of an app the backup holds. */
+export const backupAppIconUrl = (snapshotId: string, bundleId: string) =>
+  apiUrl(`${backupPath(snapshotId)}/apps/${encodeURIComponent(bundleId)}/icon`);
+
+/** The saved passwords the backup holds, Wi-Fi networks first. */
+export const listBackupPasswords = (snapshotId: string, signal?: AbortSignal) =>
+  list<BackupSecret>(snapshotId, 'passwords', signal);
 
 export interface Participant extends Picture {
   address: string;
