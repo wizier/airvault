@@ -22,6 +22,7 @@ func pageQuery(c *echo.Context) (offset, limit int, err error) {
 	return offset, limit, err
 }
 
+// GET /api/devices/:udid/media/gallery?offset=&limit=&revision=
 func (h *Handler) galleryList(c *echo.Context) error {
 	offset, limit, err := pageQuery(c)
 	if err != nil {
@@ -46,6 +47,7 @@ type thumbBatchResponse struct {
 
 // A body-carried batch has no URL-length ceiling; it reads all thumbnails in one
 // AFC session.
+// POST /api/devices/:udid/media/thumbs
 func (h *Handler) mediaThumbs(c *echo.Context) error {
 	var req thumbBatchRequest
 	if err := echo.BindBody(c, &req); err != nil {
@@ -58,6 +60,7 @@ func (h *Handler) mediaThumbs(c *echo.Context) error {
 	return c.JSON(http.StatusOK, thumbBatchResponse{Thumbs: thumbs})
 }
 
+// GET /api/devices/:udid/media/stat?path=
 func (h *Handler) mediaStat(c *echo.Context) error {
 	stat, err := h.svc.MediaStat(c.Request().Context(), c.Param("udid"), c.QueryParam("path"))
 	if err != nil {

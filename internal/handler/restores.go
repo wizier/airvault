@@ -10,6 +10,7 @@ import (
 
 // Binding over the defaults keeps them for omitted fields, while an explicit
 // false stays an override.
+// POST /api/devices/:udid/restore
 func (h *Handler) startRestore(c *echo.Context) error {
 	opts := service.DefaultRestoreOptions()
 	if err := echo.BindBody(c, &opts); err != nil {
@@ -26,6 +27,7 @@ type restoreSourcesResponse struct {
 	RestoreSources []service.RestorePoint `json:"restoreSources"`
 }
 
+// GET /api/restore-sources
 func (h *Handler) listRestoreSources(c *echo.Context) error {
 	sources, err := h.svc.RestoreSources(c.Request().Context())
 	if err != nil {

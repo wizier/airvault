@@ -14,6 +14,7 @@ type loginRequest struct {
 	Token string `json:"token"`
 }
 
+// POST /api/session
 func (h *Handler) createSession(c *echo.Context) error {
 	var req loginRequest
 	if err := echo.BindBody(c, &req); err != nil {
@@ -27,6 +28,7 @@ func (h *Handler) createSession(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// DELETE /api/session
 func (h *Handler) deleteSession(c *echo.Context) error {
 	c.SetCookie(sessionCookie("", time.Unix(0, 0)))
 	return c.NoContent(http.StatusNoContent)

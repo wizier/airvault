@@ -15,6 +15,7 @@ type restorePointsResponse struct {
 	RestorePoints []service.RestorePoint `json:"restorePoints"`
 }
 
+// POST /api/devices/:udid/backup
 func (h *Handler) startBackup(c *echo.Context) error {
 	runID, err := h.svc.StartBackup(c.Request().Context(), c.Param("udid"))
 	if err != nil {
@@ -23,6 +24,7 @@ func (h *Handler) startBackup(c *echo.Context) error {
 	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
 }
 
+// POST /api/devices/:udid/verify
 func (h *Handler) startVerify(c *echo.Context) error {
 	runID, err := h.svc.StartVerify(c.Request().Context(), c.Param("udid"))
 	if err != nil {
@@ -31,6 +33,7 @@ func (h *Handler) startVerify(c *echo.Context) error {
 	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
 }
 
+// GET /api/devices/:udid/backups
 func (h *Handler) listBackups(c *echo.Context) error {
 	points, err := h.svc.RestorePoints(c.Request().Context(), c.Param("udid"))
 	if err != nil {
@@ -41,6 +44,7 @@ func (h *Handler) listBackups(c *echo.Context) error {
 
 // Wiping the whole source requires an explicit all=true. An empty selector is
 // an error, so a dropped query can never widen a deletion.
+// DELETE /api/devices/:udid/backups?id=&all=
 func (h *Handler) deleteBackups(c *echo.Context) error {
 	ids := c.QueryParams()["id"]
 	var err error
@@ -60,6 +64,7 @@ func (h *Handler) deleteBackups(c *echo.Context) error {
 }
 
 // HEAD lets the UI check the download first; Range resumes a cut one.
+// {GET,HEAD} /api/backups/:snapshotId/download
 func (h *Handler) downloadBackup(c *echo.Context) error {
 	export, err := h.svc.OpenBackupExport(c.Request().Context(), c.Param("snapshotId"))
 	if err != nil {
@@ -68,6 +73,7 @@ func (h *Handler) downloadBackup(c *echo.Context) error {
 	return serveDownload(c, export, export.Name)
 }
 
+// GET /api/devices/:udid/backups/reclaimable?id=
 func (h *Handler) snapshotsReclaimable(c *echo.Context) error {
 	bytes, err := h.svc.SnapshotsReclaimable(c.Request().Context(), c.Param("udid"), c.QueryParams()["id"])
 	if err != nil {
@@ -80,6 +86,7 @@ type unlockBackupRequest struct {
 	Password string `json:"password"`
 }
 
+// POST /api/backups/:snapshotId/unlock
 func (h *Handler) unlockBackup(c *echo.Context) error {
 	var request unlockBackupRequest
 	if err := echo.BindBody(c, &request); err != nil {
@@ -102,6 +109,7 @@ func backupJSON[T any](key string, read func(ctx context.Context, snapshotID str
 	}
 }
 
+// GET /api/backups/:snapshotId/photos/gallery?filter=&month=&offset=&limit=
 func (h *Handler) backupPhotos(c *echo.Context) error {
 	offset, limit, err := pageQuery(c)
 	if err != nil {
@@ -115,6 +123,7 @@ func (h *Handler) backupPhotos(c *echo.Context) error {
 	return c.JSON(http.StatusOK, galleryResponse{Assets: assets, Total: total})
 }
 
+// GET /api/backups/:snapshotId/photos/months?filter=
 func (h *Handler) backupPhotoMonths(c *echo.Context) error {
 	months, err := h.svc.BackupPhotoMonths(c.Request().Context(), c.Param("snapshotId"), c.QueryParam("filter"))
 	if err != nil {
@@ -123,6 +132,7 @@ func (h *Handler) backupPhotoMonths(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string][]service.PhotoMonth{"months": months})
 }
 
+// POST /api/backups/:snapshotId/photos/thumbs
 func (h *Handler) backupPhotoThumbs(c *echo.Context) error {
 	var req thumbBatchRequest
 	if err := echo.BindBody(c, &req); err != nil {
@@ -139,6 +149,7 @@ func (h *Handler) backupPhotoThumbs(c *echo.Context) error {
 // finds nothing.
 func component(c *echo.Context) iosbackup.Component { return iosbackup.Component(c.Param("component")) }
 
+// GET /api/backups/:snapshotId/:component/chats
 func (h *Handler) backupChats(c *echo.Context) error {
 	chats, err := h.svc.BackupChats(c.Request().Context(), c.Param("snapshotId"), component(c))
 	if err != nil {
@@ -147,6 +158,7 @@ func (h *Handler) backupChats(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string][]iosbackup.Chat{"chats": chats})
 }
 
+// GET /api/backups/:snapshotId/:component/chats/messages?chat=&offset=&limit=
 func (h *Handler) backupMessages(c *echo.Context) error {
 	chatIDs, err := echo.QueryParamsOr[int64](c, "chat", nil)
 	if err != nil {
@@ -163,6 +175,7 @@ func (h *Handler) backupMessages(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string][]iosbackup.Message{"messages": messages})
 }
 
+// GET /api/backups/:snapshotId/:component/chats/matches?chat=&q=
 func (h *Handler) backupChatSearch(c *echo.Context) error {
 	chatIDs, err := echo.QueryParamsOr[int64](c, "chat", nil)
 	if err != nil {
@@ -175,6 +188,7 @@ func (h *Handler) backupChatSearch(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string][]iosbackup.Match{"matches": matches})
 }
 
+// GET /api/backups/:snapshotId/:component/matches?q=
 func (h *Handler) backupSearch(c *echo.Context) error {
 	found, err := h.svc.BackupSearch(c.Request().Context(), c.Param("snapshotId"), component(c), c.QueryParam("q"))
 	if err != nil {
@@ -183,6 +197,7 @@ func (h *Handler) backupSearch(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string][]iosbackup.Found{"matches": found})
 }
 
+// GET /api/backups/:snapshotId/contacts/:contactId/photo
 func (h *Handler) backupContactPhoto(c *echo.Context) error {
 	contactID, err := echo.PathParam[int64](c, "contactId")
 	if err != nil {
@@ -196,7 +211,27 @@ func (h *Handler) backupContactPhoto(c *echo.Context) error {
 	return c.Blob(http.StatusOK, http.DetectContentType(photo), photo)
 }
 
+// GET /api/backups/:snapshotId/apps/:bundleId/icon
+func (h *Handler) backupAppIcon(c *echo.Context) error {
+	icon, err := h.svc.BackupAppIcon(c.Request().Context(), c.Param("snapshotId"), c.Param("bundleId"))
+	if err != nil {
+		return err
+	}
+	c.Response().Header().Set("Cache-Control", "private, max-age=300")
+	return c.Blob(http.StatusOK, "image/png", icon)
+}
+
+// GET /api/backups/:snapshotId/:component/files?path=
+func (h *Handler) backupFolder(c *echo.Context) error {
+	entries, err := h.svc.BackupFolder(c.Request().Context(), c.Param("snapshotId"), component(c), c.QueryParam("path"))
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, fileListResponse{Entries: entries})
+}
+
 // openBackupFile opens a file of the component a request names.
+// GET /api/backups/:snapshotId/:component/files/{stat,download,preview}?path=
 func (h *Handler) openBackupFile(c *echo.Context, filePath string) (deviceDownload, error) {
 	return h.svc.OpenBackupFile(c.Request().Context(), c.Param("snapshotId"), component(c), filePath)
 }

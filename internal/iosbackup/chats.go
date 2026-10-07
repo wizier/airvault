@@ -71,7 +71,7 @@ type Location struct {
 // Attachment is a file a message or a note carries. A table or a link in a
 // note has no file and only a name, a scanned document its pages.
 type Attachment struct {
-	Path    string       `json:"path,omitempty"` // in its component's domain
+	Path    string       `json:"path,omitempty"` // among its component's files
 	Name    string       `json:"name"`
 	Size    int64        `json:"size,omitempty"`
 	Missing bool         `json:"missing,omitempty"` // a file the backup does not hold
@@ -82,9 +82,9 @@ type Attachment struct {
 // attachment is a file a message carries, missing unless its component can
 // open it.
 func (c *Contents) attachment(component Component, filePath, name string, size int64) Attachment {
-	domain, ok := fileDomain(component, filePath)
+	domain, stored, ok := componentFile(component, filePath)
 	return Attachment{Path: filePath, Name: cmp.Or(name, path.Base(filePath)), Size: size,
-		Missing: !ok || !c.stored(domain, filePath)}
+		Missing: !ok || !c.stored(domain, stored)}
 }
 
 // Found is a message with the chat it is in: what a page reads, and a search

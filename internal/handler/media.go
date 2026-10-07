@@ -15,18 +15,20 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-type deviceFilesResponse struct {
+type fileListResponse struct {
 	Entries []service.FileEntry `json:"entries"`
 }
 
+// GET /api/devices/:udid/media?path=
 func (h *Handler) listMedia(c *echo.Context) error {
 	entries, err := h.svc.MediaList(c.Request().Context(), c.Param("udid"), c.QueryParam("path"))
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, deviceFilesResponse{Entries: entries})
+	return c.JSON(http.StatusOK, fileListResponse{Entries: entries})
 }
 
+// GET /api/devices/:udid/media/{download,preview}?path=
 func (h *Handler) openMedia(c *echo.Context, filePath string) (deviceDownload, error) {
 	return h.svc.OpenMediaDownload(c.Request().Context(), c.Param("udid"), filePath)
 }

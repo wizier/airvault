@@ -146,7 +146,12 @@ func readPlist(snapshot *objectstore.Snapshot, key string, value any) error {
 		return err
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxPlistSize+1))
+	return decodePlist(file, value)
+}
+
+// decodePlist reads a plist of at most maxPlistSize bytes.
+func decodePlist(r io.Reader, value any) error {
+	data, err := io.ReadAll(io.LimitReader(r, maxPlistSize+1))
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/sha1"
 	"database/sql"
+	"encoding/asn1"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -210,6 +211,15 @@ func readAll(t *testing.T, reader Reader) []byte {
 
 var fixturePasswords = map[string]string{"plain": "", "encrypted": "correct horse"}
 
+func heldComponents(t *testing.T, contents *Contents) []Component {
+	t.Helper()
+	held, err := contents.Components(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return held
+}
+
 func TestContents(t *testing.T) {
 	for name, password := range fixturePasswords {
 		t.Run(name, func(t *testing.T) {
@@ -294,7 +304,7 @@ func TestPhotosWithoutLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := contents.Components(); held == nil || len(held) != 0 {
+	if held := heldComponents(t, contents); held == nil || len(held) != 0 {
 		t.Fatalf("Components = %#v; want an empty list", held)
 	}
 	if _, err := contents.Photos(t.Context()); !errors.Is(err, ErrNotStored) {
@@ -356,7 +366,7 @@ func TestPhotos(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer contents.Close()
-			if held := contents.Components(); len(held) != 1 || held[0] != ComponentPhotos {
+			if held := heldComponents(t, contents); len(held) != 1 || held[0] != ComponentPhotos {
 				t.Fatalf("Components = %v", held)
 			}
 			library, err := contents.Photos(t.Context())
@@ -513,7 +523,7 @@ func TestCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := contents.Components(); !slices.Equal(held, []Component{ComponentContacts, ComponentCalls}) {
+	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentCalls, ComponentContacts}) {
 		t.Fatalf("Components = %v", held)
 	}
 	got, err := contents.Calls(t.Context())
@@ -609,7 +619,7 @@ func TestMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := contents.Components(); !slices.Equal(held, []Component{ComponentMessages, ComponentContacts}) {
+	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentMessages, ComponentContacts}) {
 		t.Fatalf("Components = %v", held)
 	}
 
@@ -777,7 +787,7 @@ func TestWhatsApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := contents.Components(); !slices.Equal(held, []Component{ComponentWhatsApp, ComponentContacts}) {
+	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentWhatsApp, ComponentContacts}) {
 		t.Fatalf("Components = %v", held)
 	}
 
@@ -947,7 +957,7 @@ func TestNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := contents.Components(); !slices.Equal(held, []Component{ComponentNotes}) {
+	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentNotes}) {
 		t.Fatalf("Components = %v", held)
 	}
 	notes, err := contents.Notes(t.Context())
@@ -974,6 +984,185 @@ func TestNotes(t *testing.T) {
 	if _, _, err := contents.OpenFile(t.Context(), ComponentNotes, notesDatabase); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("OpenFile of the database: err=%v", err)
 	}
+}
+
+func TestFiles(t *testing.T) {
+	contract := []byte("contract text")
+	files := append(slices.Clone(homeFiles),
+		fixtureFile{domain: fileProviderDomain, path: "", flags: 2},
+		fixtureFile{domain: fileProviderDomain, path: "Other.plist", flags: 1, content: jpegBytes},
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage, flags: 2},
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/notes.txt", flags: 1, content: heicBytes},
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/Архив", flags: 2},
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/link", flags: 4},
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/Docs", flags: 2},
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/Docs/Contract.pdf", flags: 1, content: contract},
+		// A folder the backup records only through the file inside it.
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/Trips/Rome.jpg", flags: 1, content: jpegBytes},
+		// Listed, but its content never made it into the backup.
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/gone.dat", flags: 1, content: contract, missing: true},
+	)
+	contents, err := buildBackup(t, "", files).Unlock(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contents.Close()
+	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentFiles}) {
+		t.Fatalf("Components = %v", held)
+	}
+	modified := time.Unix(1_700_000_000, 0)
+	for folder, want := range map[string][]Entry{
+		"": {{Name: "Docs", Folder: true, Modified: modified},
+			{Name: "gone.dat", Size: int64(len(contract)), Modified: modified, Missing: true},
+			{Name: "notes.txt", Size: int64(len(heicBytes)), Modified: modified},
+			{Name: "Trips", Folder: true}, {Name: "Архив", Folder: true, Modified: modified}},
+		"Docs":    {{Name: "Contract.pdf", Size: int64(len(contract)), Modified: modified}},
+		"Trips":   {{Name: "Rome.jpg", Size: int64(len(jpegBytes)), Modified: modified}},
+		"Архив":   {},
+		"Nowhere": {},
+	} {
+		entries, err := contents.Folder(t.Context(), ComponentFiles, folder)
+		if err != nil || !reflect.DeepEqual(entries, want) {
+			t.Fatalf("Folder(%q) = %+v, %v; want %+v", folder, entries, err, want)
+		}
+	}
+	reader, _, err := contents.OpenFile(t.Context(), ComponentFiles, "Docs/Contract.pdf")
+	if err != nil || !bytes.Equal(readAll(t, reader), contract) {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, _, err := contents.OpenFile(t.Context(), ComponentFiles, "../Other.plist"); err == nil {
+		t.Fatal("OpenFile reached out of the folder")
+	}
+	if _, err := contents.Folder(t.Context(), ComponentPhotos, ""); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Folder of the photos: err=%v", err)
+	}
+}
+
+func TestKeychain(t *testing.T) {
+	classKey := bytes.Repeat([]byte{0xc1}, 32) // the class 2 key buildKeybag wraps
+	itemKey := bytes.Repeat([]byte{0x5a}, 32)
+	itemOfClass := func(class uint32, key []byte, attrs map[string]any) map[string]any {
+		plain := kcAttributesDER(t, attrs)
+		blob := binary.LittleEndian.AppendUint32(nil, 3) // version
+		blob = binary.LittleEndian.AppendUint32(blob, class)
+		wrapped := aesWrap(t, key, itemKey)
+		blob = binary.LittleEndian.AppendUint32(blob, uint32(len(wrapped)))
+		blob = append(blob, wrapped...)
+		// CTR is its own inverse, so the decryption seals the fixture too.
+		sealed, err := gcmZeroIVDecrypt(itemKey, append(plain, make([]byte, 16)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blob = append(blob, sealed...)
+		blob = append(blob, make([]byte, 16)...) // GCM tag, not checked
+		return map[string]any{"v_Data": blob}
+	}
+	item := func(attrs map[string]any) map[string]any { return itemOfClass(2, classKey, attrs) }
+	keychain := map[string]any{
+		"genp": []any{
+			item(map[string]any{"svce": airPortService, "acct": "Home Wi-Fi", "v_Data": []byte("s3cr3t-wifi")}),
+			item(map[string]any{"svce": airPortService, "acct": "Кафе", "v_Data": []byte("latte123")}),
+			item(map[string]any{"svce": "SessionToken", "agrp": "ABCDE12345.com.example.app", "acct": "alice", "v_Data": []byte("app-pass")}),
+			// An app group serves as a keychain group of its app.
+			item(map[string]any{"svce": "sync", "agrp": "group.com.example.app.shared", "acct": "erin", "v_Data": []byte("group-pass")}),
+			// An app the backup no longer holds goes by its bundle ID.
+			item(map[string]any{"svce": "api", "agrp": "XYZ9876543.org.other.app", "acct": "carol", "v_Data": []byte("other-pass")}),
+			item(map[string]any{"svce": "token", "acct": "x", "v_Data": []byte{0xff, 0xfe}}),
+			// Wrapped under a class the keybag has no key for, as a non-migratory item is.
+			itemOfClass(11, bytes.Repeat([]byte{0x0b}, 32), map[string]any{"svce": airPortService, "acct": "Device Only", "v_Data": []byte("unseen")}),
+		},
+		"inet": []any{
+			item(map[string]any{"srvr": "example.com", "ptcl": "htps", "atyp": "form", "agrp": safariGroup, "acct": "bob", "v_Data": []byte("web-pass")}),
+			item(map[string]any{"srvr": "192.168.1.10", "ptcl": "smb ", "port": 445, "atyp": "dflt", "agrp": "com.apple.FileProviderUI.ServerAuthUIExtension", "acct": "me", "v_Data": []byte("smb-pass")}),
+			// A group the app shares is the app's; a group of no app the backup holds shows as it is.
+			// A protocol may be recorded as the number its four letters make.
+			item(map[string]any{"srvr": "nas.local", "ptcl": 0x68747073, "agrp": "ABCDE12345.com.example.app.SwitchAccount", "acct": "admin", "v_Data": []byte("nas-pass")}),
+			// An app's own data filed under its bundle ID, with no protocol: a zero.
+			item(map[string]any{"srvr": "com.example.app", "ptcl": 0, "atyp": 0, "agrp": "ABCDE12345.com.example.app", "acct": "installId", "v_Data": []byte("install-pass")}),
+			item(map[string]any{"srvr": "shared.example", "ptcl": "htps", "agrp": "group.example.shared", "acct": "dave", "v_Data": []byte("shared-pass")}),
+			// A key iCloud Keychain syncs with is the system's, not a password.
+			item(map[string]any{"srvr": "WiFi", "agrp": "com.apple.security.ckks", "acct": "ACA56A66-E314-4066-B3EE-FB49C0000000", "v_Data": []byte("a2V5LW1hdGVyaWFs")}),
+		},
+	}
+	data, err := plist.Marshal(keychain, plist.BinaryFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := append(slices.Clone(homeFiles), fixtureFile{domain: keychainDomain, path: keychainBackup, flags: 1, content: data})
+	contents, err := buildBackup(t, "correct horse", files).Unlock(t.Context(), "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contents.Close()
+	if held := heldComponents(t, contents); !slices.Contains(held, ComponentPasswords) {
+		t.Fatalf("Components = %v, want one with passwords", held)
+	}
+	// An unencrypted backup's keychain is sealed to the device: nothing to show.
+	unencrypted, err := buildBackup(t, "", files).Unlock(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unencrypted.Close()
+	if held := heldComponents(t, unencrypted); slices.Contains(held, ComponentPasswords) {
+		t.Fatalf("Components of an unencrypted backup = %v", held)
+	}
+	// An app goes by the name the backup knows it by, found through the item's
+	// access group.
+	meta, err := plist.Marshal(map[string]any{"bundleDisplayName": "Example"}, plist.BinaryFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	icon := []byte("\x89PNG icon")
+	contents.backup.Info.Applications = map[string]Application{"com.example.app": {Metadata: meta, PlaceholderIcon: icon}}
+	if got, err := contents.AppIcon("com.example.app"); err != nil || !bytes.Equal(got, icon) {
+		t.Fatalf("AppIcon = %q, %v", got, err)
+	}
+	if _, err := contents.AppIcon("org.other.app"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("AppIcon of an app the backup does not hold: err=%v", err)
+	}
+	secrets, err := contents.Keychain(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Secret{
+		{ID: 0, Kind: "wifi", Title: "Home Wi-Fi", Password: "s3cr3t-wifi"},
+		{ID: 1, Kind: "wifi", Title: "Кафе", Password: "latte123"},
+		{ID: 2, Kind: "app", Title: "api", Account: "carol", Password: "other-pass", App: "org.other.app"},
+		{ID: 3, Kind: "app", Title: "Example", Account: "alice", Password: "app-pass", App: "Example", BundleID: "com.example.app"},
+		{ID: 4, Kind: "app", Title: "Example", Account: "erin", Password: "group-pass", App: "Example", BundleID: "com.example.app"},
+		{ID: 5, Kind: "web", Title: "192.168.1.10", Account: "me", Password: "smb-pass", Protocol: "smb", Port: 445,
+			App: "Files"},
+		{ID: 6, Kind: "web", Title: "Example", Account: "installId", Password: "install-pass",
+			App: "Example", BundleID: "com.example.app"},
+		{ID: 7, Kind: "web", Title: "example.com", Account: "bob", Password: "web-pass", Protocol: "https", Auth: "form",
+			App: "Safari"},
+		{ID: 8, Kind: "web", Title: "nas.local", Account: "admin", Password: "nas-pass", Protocol: "https",
+			App: "Example", BundleID: "com.example.app"},
+		{ID: 9, Kind: "web", Title: "shared.example", Account: "dave", Password: "shared-pass", Protocol: "https",
+			App: "group.example.shared"},
+	}
+	if !reflect.DeepEqual(secrets, want) {
+		t.Fatalf("Keychain =\n%+v\nwant\n%+v", secrets, want)
+	}
+}
+
+// kcAttributesDER encodes keychain item attributes the way iOS does: a DER SET
+// of (UTF8String name, value) sequences, data as an OCTET STRING.
+func kcAttributesDER(t *testing.T, attrs map[string]any) []byte {
+	t.Helper()
+	type pair struct {
+		Name  string `asn1:"utf8"`
+		Value any
+	}
+	var pairs []pair
+	for name, value := range attrs {
+		pairs = append(pairs, pair{name, value})
+	}
+	der, err := asn1.MarshalWithParams(pairs, "set")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
 }
 
 func TestPersonName(t *testing.T) {

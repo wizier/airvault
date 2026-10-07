@@ -7,6 +7,7 @@ import (
 	"github.com/wizier/airvault/internal/service"
 )
 
+// PUT /api/devices/:udid/cleanup
 func (h *Handler) setCleanup(c *echo.Context) error {
 	var settings service.CleanupSettings
 	if err := echo.BindBody(c, &settings); err != nil {
@@ -18,6 +19,7 @@ func (h *Handler) setCleanup(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// GET /api/devices/:udid/cleanup/plan?keepDays=&thin=
 func (h *Handler) planCleanup(c *echo.Context) error {
 	keepDays, err := echo.QueryParamOr(c, "keepDays", 0)
 	if err != nil {

@@ -53,13 +53,13 @@ func (h *Handler) Router() *echo.Echo {
 	e.Use(echoMiddleware.GzipWithConfig(echoMiddleware.GzipConfig{
 		// SSE and the install progress stream must flush immediately; downloads,
 		// previews and wallpapers carry an exact Content-Length and Range that
-		// compression would void, and photos are compressed already.
+		// compression would void, and photos and icons are compressed already.
 		Skipper: func(c *echo.Context) bool {
 			p := c.Request().URL.Path
 			return p == "/api/events" || strings.HasSuffix(p, "/console") ||
 				strings.HasSuffix(p, "/apps/install") ||
 				strings.HasSuffix(p, "/download") || strings.HasSuffix(p, "/preview") ||
-				strings.HasSuffix(p, "/wallpaper") || strings.HasSuffix(p, "/photo")
+				strings.HasSuffix(p, "/wallpaper") || strings.HasSuffix(p, "/photo") || strings.HasSuffix(p, "/icon")
 		},
 	}))
 
@@ -83,7 +83,7 @@ func (h *Handler) Router() *echo.Echo {
 	api.POST("/runs/:id/cancel", h.cancelRun)
 
 	api.GET("/restore-sources", h.listRestoreSources)
-	backup := api.Group("/backups/:snapshotId")
+	backup := api.Group("/backups/:snapshotId", noStore)
 	backup.GET("/download", h.downloadBackup)
 	backup.HEAD("/download", h.downloadBackup)
 	backup.POST("/unlock", h.unlockBackup)
@@ -92,6 +92,8 @@ func (h *Handler) Router() *echo.Echo {
 	backup.GET("/contacts/:contactId/photo", h.backupContactPhoto)
 	backup.GET("/calls", backupJSON("calls", h.svc.BackupCalls))
 	backup.GET("/notes", backupJSON("notes", h.svc.BackupNotes))
+	backup.GET("/passwords", backupJSON("passwords", h.svc.BackupPasswords))
+	backup.GET("/apps/:bundleId/icon", h.backupAppIcon)
 	backup.GET("/photos/gallery", h.backupPhotos)
 	backup.GET("/photos/months", h.backupPhotoMonths)
 	backup.GET("/photos/filters", backupJSON("filters", h.svc.BackupPhotoFilters))
@@ -101,6 +103,7 @@ func (h *Handler) Router() *echo.Echo {
 	backup.GET("/:component/chats/messages", h.backupMessages)
 	backup.GET("/:component/chats/matches", h.backupChatSearch)
 	backup.GET("/:component/matches", h.backupSearch)
+	backup.GET("/:component/files", h.backupFolder)
 	backup.GET("/:component/files/stat", serveFile(h.openBackupFile, serveStat))
 	backup.GET("/:component/files/download", serveFile(h.openBackupFile, serveDownload))
 	backup.GET("/:component/files/preview", serveFile(h.openBackupFile, streamPreview))
@@ -144,6 +147,15 @@ func (h *Handler) Router() *echo.Echo {
 
 	e.GET("/*", echo.WrapHandler(http.FileServer(http.FS(h.staticFS))))
 	return e
+}
+
+// noStore keeps what a backup holds, decrypted, out of the browser's cache; a
+// handler that may cache, such as a preview, sets its own header over it.
+func noStore(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		c.Response().Header().Set("Cache-Control", "no-store")
+		return next(c)
+	}
 }
 
 // UDIDs feed filesystem paths downstream, so this is cheap defense-in-depth in

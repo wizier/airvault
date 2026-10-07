@@ -30,6 +30,8 @@ var ErrClosed = errors.New("backup contents are closed")
 // listedFile is a Manifest.db record.
 type listedFile struct {
 	domain, path string
+	folder       bool
+	size         int64     // as the backup listed it
 	modified     time.Time // zero when the backup never recorded it
 	id           string
 	wrappedKey   []byte // encrypted backups only
@@ -258,6 +260,68 @@ func (c *Contents) storedPaths(ctx context.Context, domain, prefix string) (map[
 	return paths, nil
 }
 
+// folderPrefix is what the paths inside folder start with; "" is the domain's
+// top, where every path qualifies.
+func folderPrefix(folder string) string {
+	if folder == "" {
+		return ""
+	}
+	return folder + "/"
+}
+
+// children is what the backup lists right in folder of domain, its files and
+// folders; "" is the domain's top.
+func (c *Contents) children(ctx context.Context, domain, folder string) ([]listedFile, error) {
+	prefix := folderPrefix(folder)
+	var files []listedFile
+	for rows, err := range c.rows(ctx, c.manifest, `SELECT fileID, domain, relativePath, flags, file FROM Files
+		WHERE domain = ?1 AND flags IN (1, 2) AND length(relativePath) > length(?2)
+		AND substr(relativePath, 1, length(?2)) = ?2 AND instr(substr(relativePath, length(?2) + 1), '/') = 0`,
+		domain, prefix) {
+		var file listedFile
+		if err == nil {
+			file, err = scanFile(rows)
+		}
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+// descendantFolders is the names of folders right in folder of domain that
+// hold a file deeper down, whether or not the backup lists the folder itself:
+// a backup need not record a folder to record its files.
+func (c *Contents) descendantFolders(ctx context.Context, domain, folder string) (map[string]bool, error) {
+	prefix := folderPrefix(folder)
+	folders := map[string]bool{}
+	for rows, err := range c.rows(ctx, c.manifest, `SELECT DISTINCT
+		substr(substr(relativePath, length(?2) + 1), 1, instr(substr(relativePath, length(?2) + 1), '/') - 1)
+		FROM Files WHERE domain = ?1 AND flags = 1 AND length(relativePath) > length(?2)
+		AND substr(relativePath, 1, length(?2)) = ?2 AND instr(substr(relativePath, length(?2) + 1), '/') > 0`,
+		domain, prefix) {
+		var name string
+		if err == nil {
+			err = rows.Scan(&name)
+		}
+		if err != nil {
+			return nil, err
+		}
+		folders[name] = true
+	}
+	return folders, nil
+}
+
+// holdsFiles reports a folder of domain the backup lists a file in, at any depth.
+func (c *Contents) holdsFiles(ctx context.Context, domain, folder string) (bool, error) {
+	for _, err := range c.rows(ctx, c.manifest, `SELECT 1 FROM Files
+		WHERE domain = ?1 AND flags = 1 AND substr(relativePath, 1, length(?2)) = ?2 LIMIT 1`, domain, folder+"/") {
+		return err == nil, err
+	}
+	return false, nil
+}
+
 func scanFile(rows *sql.Rows) (listedFile, error) {
 	var file listedFile
 	var flags int64
@@ -272,7 +336,7 @@ func scanFile(rows *sql.Rows) (listedFile, error) {
 	if err != nil {
 		return listedFile{}, fmt.Errorf("%s/%s: %w", file.domain, file.path, err)
 	}
-	file.wrappedKey = record.wrappedKey
+	file.folder, file.size, file.wrappedKey = flags == 2, record.size, record.wrappedKey
 	if record.modified > 0 {
 		file.modified = time.Unix(record.modified, 0)
 	}
@@ -280,8 +344,8 @@ func scanFile(rows *sql.Rows) (listedFile, error) {
 }
 
 type mbFile struct {
-	modified   int64
-	wrappedKey []byte
+	modified, size int64
+	wrappedKey     []byte
 }
 
 // parseMBFile reads Files.file: an NSKeyedArchiver-encoded MBFile.
@@ -303,7 +367,7 @@ func parseMBFile(blob []byte) (mbFile, error) {
 	if !ok {
 		return mbFile{}, errors.New("file record has no root object")
 	}
-	record := mbFile{modified: plistInt(root["LastModified"])}
+	record := mbFile{modified: plistInt(root["LastModified"]), size: plistInt(root["Size"])}
 	if uid, ok := root["EncryptionKey"].(plist.UID); ok {
 		data, _ := object(uid).(map[string]any)
 		record.wrappedKey, _ = data["NS.data"].([]byte)

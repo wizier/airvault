@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
+// GET /api/devices/:udid/console
 func (h *Handler) streamDeviceConsole(c *echo.Context) error {
 	udid := c.Param("udid")
 	stream := startStream(c, "text/event-stream")

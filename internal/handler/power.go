@@ -12,6 +12,7 @@ type powerRequest struct {
 	Action service.PowerAction `json:"action"`
 }
 
+// POST /api/devices/:udid/power
 func (h *Handler) controlPower(c *echo.Context) error {
 	var request powerRequest
 	if err := echo.BindBody(c, &request); err != nil {
@@ -23,6 +24,7 @@ func (h *Handler) controlPower(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// POST /api/devices/:udid/erase
 func (h *Handler) eraseDevice(c *echo.Context) error {
 	if err := h.svc.EraseDevice(c.Request().Context(), c.Param("udid")); err != nil {
 		return err

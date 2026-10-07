@@ -17,6 +17,7 @@ type startPairingRequest struct {
 	UDID string `json:"udid"`
 }
 
+// DELETE /api/devices/:udid/pairing?deleteBackups=
 func (h *Handler) unpairDevice(c *echo.Context) error {
 	// Like "all" in backups.go: exactly "true" or the backups stay.
 	deleteBackups := c.QueryParam("deleteBackups") == "true"
@@ -26,6 +27,7 @@ func (h *Handler) unpairDevice(c *echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// GET /api/pair/state
 func (h *Handler) getPairingState(c *echo.Context) error {
 	usb, err := h.svc.ListPairableUSB(c.Request().Context())
 	if err != nil {
@@ -37,6 +39,7 @@ func (h *Handler) getPairingState(c *echo.Context) error {
 	})
 }
 
+// POST /api/pair/trust
 func (h *Handler) startPairing(c *echo.Context) error {
 	var request startPairingRequest
 	if err := echo.BindBody(c, &request); err != nil {

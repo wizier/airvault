@@ -51,6 +51,7 @@ type FileEntry struct {
 	Kind     devicefs.EntryKind `json:"kind"`
 	Size     *int64             `json:"size,omitempty"`
 	Modified *int64             `json:"modified,omitempty"`
+	Missing  bool               `json:"missing,omitempty"` // backup only: listed, but its content is not held
 }
 
 // Only apps with file sharing enabled expose their Documents (house_arrest).
@@ -85,7 +86,7 @@ func (s *Service) deviceFileList(
 	// Never nil, so an empty directory serializes as [].
 	out := make([]FileEntry, len(entries))
 	for i, entry := range entries {
-		out[i] = FileEntry(entry)
+		out[i] = FileEntry{Name: entry.Name, Kind: entry.Kind, Size: entry.Size, Modified: entry.Modified}
 	}
 	return out, nil
 }

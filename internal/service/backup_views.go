@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/wizier/airvault/internal/devicefs"
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/iosbackup"
 )
@@ -31,8 +32,9 @@ func readBackup[T any](ctx context.Context, s *Service, snapshotID string, read 
 }
 
 // BackupComponents lists the parts of a restore point there are views for.
+// GET /api/backups/:snapshotId/components
 func (s *Service) BackupComponents(ctx context.Context, snapshotID string) ([]iosbackup.Component, error) {
-	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Component, error) { return c.Components(), nil })
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Component, error) { return c.Components(ctx) })
 }
 
 func (s *Service) backupPhotoLibrary(ctx context.Context, snapshotID string) (*iosbackup.PhotoLibrary, error) {
@@ -158,6 +160,7 @@ type PhotoFilter struct {
 }
 
 // BackupPhotoFilters lists the filters that show any photo, "" always.
+// GET /api/backups/:snapshotId/photos/filters
 func (s *Service) BackupPhotoFilters(ctx context.Context, snapshotID string) ([]PhotoFilter, error) {
 	library, err := s.backupPhotoLibrary(ctx, snapshotID)
 	if err != nil {
@@ -298,14 +301,48 @@ func (s *Service) OpenBackupFile(ctx context.Context, snapshotID string, compone
 	})
 }
 
+// BackupFolder lists a folder among a component's files, "" being its top.
+func (s *Service) BackupFolder(ctx context.Context, snapshotID string, component iosbackup.Component,
+	folder string) ([]FileEntry, error) {
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]FileEntry, error) {
+		listed, err := c.Folder(ctx, component, folder)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]FileEntry, len(listed))
+		for i, entry := range listed {
+			entries[i] = FileEntry{Name: entry.Name, Kind: devicefs.EntryDirectory}
+			if !entry.Folder {
+				entries[i].Kind, entries[i].Size, entries[i].Missing = devicefs.EntryFile, new(entry.Size), entry.Missing
+			}
+			if !entry.Modified.IsZero() {
+				entries[i].Modified = new(entry.Modified.Unix())
+			}
+		}
+		return entries, nil
+	})
+}
+
+// BackupAppIcon is the icon of an app a restore point holds, a PNG.
+func (s *Service) BackupAppIcon(ctx context.Context, snapshotID, bundleID string) ([]byte, error) {
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]byte, error) { return c.AppIcon(bundleID) })
+}
+
+func (s *Service) BackupPasswords(ctx context.Context, snapshotID string) ([]iosbackup.Secret, error) {
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Secret, error) { return c.Keychain(ctx) })
+}
+
+// GET /api/backups/:snapshotId/calls
 func (s *Service) BackupCalls(ctx context.Context, snapshotID string) ([]iosbackup.Call, error) {
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Call, error) { return c.Calls(ctx) })
 }
 
+// GET /api/backups/:snapshotId/notes
 func (s *Service) BackupNotes(ctx context.Context, snapshotID string) ([]iosbackup.Note, error) {
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Note, error) { return c.Notes(ctx) })
 }
 
+// GET /api/backups/:snapshotId/contacts
 func (s *Service) BackupContacts(ctx context.Context, snapshotID string) ([]iosbackup.Contact, error) {
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Contact, error) { return c.Contacts(ctx) })
 }

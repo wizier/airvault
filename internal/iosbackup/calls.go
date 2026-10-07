@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"math"
 	"strings"
 	"time"
@@ -104,4 +105,14 @@ func (c *Contents) appName(bundleID string) string {
 		return ""
 	}
 	return cmp.Or(metadata.DisplayName, metadata.ItemName)
+}
+
+// AppIcon is the icon of an App Store app the backup holds, a PNG;
+// fs.ErrNotExist for any other.
+func (c *Contents) AppIcon(bundleID string) ([]byte, error) {
+	icon := c.backup.Info.Applications[bundleID].PlaceholderIcon
+	if len(icon) == 0 {
+		return nil, fs.ErrNotExist
+	}
+	return icon, nil
 }

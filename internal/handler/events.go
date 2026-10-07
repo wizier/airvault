@@ -11,6 +11,7 @@ import (
 	"github.com/wizier/airvault/internal/events"
 )
 
+// GET /api/events
 func (h *Handler) streamEvents(c *echo.Context) error {
 	stream := startStream(c, "text/event-stream")
 	// IDs are "<epoch>-<seq>"; a Last-Event-ID from another process (epoch
