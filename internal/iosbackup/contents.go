@@ -313,15 +313,6 @@ func (c *Contents) descendantFolders(ctx context.Context, domain, folder string)
 	return folders, nil
 }
 
-// holdsFiles reports a folder of domain the backup lists a file in, at any depth.
-func (c *Contents) holdsFiles(ctx context.Context, domain, folder string) (bool, error) {
-	for _, err := range c.rows(ctx, c.manifest, `SELECT 1 FROM Files
-		WHERE domain = ?1 AND flags = 1 AND substr(relativePath, 1, length(?2)) = ?2 LIMIT 1`, domain, folder+"/") {
-		return err == nil, err
-	}
-	return false, nil
-}
-
 func scanFile(rows *sql.Rows) (listedFile, error) {
 	var file listedFile
 	var flags int64

@@ -30,40 +30,33 @@ const (
 // conversations, then their people and passwords.
 var components = []struct {
 	id           Component
-	domain, path string
-	folder       bool // path is a folder of files, not a database
+	domain, path string // its database; none for one every backup has
 }{
-	{ComponentPhotos, cameraRoll, photosDatabase, false},
-	{ComponentNotes, notesDomain, notesDatabase, false},
-	{ComponentFiles, fileProviderDomain, fileProviderStorage, true},
-	{ComponentMessages, homeDomain, messagesDatabase, false},
-	{ComponentWhatsApp, whatsAppDomain, whatsAppDatabase, false},
-	{ComponentCalls, homeDomain, callsDatabase, false},
-	{ComponentContacts, homeDomain, contactsDatabase, false},
-	{ComponentPasswords, keychainDomain, keychainBackup, false},
+	{ComponentPhotos, cameraRoll, photosDatabase},
+	{ComponentNotes, notesDomain, notesDatabase},
+	// Whether it holds any file takes a Manifest.db query; an empty folder shows it.
+	{ComponentFiles, "", ""},
+	{ComponentMessages, homeDomain, messagesDatabase},
+	{ComponentWhatsApp, whatsAppDomain, whatsAppDatabase},
+	{ComponentCalls, homeDomain, callsDatabase},
+	{ComponentContacts, homeDomain, contactsDatabase},
+	{ComponentPasswords, keychainDomain, keychainBackup},
 }
 
 // Components lists the parts this backup holds, in a fixed order: those whose
-// database it holds, and a folder of files when it holds any.
-func (c *Contents) Components(ctx context.Context) ([]Component, error) {
+// database it holds, and its files, even none.
+func (c *Contents) Components() []Component {
 	held := []Component{}
 	for _, component := range components {
 		// An unencrypted backup's keychain is sealed to the device it came from.
 		if component.id == ComponentPasswords && c.keys == nil {
 			continue
 		}
-		there := c.stored(component.domain, component.path)
-		if component.folder {
-			var err error
-			if there, err = c.holdsFiles(ctx, component.domain, component.path); err != nil {
-				return nil, err
-			}
-		}
-		if there {
+		if component.path == "" || c.stored(component.domain, component.path) {
 			held = append(held, component.id)
 		}
 	}
-	return held, nil
+	return held
 }
 
 // fileRoots are where each component keeps its files: a domain, the folder

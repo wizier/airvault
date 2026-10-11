@@ -34,7 +34,7 @@ func readBackup[T any](ctx context.Context, s *Service, snapshotID string, read 
 // BackupComponents lists the parts of a restore point there are views for.
 // GET /api/backups/:snapshotId/components
 func (s *Service) BackupComponents(ctx context.Context, snapshotID string) ([]iosbackup.Component, error) {
-	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Component, error) { return c.Components(ctx) })
+	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) ([]iosbackup.Component, error) { return c.Components(), nil })
 }
 
 func (s *Service) backupPhotoLibrary(ctx context.Context, snapshotID string) (*iosbackup.PhotoLibrary, error) {

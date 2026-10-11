@@ -211,15 +211,6 @@ func readAll(t *testing.T, reader Reader) []byte {
 
 var fixturePasswords = map[string]string{"plain": "", "encrypted": "correct horse"}
 
-func heldComponents(t *testing.T, contents *Contents) []Component {
-	t.Helper()
-	held, err := contents.Components(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return held
-}
-
 func TestContents(t *testing.T) {
 	for name, password := range fixturePasswords {
 		t.Run(name, func(t *testing.T) {
@@ -304,8 +295,8 @@ func TestPhotosWithoutLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); held == nil || len(held) != 0 {
-		t.Fatalf("Components = %#v; want an empty list", held)
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentFiles}) {
+		t.Fatalf("Components = %v; want only the files", held)
 	}
 	if _, err := contents.Photos(t.Context()); !errors.Is(err, ErrNotStored) {
 		t.Fatalf("Photos without Photos.sqlite: err=%v, want ErrNotStored", err)
@@ -366,7 +357,7 @@ func TestPhotos(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer contents.Close()
-			if held := heldComponents(t, contents); len(held) != 1 || held[0] != ComponentPhotos {
+			if held := contents.Components(); !slices.Equal(held, []Component{ComponentPhotos, ComponentFiles}) {
 				t.Fatalf("Components = %v", held)
 			}
 			library, err := contents.Photos(t.Context())
@@ -523,7 +514,7 @@ func TestCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentCalls, ComponentContacts}) {
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentFiles, ComponentCalls, ComponentContacts}) {
 		t.Fatalf("Components = %v", held)
 	}
 	got, err := contents.Calls(t.Context())
@@ -619,7 +610,7 @@ func TestMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentMessages, ComponentContacts}) {
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentFiles, ComponentMessages, ComponentContacts}) {
 		t.Fatalf("Components = %v", held)
 	}
 
@@ -787,7 +778,7 @@ func TestWhatsApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentWhatsApp, ComponentContacts}) {
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentFiles, ComponentWhatsApp, ComponentContacts}) {
 		t.Fatalf("Components = %v", held)
 	}
 
@@ -957,7 +948,7 @@ func TestNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentNotes}) {
+	if held := contents.Components(); !slices.Equal(held, []Component{ComponentNotes, ComponentFiles}) {
 		t.Fatalf("Components = %v", held)
 	}
 	notes, err := contents.Notes(t.Context())
@@ -1007,9 +998,6 @@ func TestFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); !slices.Equal(held, []Component{ComponentFiles}) {
-		t.Fatalf("Components = %v", held)
-	}
 	modified := time.Unix(1_700_000_000, 0)
 	for folder, want := range map[string][]Entry{
 		"": {{Name: "Docs", Folder: true, Modified: modified},
@@ -1094,7 +1082,7 @@ func TestKeychain(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer contents.Close()
-	if held := heldComponents(t, contents); !slices.Contains(held, ComponentPasswords) {
+	if held := contents.Components(); !slices.Contains(held, ComponentPasswords) {
 		t.Fatalf("Components = %v, want one with passwords", held)
 	}
 	// An unencrypted backup's keychain is sealed to the device: nothing to show.
@@ -1103,7 +1091,7 @@ func TestKeychain(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unencrypted.Close()
-	if held := heldComponents(t, unencrypted); slices.Contains(held, ComponentPasswords) {
+	if held := unencrypted.Components(); slices.Contains(held, ComponentPasswords) {
 		t.Fatalf("Components of an unencrypted backup = %v", held)
 	}
 	// An app goes by the name the backup knows it by, found through the item's
