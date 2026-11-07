@@ -282,7 +282,7 @@
           <p class="mt-0.5 text-xs text-base-content/60">
             {device.encrypted
               ? 'Backups are protected with a password set on the phone'
-              : 'Health and Keychain data are only included in encrypted backups'}
+              : 'Saved passwords, Wi-Fi, call history and Health data are only included in encrypted backups'}
           </p>
         </div>
         <div class="flex flex-wrap gap-2">

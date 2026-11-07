@@ -89,7 +89,7 @@
       <Pill>{formatBytes(point.sizeBytes)}</Pill>
     </div>
     {#if !point.encrypted}
-      <p class="text-xs text-base-content/50">Saved passwords and Wi-Fi are only kept in encrypted backups. Turn on a backup password to include them.</p>
+      <p class="text-xs text-base-content/50">Saved passwords, Wi-Fi and call history are only kept in encrypted backups. Turn on a backup password to include them.</p>
     {/if}
     <div class="py-3">
       {#if error}
