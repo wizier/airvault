@@ -41,7 +41,7 @@ type runReservation struct {
 	id      string
 	kind    runKind
 	udid    string
-	auto    bool // started by the automatic-backup trigger
+	auto    bool // started by an automatic trigger, not a request
 	ctx     context.Context
 	cancel  context.CancelFunc
 	release func()

@@ -7,7 +7,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/storage"
 )
@@ -17,7 +16,7 @@ func TestAutoWait(t *testing.T) {
 	ago := func(d time.Duration) storage.SourceSummary {
 		return storage.SourceSummary{RestorePoints: 1, LatestRestorable: new(now.Add(-d).Unix())}
 	}
-	daily := autoBackupEvery(1)
+	daily := autoEvery(1)
 	// failed lists the latest failures, oldest first, as the registry keeps them.
 	failed := func(ago ...time.Duration) autoHistory {
 		var h autoHistory
@@ -38,7 +37,7 @@ func TestAutoWait(t *testing.T) {
 		{"all backups damaged is due", daily, storage.SourceSummary{RestorePoints: 2}, autoHistory{}, "", time.Time{}},
 		{"daily is due 4 h early", daily, ago(20 * time.Hour), autoHistory{}, "", time.Time{}},
 		{"daily not yet due", daily, ago(19 * time.Hour), autoHistory{}, autoWaitSchedule, now.Add(time.Hour)},
-		{"weekly", autoBackupEvery(7), ago(6 * 24 * time.Hour), autoHistory{}, autoWaitSchedule,
+		{"weekly", autoEvery(7), ago(6 * 24 * time.Hour), autoHistory{}, autoWaitSchedule,
 			now.Add(20 * time.Hour)},
 		{"pause outlasts the schedule", daily, ago(48 * time.Hour),
 			autoHistory{pausedUntil: now.Add(30 * time.Minute)}, autoWaitPaused, now.Add(30 * time.Minute)},
@@ -52,7 +51,7 @@ func TestAutoWait(t *testing.T) {
 			failed(30*time.Hour, 3*time.Hour, 2*time.Hour), "", time.Time{}},
 	}
 	for _, test := range tests {
-		wait, at := autoWait(test.every, test.backups, test.history, now)
+		wait, at := autoWait(test.every, test.backups.RestorePoints, test.backups.LatestRestorable, test.history, now)
 		if wait != test.wantWait || !at.Equal(test.wantAt) {
 			t.Errorf("%s: autoWait = %q %v, want %q %v", test.name, wait, at, test.wantWait, test.wantAt)
 		}
@@ -105,7 +104,7 @@ func TestRecordAutoBackup(t *testing.T) {
 			s.completeRun(run, runOutcome{errorCode: errorCode}, err)
 		}
 		expect := func(step string, failures [autoBackupLimit]time.Time, pausedUntil time.Time) {
-			got := s.runs.autoHistory["udid-1"]
+			got := s.runs.autoHistory[autoKey{"udid-1", runKindBackup}]
 			for i := range failures {
 				if !got.failures[i].Equal(failures[i]) {
 					t.Fatalf("%s: failures = %v, want %v", step, got.failures, failures)
@@ -132,7 +131,7 @@ func TestRecordAutoBackup(t *testing.T) {
 			failures[autoBackupLimit].Add(autoBackupPause))
 
 		finish(false, "")
-		if _, kept := s.runs.autoHistory["udid-1"]; kept {
+		if _, kept := s.runs.autoHistory[autoKey{"udid-1", runKindBackup}]; kept {
 			t.Fatal("success left a history behind")
 		}
 	})
@@ -194,39 +193,4 @@ func TestAutoBackupTriggerDwell(t *testing.T) {
 		<-done
 		firedAfter(autoBackupDwell, "after shutdown", 0)
 	})
-}
-
-func TestAutoBackupSettingsValidation(t *testing.T) {
-	window := func(start, end string) *AutoBackupWindow {
-		return &AutoBackupWindow{Start: start, End: end}
-	}
-	invalid := []struct {
-		settings AutoBackupSettings
-		code     string
-	}{
-		{AutoBackupSettings{Enabled: true, EveryDays: 2}, "invalid_auto_backup_interval"},
-		{AutoBackupSettings{EveryDays: 0}, "invalid_auto_backup_interval"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("19:00", "19:00")}, "invalid_auto_backup_window"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("24:00", "02:00")}, "invalid_auto_backup_window"},
-		{AutoBackupSettings{EveryDays: 1, Window: window("7pm", "11pm")}, "invalid_auto_backup_window"},
-	}
-	for _, test := range invalid {
-		_, err := autoBackupRow(test.settings)
-		if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != test.code {
-			t.Errorf("autoBackupRow(%+v) = %v, want %s", test.settings, err, test.code)
-		}
-	}
-
-	settings := AutoBackupSettings{Enabled: true, EveryDays: 3, Window: window("22:30", "01:15")}
-	row, err := autoBackupRow(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if *row.WindowStart != 22*60+30 || *row.WindowEnd != 75 {
-		t.Fatalf("stored window = %d–%d", *row.WindowStart, *row.WindowEnd)
-	}
-	back := autoBackupSettingsOf(row)
-	if back.Enabled != settings.Enabled || back.EveryDays != settings.EveryDays || *back.Window != *settings.Window {
-		t.Fatalf("round trip = %+v, want %+v", back, settings)
-	}
 }

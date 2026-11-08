@@ -101,6 +101,8 @@ type SourceSummary struct {
 	SourceUDID       string `db:"source_udid"`
 	RestorePoints    int    `db:"restore_points"`
 	LatestRestorable *int64 `db:"latest_restorable_at"`
+	LatestVerified   *int64 `db:"latest_verified_at"`
+	DamagedPoints    int    `db:"damaged_points"`
 	DiskBytes        *int64 `db:"disk_bytes"`
 	DeviceName       string `db:"device_name"`
 	ProductType      string `db:"product_type"`
@@ -111,13 +113,16 @@ type SourceSummary struct {
 func (r *BackupRepo) SummaryBySource(ctx context.Context) (map[string]SourceSummary, error) {
 	rows, err := listOf[SourceSummary](ctx, r.s.ext(), `
 		SELECT summary.source_udid, summary.restore_points,
-			summary.latest_restorable_at, summary.device_name,
+			summary.latest_restorable_at, summary.latest_verified_at, summary.damaged_points, summary.device_name,
 			summary.product_type, summary.ios_version, source.disk_bytes
 		FROM (
 			SELECT source_udid, device_name, product_type, ios_version,
 				COUNT(*) OVER (PARTITION BY source_udid) AS restore_points,
 				MAX(CASE WHEN damage = '' THEN created_at END)
 					OVER (PARTITION BY source_udid) AS latest_restorable_at,
+				MAX(verified_at) OVER (PARTITION BY source_udid) AS latest_verified_at,
+				COUNT(CASE WHEN damage != '' THEN 1 END)
+					OVER (PARTITION BY source_udid) AS damaged_points,
 				ROW_NUMBER() OVER (
 					PARTITION BY source_udid ORDER BY created_at DESC, id DESC
 				) AS rn

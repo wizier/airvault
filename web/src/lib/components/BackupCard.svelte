@@ -8,10 +8,17 @@
   import { restoreSourcesStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime } from '../format';
   import { now } from '../clock';
-  import { autoBackupStatus, blockedReason, cleanupStatus, lastBackupFailure, RUN_COPY, stageUi } from '../device-ui';
-  import AutoBackupModal from './AutoBackupModal.svelte';
+  import {
+    autoBackupStatus,
+    autoVerifyStatus,
+    blockedReason,
+    cleanupStatus,
+    lastBackupFailure,
+    RUN_COPY,
+    stageUi,
+  } from '../device-ui';
+  import AutomaticTasksModal from './AutomaticTasksModal.svelte';
   import BackupPasswordModal, { type PasswordMode } from './BackupPasswordModal.svelte';
-  import CleanupModal from './CleanupModal.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
@@ -80,10 +87,10 @@
   }
 
   let passwordMode = $state<PasswordMode | null>(null);
-  let autoBackupOpen = $state(false);
+  let tasksOpen = $state(false);
   const autoStatus = $derived(autoBackupStatus(device.autoBackup, $now));
-  let cleanupOpen = $state(false);
   const cleanupText = $derived(cleanupStatus(device.cleanup));
+  const verifyStatus = $derived(autoVerifyStatus(device.autoVerify, $now));
 
   $effect(() => restoreSourcesStore.start());
   const sources = $derived(restoreSourcesStore.data ?? []);
@@ -109,10 +116,30 @@
       .sort()
       .at(-1),
   );
+  // Stored data decays with time, while a backup mostly reuses objects already checked.
+  const VERIFIED_DAYS = 7;
+  // A scheduled check may wait for its window and, if unfinished, the next day's.
+  const SCHEDULE_GRACE_DAYS = 2;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const verifiedForDays = $derived(
+    device.autoVerify?.enabled ? device.autoVerify.everyDays + SCHEDULE_GRACE_DAYS : VERIFIED_DAYS,
+  );
+  const verifiedRecently = $derived(
+    lastVerified !== undefined && $now - new Date(lastVerified).getTime() < verifiedForDays * DAY_MS,
+  );
 </script>
 
 {#snippet onOff(on: boolean)}
   <Pill tone={on ? 'green' : 'slate'} dot>{on ? 'On' : 'Off'}</Pill>
+{/snippet}
+
+{#snippet taskRow(label: string, on: boolean, schedule?: string, next?: string, at?: string)}
+  <span class="text-xs font-medium">{label}</span>
+  <span>{@render onOff(on)}</span>
+  <span class="text-xs text-base-content/60">
+    {#if schedule}<span class="text-base-content/80">{schedule}</span>{/if}
+    {#if next}· <span title={at && formatDateTime(at)}>{next}</span>{/if}
+  </span>
 {/snippet}
 
 <div class="card bg-base-100 shadow-sm">
@@ -123,10 +150,12 @@
           Backup
           {#if damagedCount > 0}
             <Pill tone="red" dot>{damagedCount} damaged</Pill>
-          {:else if lastVerified}
+          {:else if lastVerified && verifiedRecently}
             <span class="tooltip" data-tip={`Integrity checked ${relativeTime(lastVerified, $now)}`}>
               <Pill tone="green" dot>Verified</Pill>
             </span>
+          {:else if lastVerified}
+            <Pill tone="slate" dot>Checked {relativeTime(lastVerified, $now)}</Pill>
           {/if}
         </h2>
         {#if live}
@@ -323,53 +352,19 @@
       {/if}
     </div>
 
-    <div class="flex flex-wrap items-center justify-between gap-3 border-t border-base-300 pt-4">
-      <div class="min-w-0">
-        <p class="flex items-center gap-2 text-sm font-semibold">
-          Automatic backup
-          {@render onOff(autoStatus !== null)}
-        </p>
-        {#if autoStatus}
-          <p class="mt-0.5 text-xs text-base-content/60">
-            <span class="text-base-content/80">{autoStatus.schedule}</span> ·
-            <span title={autoStatus.at && formatDateTime(autoStatus.at)}>{autoStatus.next}</span>
-          </p>
-        {:else}
-          <p class="mt-0.5 text-xs text-base-content/60">
-            Backs up shortly after the iPhone is unlocked at home; iOS asks for the passcode each time
-          </p>
-        {/if}
-      </div>
-      <button
-        type="button"
-        class="btn btn-ghost btn-sm"
-        disabled={!device.paired}
-        title={device.paired ? undefined : 'Pair the phone over USB first'}
-        onclick={() => (autoBackupOpen = true)}
-      >
-        <Icon name="clock" size={14} />
-        {autoStatus ? 'Change…' : 'Set up…'}
-      </button>
-    </div>
-
-    {#if device.cleanup}
-      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-base-300 pt-4">
-        <div class="min-w-0">
-          <p class="flex items-center gap-2 text-sm font-semibold">
-            Automatic cleanup
-            {@render onOff(cleanupText !== null)}
-          </p>
-          <p class="mt-0.5 text-xs text-base-content/60">
-            {#if cleanupText}
-              <span class="text-base-content/80">{cleanupText}</span>
-            {:else}
-              Every backup is kept; turn this on to thin out old ones
-            {/if}
-          </p>
+    {#if !device.orphaned}
+      <div class="flex flex-wrap items-start justify-between gap-3 border-t border-base-300 pt-4">
+        <div class="min-w-0 flex-1 basis-64">
+          <p class="text-sm font-semibold">Automatic tasks</p>
+          <div class="mt-1.5 grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
+            {@render taskRow('Backup', autoStatus !== null, autoStatus?.schedule, autoStatus?.next, autoStatus?.at)}
+            {@render taskRow('Cleanup', cleanupText !== null, cleanupText ?? undefined)}
+            {@render taskRow('Verification', verifyStatus !== null, verifyStatus?.schedule, verifyStatus?.next, verifyStatus?.at)}
+          </div>
         </div>
-        <button type="button" class="btn btn-ghost btn-sm" onclick={() => (cleanupOpen = true)}>
-          <Icon name="history" size={14} />
-          {cleanupText ? 'Change…' : 'Set up…'}
+        <button type="button" class="btn btn-ghost btn-sm" onclick={() => (tasksOpen = true)}>
+          <Icon name="clock" size={14} />
+          {autoStatus || cleanupText || verifyStatus ? 'Change…' : 'Set up…'}
         </button>
       </div>
     {/if}
@@ -397,19 +392,6 @@
 {#if passwordMode !== null}
   <BackupPasswordModal udid={device.udid} name={device.name} mode={passwordMode} onclose={() => (passwordMode = null)} />
 {/if}
-{#if autoBackupOpen}
-  <AutoBackupModal
-    udid={device.udid}
-    name={device.name}
-    current={device.autoBackup}
-    onclose={() => (autoBackupOpen = false)}
-  />
-{/if}
-{#if cleanupOpen}
-  <CleanupModal
-    udid={device.udid}
-    name={device.name}
-    current={device.cleanup}
-    onclose={() => (cleanupOpen = false)}
-  />
+{#if tasksOpen}
+  <AutomaticTasksModal {device} onclose={() => (tasksOpen = false)} />
 {/if}

@@ -3,39 +3,43 @@
   import { snapshotsReclaimable } from '../api/backups';
   import { errMsg } from '../api/client';
   import {
+    AUTO_BACKUP_PRESETS,
+    AUTO_VERIFY_PRESETS,
     CLEANUP_DAY_PRESETS,
     planCleanup,
-    setCleanup,
+    setAutomaticTasks,
+    type AutoBackupDays,
+    type AutoVerifyDays,
     type CleanupDays,
-    type CleanupSettings,
+    type Device,
     type ThinPeriod,
   } from '../api/devices';
-  import { CLEANUP_THIN } from '../device-ui';
+  import { AUTO_BACKUP_EVERY, AUTO_VERIFY_EVERY, CLEANUP_THIN } from '../device-ui';
   import { errorText } from '../error-text';
   import { formatBytes } from '../format';
   import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
   import { Submit } from '../submit.svelte';
+  import AutomaticTask from './AutomaticTask.svelte';
   import CleanupTimeline from './CleanupTimeline.svelte';
   import ErrorLine from './ErrorLine.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import ScheduleFields, { scheduleForm, scheduleSettings, windowInvalid } from './ScheduleFields.svelte';
 
-  let { udid, name, current, onclose }: {
-    udid: string;
-    name: string;
-    /** The settings this open starts from; the modal mounts fresh per open. */
-    current: CleanupSettings | undefined;
-    onclose: () => void;
-  } = $props();
+  let { device, onclose }: { device: Device; onclose: () => void } = $props();
 
   let modal: Modal;
   // Seeded once from the settings at open: a refetch must not reset the form.
-  const initial = untrack(() => current);
-  // Both "Set up…" and "Change…" open it meaning to have it on.
-  let enabled = $state(true);
-  let keepDays = $state<CleanupDays>(initial?.keepDays ?? 14);
-  let thin = $state<ThinPeriod>(initial?.thin ?? 'month');
-  const submit = new Submit('cleanup_save_failed');
+  const { udid, name, paired, autoBackup, cleanup, autoVerify } = untrack(() => device);
+
+  let backup = $state(scheduleForm<AutoBackupDays>(autoBackup, { everyDays: 1, start: '19:00', end: '23:00' }));
+  let verify = $state(scheduleForm<AutoVerifyDays>(autoVerify, { everyDays: 7, start: '02:00', end: '06:00' }));
+
+  let cleanupOn = $state(cleanup?.enabled ?? false);
+  let keepDays = $state<CleanupDays>(cleanup?.keepDays ?? 14);
+  let thin = $state<ThinPeriod>(cleanup?.thin ?? 'month');
+
+  const submit = new Submit('automatic_tasks_save_failed');
 
   const points = $derived(restorePointResources.for(udid));
   $effect(() => points.start());
@@ -46,7 +50,7 @@
   let planning = $state(false);
   let planError = $state<string | null>(null);
   $effect(() => {
-    if (!enabled) return;
+    if (!cleanupOn) return;
     const ctrl = new AbortController();
     planning = true;
     planError = null;
@@ -63,6 +67,7 @@
 
   // Listed points only: the list may have moved on since the plan.
   const removing = $derived.by(() => {
+    if (!cleanupOn) return [];
     const planned = new Set(plan);
     return listed.filter((point) => planned.has(point.snapshotId)).map((point) => point.snapshotId);
   });
@@ -84,9 +89,24 @@
   const busy = $derived(submit.busy || deleting);
 
   async function save() {
-    const ids = enabled ? removing : [];
+    if (windowInvalid(backup) || windowInvalid(verify)) {
+      submit.code = 'invalid_auto_window';
+      return;
+    }
+    const ids = removing;
     deleteError = null;
-    if (!(await submit.run((signal) => setCleanup(udid, { enabled, keepDays, thin }, signal)))) return;
+    const saved = await submit.run((signal) =>
+      setAutomaticTasks(
+        udid,
+        {
+          autoBackup: scheduleSettings(backup),
+          cleanup: { enabled: cleanupOn, keepDays, thin },
+          autoVerify: scheduleSettings(verify),
+        },
+        signal,
+      ),
+    );
+    if (!saved) return;
     if (ids.length > 0) {
       deleting = true;
       try {
@@ -102,26 +122,38 @@
   }
 </script>
 
-<Modal bind:this={modal} title={`Automatic cleanup of ${name}`} locked={busy} {onclose}>
-  <div class="flex flex-col gap-4 py-3">
-    <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">
-      <input type="checkbox" class="checkbox checkbox-sm" bind:checked={enabled} disabled={busy} />
-      <span class="whitespace-normal text-sm leading-snug">
-        <span>Remove old backups automatically</span>
-        <span class="mt-0.5 block text-xs text-base-content/60">
-          Runs after each backup. Damaged backups are never removed.
-        </span>
-      </span>
-    </label>
+<Modal bind:this={modal} title={`Automatic tasks of ${name}`} size="medium" locked={busy} {onclose}>
+  <div class="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 py-3 outline-none">
+    <AutomaticTask
+      title="Back up automatically"
+      hint={paired
+        ? 'Starts when you unlock the iPhone at home on Wi-Fi. iOS asks for the passcode each time. An ignored prompt pauses it for an hour, at most three tries a day.'
+        : 'Pair the phone over USB first'}
+      bind:on={backup.on}
+      disabled={busy || !paired}
+    >
+      <ScheduleFields
+        presets={AUTO_BACKUP_PRESETS}
+        labels={AUTO_BACKUP_EVERY}
+        bind:form={backup}
+        timeZone={autoBackup?.timeZone}
+        disabled={busy || !paired}
+      />
+    </AutomaticTask>
 
-    <div class="flex flex-col gap-3 text-sm" class:opacity-50={!enabled}>
+    <AutomaticTask
+      title="Remove old backups automatically"
+      hint="Runs after each backup. Damaged backups are never removed."
+      bind:on={cleanupOn}
+      disabled={busy}
+    >
       <div class="flex flex-col gap-1">
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span>Keep every backup from the last</span>
           <select
             class="select select-sm w-20"
             bind:value={keepDays}
-            disabled={!enabled || busy}
+            disabled={busy}
             aria-label="How many of the last days to keep every backup from"
           >
             {#each CLEANUP_DAY_PRESETS as count (count)}
@@ -139,7 +171,7 @@
           <select
             class="select select-sm w-44"
             bind:value={thin}
-            disabled={!enabled || busy}
+            disabled={busy}
             aria-label="What to keep of older backups"
           >
             {#each Object.entries(CLEANUP_THIN) as [period, copy] (period)}
@@ -149,9 +181,7 @@
         </div>
         <p class="text-xs text-base-content/60">{CLEANUP_THIN[thin].hint}</p>
       </div>
-    </div>
 
-    {#if enabled}
       {#if planError}
         <ErrorLine error={planError} size="xs" />
       {:else if plan === null || !points.ready}
@@ -162,7 +192,7 @@
       {:else if listed.length > 0}
         <div class="flex flex-col gap-2 transition-opacity" class:opacity-60={planning}>
           <CleanupTimeline points={listed} {remove} />
-          <p class="flex items-start gap-1.5 text-sm">
+          <p class="flex items-start gap-1.5">
             <Icon name="info" size={14} class="mt-0.5 shrink-0" />
             {#if removing.length === 0}
               <span>Nothing to remove yet: all {listed.length} backups stay.</span>
@@ -179,25 +209,40 @@
           </p>
         </div>
       {/if}
-    {/if}
+    </AutomaticTask>
+
+    <AutomaticTask
+      title="Check integrity automatically"
+      hint="Reads every stored file; the phone isn't needed. While it runs, this phone can't back up, restore or download, and you can cancel it. It may run past the window, and an unfinished check tries again the next day."
+      bind:on={verify.on}
+      disabled={busy}
+    >
+      <ScheduleFields
+        presets={AUTO_VERIFY_PRESETS}
+        labels={AUTO_VERIFY_EVERY}
+        bind:form={verify}
+        timeZone={autoVerify?.timeZone}
+        disabled={busy}
+      />
+    </AutomaticTask>
   </div>
 
-  <ErrorLine error={submit.failure ?? deleteError} className="mt-1" />
+  <ErrorLine error={submit.failure ?? deleteError} className="mt-1 shrink-0" />
 
   {#snippet actions()}
     <button type="button" class="btn btn-ghost" disabled={busy} onclick={() => modal.close()}>Cancel</button>
     <button
       type="button"
-      class={`btn ${enabled && removing.length > 0 ? 'btn-error' : 'btn-primary'}`}
-      disabled={busy || (enabled && (planning || plan === null) && !planError)}
+      class={`btn ${removing.length > 0 ? 'btn-error' : 'btn-primary'}`}
+      disabled={busy || (cleanupOn && (planning || plan === null) && !planError)}
       onclick={save}
     >
       {#if busy}
         <span class="loading loading-spinner loading-xs"></span>
         {deleting ? 'Removing…' : 'Saving…'}
       {:else}
-        <Icon name="history" size={15} />
-        {enabled && removing.length > 0 ? `Save and remove ${removing.length}` : 'Save'}
+        <Icon name="clock" size={15} />
+        {removing.length > 0 ? `Save and remove ${removing.length}` : 'Save'}
       {/if}
     </button>
   {/snippet}

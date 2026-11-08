@@ -22,39 +22,44 @@ export interface Device {
   /** Unique object payload referenced by all restore points. */
   diskBytes?: number;
   restorePoints?: number;
+  damagedPoints?: number;
   /** Restore points exist on disk but the phone is no longer registered. */
   orphaned?: boolean;
-  /** autoBackup and cleanup are absent for orphaned sources, which have no
-   *  settings. */
-  autoBackup?: AutoBackupState;
+  /** autoBackup, cleanup and autoVerify are absent for orphaned sources, which
+   *  have no settings. */
+  autoBackup?: ScheduleState<AutoBackupDays>;
   cleanup?: CleanupSettings;
+  autoVerify?: ScheduleState<AutoVerifyDays>;
 }
 
 export const AUTO_BACKUP_PRESETS = [1, 3, 7] as const;
 export type AutoBackupDays = (typeof AUTO_BACKUP_PRESETS)[number];
 
+export const AUTO_VERIFY_PRESETS = [7, 14, 30] as const;
+export type AutoVerifyDays = (typeof AUTO_VERIFY_PRESETS)[number];
+
 /** A daily span of the server's time, which may cross midnight. */
-export interface AutoBackupWindow {
+export interface AutoWindow {
   /** "HH:MM" in the server's zone. */
   start: string;
   end: string;
 }
 
-export interface AutoBackupSettings {
+export interface ScheduleSettings<Days extends number> {
   enabled: boolean;
-  everyDays: AutoBackupDays;
-  window?: AutoBackupWindow;
+  everyDays: Days;
+  window?: AutoWindow;
 }
 
-/** Why the next automatic backup can't start yet. */
-export type AutoBackupWait = 'first_backup' | 'schedule' | 'paused' | 'limit';
+/** Why the next run of a scheduled task can't start yet. */
+export type ScheduleWait = 'first_backup' | 'schedule' | 'paused' | 'limit';
 
-export interface AutoBackupState extends AutoBackupSettings {
+export interface ScheduleState<Days extends number> extends ScheduleSettings<Days> {
   /** The server's zone (TZ) the window is read in. */
   timeZone: string;
-  /** Only while enabled; absent when the next unlock (inside the window)
-   *  starts a backup. */
-  wait?: AutoBackupWait;
+  /** Only while enabled; absent when only the window and the task's own trigger
+   *  hold it. */
+  wait?: ScheduleWait;
   notBefore?: string;
 }
 
@@ -68,6 +73,12 @@ export interface CleanupSettings {
   enabled: boolean;
   keepDays: CleanupDays;
   thin: ThinPeriod;
+}
+
+export interface AutomaticTasks {
+  autoBackup: ScheduleSettings<AutoBackupDays>;
+  cleanup: CleanupSettings;
+  autoVerify: ScheduleSettings<AutoVerifyDays>;
 }
 
 export interface BatteryState {
@@ -143,17 +154,9 @@ export async function changeBackupPassword(
   });
 }
 
-export async function setAutoBackup(
-  udid: string,
-  settings: AutoBackupSettings,
-  signal?: AbortSignal,
-): Promise<void> {
-  await request<void>(`${devicePath(udid)}/auto-backup`, { method: 'PUT', body: settings, signal });
-}
-
-/** Each backup of the phone applies the settings. */
-export async function setCleanup(udid: string, settings: CleanupSettings, signal?: AbortSignal): Promise<void> {
-  await request<void>(`${devicePath(udid)}/cleanup`, { method: 'PUT', body: settings, signal });
+/** All of them or none are saved. Each backup of the phone applies the cleanup settings. */
+export async function setAutomaticTasks(udid: string, tasks: AutomaticTasks, signal?: AbortSignal): Promise<void> {
+  await request<void>(`${devicePath(udid)}/automatic-tasks`, { method: 'PUT', body: tasks, signal });
 }
 
 /** The restore points cleanup with these settings would remove now. */

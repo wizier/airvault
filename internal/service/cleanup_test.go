@@ -203,7 +203,8 @@ func TestCleanupAfterBackupReadsTheSettings(t *testing.T) {
 	if remove := svc.cleanupAfterBackup(ctx, udid, points); len(remove) != 0 {
 		t.Fatalf("cleanup that is off removes %v", remove)
 	}
-	if err := svc.store.Device.SetCleanup(ctx, udid, model.Cleanup{Enabled: true, KeepDays: 7, Thin: string(ThinNone)}); err != nil {
+	tasks := model.AutomaticTasks{Cleanup: model.Cleanup{Enabled: true, KeepDays: 7, Thin: string(ThinNone)}}
+	if err := svc.store.Device.SetAutomaticTasks(ctx, udid, tasks); err != nil {
 		t.Fatal(err)
 	}
 	if got := kept(points, svc.cleanupAfterBackup(ctx, udid, points)); len(got) != 7 {

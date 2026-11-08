@@ -63,9 +63,13 @@ func TestLastRunErrorLifecycle(t *testing.T) {
 	}
 
 	s.runs.lastError["udid-1"][runKindVerify] = "backup_integrity_failed"
+	s.runs.autoHistory[autoKey{"udid-1", runKindVerify}] = autoHistory{}
 	s.runs.forget("udid-1")
 	if got := s.runs.lastErrors("udid-1"); got != nil {
 		t.Fatalf("after clearing lastRunErrors = %v, want none of any kind", got)
+	}
+	if len(s.runs.autoHistory) != 0 {
+		t.Fatalf("after clearing autoHistory = %v, want none of any kind", s.runs.autoHistory)
 	}
 }
 

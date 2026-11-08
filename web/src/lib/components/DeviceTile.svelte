@@ -102,17 +102,20 @@
             {/if}
           </div>
         {:else}
-          <div class="flex items-center justify-between gap-3 text-primary">
+          <div class="flex min-h-5 items-center justify-between gap-3 text-primary">
             <span class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide">
               <Icon name="backup" size={14} stroke={2} />
               Last backup
             </span>
             <span class="flex items-center gap-1.5">
+              {#if device.damagedPoints}
+                <Pill tone="red" dot>{device.damagedPoints} damaged</Pill>
+              {/if}
               {#if lastFailure}
                 <span class="tooltip tooltip-left tooltip-error" data-tip={lastFailure}>
                   <Icon name="alert" size={15} stroke={2} class="text-error" />
                 </span>
-              {:else if device.lastBackup}
+              {:else if device.lastBackup && !device.damagedPoints}
                 <Icon name="check" size={15} stroke={2} class="text-success" />
               {/if}
               {@render encryptionLock()}

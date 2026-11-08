@@ -198,6 +198,7 @@ export async function deleteAllBackups(device: Device): Promise<void> {
     ...d,
     diskBytes: undefined,
     restorePoints: undefined,
+    damagedPoints: undefined,
     lastBackup: undefined,
     lastRunErrors: undefined,
   }));

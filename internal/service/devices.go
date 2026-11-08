@@ -33,10 +33,12 @@ type DeviceOverview struct {
 	// Live objects plus published manifests; nil means unknown.
 	DiskBytes     *int64 `json:"diskBytes,omitempty"`
 	RestorePoints int    `json:"restorePoints,omitempty"`
-	// AutoBackup and Cleanup are absent for orphaned sources, which have no
-	// settings.
-	AutoBackup *AutoBackupView  `json:"autoBackup,omitempty"`
+	DamagedPoints int    `json:"damagedPoints,omitempty"`
+	// AutoBackup, Cleanup and AutoVerify are absent for orphaned sources, which
+	// have no settings.
+	AutoBackup *ScheduleView    `json:"autoBackup,omitempty"`
 	Cleanup    *CleanupSettings `json:"cleanup,omitempty"`
+	AutoVerify *ScheduleView    `json:"autoVerify,omitempty"`
 	// Orphaned marks a source with restore points on disk but no registry row —
 	// its phone was removed while the backups stayed.
 	Orphaned bool `json:"orphaned,omitempty"`
@@ -109,9 +111,11 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 			ov.LastBackup = optionalTime(gs.LatestRestorable)
 			ov.DiskBytes = gs.DiskBytes
 			ov.RestorePoints = gs.RestorePoints
+			ov.DamagedPoints = gs.DamagedPoints
 		}
-		ov.AutoBackup = s.autoBackupView(d, summary[d.UDID], now)
+		ov.AutoBackup = s.scheduleView(runKindBackup, d.UDID, d.AutoBackup, summary[d.UDID], now)
 		ov.Cleanup = new(cleanupSettingsOf(d.Cleanup))
+		ov.AutoVerify = s.scheduleView(runKindVerify, d.UDID, d.AutoVerify, summary[d.UDID], now)
 		out = append(out, ov)
 	}
 	// SQLite's device registry is disposable. A source rebuilt from manifests
@@ -124,7 +128,8 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 			UDID: source, Name: cmp.Or(stored.DeviceName, source), Connection: "offline",
 			ProductType: stored.ProductType, IOSVersion: stored.IOSVersion,
 			LastBackup: optionalTime(stored.LatestRestorable),
-			DiskBytes:  stored.DiskBytes, RestorePoints: stored.RestorePoints, Orphaned: true,
+			DiskBytes:  stored.DiskBytes, RestorePoints: stored.RestorePoints,
+			DamagedPoints: stored.DamagedPoints, Orphaned: true,
 		})
 	}
 	slices.SortFunc(out, func(a, b DeviceOverview) int { return cmp.Compare(a.UDID, b.UDID) })

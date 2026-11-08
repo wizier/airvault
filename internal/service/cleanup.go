@@ -78,19 +78,6 @@ func prunable(points []model.Backup, settings CleanupSettings, open func(id stri
 	return remove
 }
 
-// SetCleanup stores the phone's cleanup settings; its next backup applies them.
-func (s *Service) SetCleanup(ctx context.Context, udid string, settings CleanupSettings) error {
-	row, err := cleanupRow(settings)
-	if err != nil {
-		return err
-	}
-	if err := s.store.Device.SetCleanup(ctx, udid, row); err != nil {
-		return err
-	}
-	s.bus.Emit(deviceUpdated(udid))
-	return nil
-}
-
 // PlanCleanup lists the restore points settings would remove now, enabled or
 // not. It reads the catalog alone, so it answers at once.
 func (s *Service) PlanCleanup(ctx context.Context, udid string, settings CleanupSettings) ([]string, error) {
@@ -112,10 +99,11 @@ func (s *Service) cleanupAfterBackup(ctx context.Context, udid string, points []
 		slog.WarnContext(ctx, "cleanup: deferred to the next backup", "udid", udid, "error", err)
 		return nil
 	}
-	if !device.Cleanup.Enabled {
+	cleanup := device.Cleanup
+	if !cleanup.Enabled {
 		return nil
 	}
-	remove := prunable(points, cleanupSettingsOf(device.Cleanup), s.unlocked.has, time.Local)
+	remove := prunable(points, cleanupSettingsOf(cleanup), s.unlocked.has, time.Local)
 	s.unlocked.closeIf(func(b *unlockedBackup) bool { return slices.Contains(remove, b.snapshotID) })
 	return remove
 }

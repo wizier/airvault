@@ -10,17 +10,14 @@ type Device struct {
 	Paired      bool   `db:"paired"`
 	Encrypted   bool   `db:"encrypted"`
 	LastSeenAt  *int64 `db:"last_seen_at"`
-	AutoBackup
-	Cleanup
+	AutomaticTasks
 }
 
-// The window is minutes after midnight in the server's zone (TZ) and may cross
-// midnight; nil means any time.
-type AutoBackup struct {
-	Enabled     bool   `db:"auto_backup"`
-	Days        int    `db:"auto_backup_days"`
-	WindowStart *int64 `db:"auto_backup_window_start"`
-	WindowEnd   *int64 `db:"auto_backup_window_end"`
+// The schedules are rows of device_schedules, which DeviceRepo reads in.
+type AutomaticTasks struct {
+	Cleanup
+	AutoBackup Schedule `db:"-"`
+	AutoVerify Schedule `db:"-"`
 }
 
 // Restore points of the last KeepDays days, counted back from the latest
@@ -30,6 +27,15 @@ type Cleanup struct {
 	Enabled  bool   `db:"cleanup"`
 	KeepDays int    `db:"cleanup_keep_days"`
 	Thin     string `db:"cleanup_thin"`
+}
+
+// The window is minutes after midnight in the server's zone (TZ) and may cross
+// midnight; nil means any time.
+type Schedule struct {
+	Enabled     bool   `db:"enabled"`
+	Days        int    `db:"days"`
+	WindowStart *int64 `db:"window_start"`
+	WindowEnd   *int64 `db:"window_end"`
 }
 
 // SourceUDID survives device deletion; CreatedAt is the authoritative time.

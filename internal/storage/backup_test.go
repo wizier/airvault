@@ -66,3 +66,41 @@ func TestSummaryLatestSkipsDamage(t *testing.T) {
 		t.Fatalf("summary = %+v", s)
 	}
 }
+
+// The summary's last check is the source's newest one, and its damage counts only
+// its own damaged restore points.
+func TestSummaryVerifiedAndDamage(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	const otherSource = "testphoneudid0002"
+	rows := []model.Backup{
+		{ID: "eeeeeeee-0000-4000-8000-000000000001", SourceUDID: testSource, CreatedAt: 1_700_000_000},
+		{ID: "eeeeeeee-0000-4000-8000-000000000002", SourceUDID: testSource, CreatedAt: 1_700_000_001, Damage: "files_missing"},
+		{ID: "eeeeeeee-0000-4000-8000-000000000003", SourceUDID: otherSource, CreatedAt: 1_700_000_002},
+	}
+	for _, row := range rows {
+		if err := store.Backup.InsertSnapshot(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const checkedAt = int64(1_700_000_100)
+	if err := store.Backup.MarkVerified(ctx, testSource, checkedAt); err != nil {
+		t.Fatal(err)
+	}
+	// A backup published after the check has none of its own.
+	if err := store.Backup.InsertSnapshot(ctx, model.Backup{ID: "eeeeeeee-0000-4000-8000-000000000004",
+		SourceUDID: testSource, CreatedAt: 1_700_000_200}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := store.Backup.SummaryBySource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := summary[testSource]
+	if checked.LatestVerified == nil || *checked.LatestVerified != checkedAt || checked.DamagedPoints != 1 {
+		t.Fatalf("checked source summary = %+v", checked)
+	}
+	if other := summary[otherSource]; other.LatestVerified != nil || other.DamagedPoints != 0 {
+		t.Fatalf("other source summary = %+v", other)
+	}
+}

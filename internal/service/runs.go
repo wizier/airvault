@@ -45,12 +45,12 @@ type runRegistry struct {
 	bus         *events.Bus
 	active      map[string]*activeRun
 	lastError   map[string]map[runKind]string
-	autoHistory map[string]autoHistory
+	autoHistory map[autoKey]autoHistory
 }
 
 func newRunRegistry(bus *events.Bus) *runRegistry {
 	return &runRegistry{bus: bus, active: map[string]*activeRun{},
-		lastError: map[string]map[runKind]string{}, autoHistory: map[string]autoHistory{}}
+		lastError: map[string]map[runKind]string{}, autoHistory: map[autoKey]autoHistory{}}
 }
 
 // From here the run is visible to Running(), progress and cancellation, and it
@@ -90,6 +90,9 @@ func (r *runRegistry) hide(run *runReservation, state runState, errorCode string
 	if run.kind == runKindBackup {
 		r.recordAutoBackup(run, state, errorCode, time.Now())
 	}
+	if run.kind == runKindVerify {
+		r.recordAutoVerify(run, state, time.Now())
+	}
 	r.mu.Unlock()
 }
 
@@ -112,7 +115,8 @@ func (r *runRegistry) lastErrors(udid string) map[runKind]string {
 func (r *runRegistry) forget(udid string) {
 	r.mu.Lock()
 	delete(r.lastError, udid)
-	delete(r.autoHistory, udid)
+	delete(r.autoHistory, autoKey{udid, runKindBackup})
+	delete(r.autoHistory, autoKey{udid, runKindVerify})
 	r.mu.Unlock()
 }
 

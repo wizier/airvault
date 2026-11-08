@@ -1,11 +1,14 @@
 import type { RunKind, RunningProgress, RunStage } from './api/backups';
 import type {
   AutoBackupDays,
-  AutoBackupState,
+  AutoVerifyDays,
+  AutoWindow,
   BatteryState,
   CleanupSettings,
   Connection,
   Device,
+  ScheduleState,
+  ScheduleWait,
   ThinPeriod,
 } from './api/devices';
 import type { IconName } from './components/icons';
@@ -37,38 +40,75 @@ export const AUTO_BACKUP_EVERY: Record<AutoBackupDays, string> = {
   7: 'Every week',
 };
 
-/** The automatic-backup schedule and when the next one can start (`at` is
- *  that moment, if any); null when automatic backups are off. */
-export function autoBackupStatus(
-  auto: AutoBackupState | undefined,
+export const AUTO_VERIFY_EVERY: Record<AutoVerifyDays, string> = {
+  7: 'Every week',
+  14: 'Every 2 weeks',
+  30: 'Every month',
+};
+
+function scheduleText(every: string, window: AutoWindow | undefined, timeZone: string): string {
+  if (!window) return every;
+  const zone = timeZone === browserTimeZone() ? '' : ` (${timeZone})`;
+  return `${every}, ${window.start}–${window.end}${zone}`;
+}
+
+interface ScheduleCopy {
+  firstBackup: string;
+  /** What a wait until a given moment says, other than the schedule's own. */
+  held: Partial<Record<ScheduleWait, string>>;
+  due: (window: AutoWindow | undefined) => string;
+}
+
+/** A task's schedule and when its next run can start (`at` is that moment, if
+ *  any); null while the task is off. */
+function scheduleStatus<Days extends number>(
+  auto: ScheduleState<Days> | undefined,
+  every: Record<Days, string>,
+  copy: ScheduleCopy,
   now: number,
 ): { schedule: string; next: string; at?: string } | null {
   if (!auto?.enabled) return null;
-  const window = auto.window;
-  let schedule = AUTO_BACKUP_EVERY[auto.everyDays];
-  if (window) {
-    schedule += `, ${window.start}–${window.end}`;
-    if (auto.timeZone !== browserTimeZone()) schedule += ` (${auto.timeZone})`;
-  }
-  if (auto.wait === 'first_backup') {
-    return { schedule, next: 'Starts after the first backup — run it with Back up now' };
-  }
+  const schedule = scheduleText(every[auto.everyDays], auto.window, auto.timeZone);
+  if (auto.wait === 'first_backup') return { schedule, next: copy.firstBackup };
   // The projection is as old as the last device refetch; a wait that has run
   // out since then is over.
   const at = auto.notBefore;
   if (at && new Date(at).getTime() > now) {
     const when = relativeTime(at, now);
-    switch (auto.wait) {
-      case 'paused':
-        return { schedule, at, next: `Paused after an unfinished attempt — resumes ${when}` };
-      case 'limit':
-        return { schedule, at, next: `Paused after repeated unfinished attempts — resumes ${when}` };
-      case 'schedule':
-        return { schedule, at, next: `Next ${when}` };
-    }
+    const held = auto.wait && copy.held[auto.wait];
+    return { schedule, at, next: held ? `${held} — resumes ${when}` : `Next ${when}` };
   }
-  const inWindow = window ? ` between ${window.start} and ${window.end}` : '';
-  return { schedule, next: `Due — starts on the next unlock at home${inWindow}` };
+  return { schedule, next: copy.due(auto.window) };
+}
+
+export function autoBackupStatus(auto: ScheduleState<AutoBackupDays> | undefined, now: number) {
+  return scheduleStatus(
+    auto,
+    AUTO_BACKUP_EVERY,
+    {
+      firstBackup: 'Starts after the first backup — run it with Back up now',
+      held: {
+        paused: 'Paused after an unfinished attempt',
+        limit: 'Paused after repeated unfinished attempts',
+      },
+      due: (window) =>
+        `Due — starts on the next unlock at home${window ? ` between ${window.start} and ${window.end}` : ''}`,
+    },
+    now,
+  );
+}
+
+export function autoVerifyStatus(auto: ScheduleState<AutoVerifyDays> | undefined, now: number) {
+  return scheduleStatus(
+    auto,
+    AUTO_VERIFY_EVERY,
+    {
+      firstBackup: 'Starts after the first backup',
+      held: { paused: 'Paused after an unfinished check' },
+      due: (window) => (window ? `Due — starts between ${window.start} and ${window.end}` : 'Due — starts shortly'),
+    },
+    now,
+  );
 }
 
 export const CLEANUP_THIN: Record<ThinPeriod, { label: string; hint: string }> = {

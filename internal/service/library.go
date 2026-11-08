@@ -101,10 +101,15 @@ func (s *Service) StartVerify(ctx context.Context, udid string) (string, error) 
 	if domain.ValidateSource(udid) != nil {
 		return "", &domain.ValidationError{Code: "invalid_udid", Message: "a valid udid is required"}
 	}
+	return s.startVerify(udid, false)
+}
+
+func (s *Service) startVerify(udid string, auto bool) (string, error) {
 	run, err := s.reserveRun(runKindVerify, udid, snapshotWriteResource(udid))
 	if err != nil {
 		return "", err
 	}
+	run.auto = auto
 	if err := s.runs.announce(run, StageVerifying); err != nil {
 		s.discardRun(run)
 		return "", err

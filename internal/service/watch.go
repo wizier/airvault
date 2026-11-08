@@ -12,6 +12,7 @@ import (
 // the metadata refresh.
 func (s *Service) StartWatch(ctx context.Context) {
 	s.wg.Go(func() { s.runAutoBackupTrigger(ctx, s.fireAutoBackup) })
+	s.wg.Go(func() { s.runAutoVerifyTrigger(ctx) })
 	// The refresh worker owns every metadata pass, so lockdown discovers never
 	// overlap.
 	s.wg.Go(func() {
