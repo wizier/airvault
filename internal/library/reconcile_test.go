@@ -19,7 +19,7 @@ func TestReconcileDiscardsAnUnpublishedAttempt(t *testing.T) {
 	stagingDir := writeUnpublishedStaging(t, root, source)
 	reconcile(t, lib)
 
-	if base, err := lib.LatestBase(context.Background(), source); base != nil || err != nil {
+	if base, err := lib.LatestBase(context.Background(), source, false); base != nil || err != nil {
 		t.Fatalf("LatestBase = %v, %v; want none", base, err)
 	}
 	requireNotCataloged(t, lib, testSnapshot)
@@ -38,7 +38,7 @@ func TestReconcileRecoversAPublishedAttempt(t *testing.T) {
 	}
 	reconcile(t, lib)
 
-	if base, err := lib.LatestBase(context.Background(), source); err != nil || base == nil || base.ID() != testSnapshot {
+	if base, err := lib.LatestBase(context.Background(), source, false); err != nil || base == nil || base.ID() != testSnapshot {
 		t.Fatalf("LatestBase = %v, %v; want %s", base, err, testSnapshot)
 	}
 	requireAbsent(t, stagingDir)

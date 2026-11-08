@@ -15,10 +15,10 @@ import (
 // A backup enters the library in three steps: Begin a snapshot on top of
 // LatestBase, let the device fill and seal it, then Publish it or Discard it.
 
-// LatestBase is the newest undamaged restore point that opens, nil for a full
-// backup when none is undamaged: the device never resends what it believes the
-// base holds. When none opens the backup fails rather than silently go full.
-func (l *Library) LatestBase(ctx context.Context, source string) (*iosbackup.Backup, error) {
+// LatestBase is the newest undamaged restore point that opens, nil for a full backup when none is undamaged
+// or its encryption differs from the device's: whatever the device doesn't resend stays as the base holds it.
+// When none opens the backup fails rather than silently go full.
+func (l *Library) LatestBase(ctx context.Context, source string, encrypted bool) (*iosbackup.Backup, error) {
 	snapshots, err := l.catalog.Backup.ListCompleteBySource(ctx, source)
 	if err != nil {
 		return nil, err
@@ -29,15 +29,20 @@ func (l *Library) LatestBase(ctx context.Context, source string) (*iosbackup.Bac
 	}
 	for _, snapshot := range snapshots {
 		view, err := l.objects.OpenSnapshot(source, snapshot.ID)
+		var base *iosbackup.Backup
 		if err == nil {
-			var backup *iosbackup.Backup
-			if backup, err = iosbackup.Open(view); err == nil {
-				return backup, nil
-			}
+			base, err = iosbackup.Open(view)
 		}
-		slog.WarnContext(ctx, "backup snapshot is not usable as an incremental base",
-			"snapshot_id", snapshot.ID, "source", source, "error", err)
-		l.NoticeDamage(ctx, source, err)
+		if err != nil {
+			slog.WarnContext(ctx, "backup snapshot is not usable as an incremental base",
+				"snapshot_id", snapshot.ID, "source", source, "error", err)
+			l.NoticeDamage(ctx, source, err)
+			continue
+		}
+		if base.Encrypted != encrypted {
+			return nil, nil
+		}
+		return base, nil
 	}
 	return nil, errors.New("no complete backup snapshot is usable as an incremental base")
 }

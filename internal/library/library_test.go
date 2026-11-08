@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,7 +115,7 @@ func TestPublishListsTheRestorePoint(t *testing.T) {
 		t.Fatalf("footprint = %v, want %d", got, want)
 	}
 	requireAbsent(t, dropped)
-	if base, err := lib.LatestBase(ctx, source); err != nil || base == nil || base.ID() != testSnapshot {
+	if base, err := lib.LatestBase(ctx, source, false); err != nil || base == nil || base.ID() != testSnapshot {
 		t.Fatalf("LatestBase = %v, %v", base, err)
 	}
 }
@@ -203,5 +204,38 @@ func TestOpenTellsMissingFromIncomplete(t *testing.T) {
 	_, err = lib.Open(ctx, testSnapshot)
 	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "backup_damaged" {
 		t.Fatalf("after the damaged read: %v, want backup_damaged", err)
+	}
+}
+
+// A restore point encrypted otherwise than the device now is can't be the base
+// of its next backup, which then starts full.
+func TestLatestBaseFollowsTheDeviceEncryption(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		baseEncrypted   bool
+		deviceEncrypted bool
+		wantBase        bool
+	}{
+		{"unencrypted", false, false, true},
+		{"encrypted", true, true, true},
+		{"encryption turned on", false, true, false},
+		{"encryption turned off", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lib, root := newTestLibrary(t)
+			const source = "testphoneudid0064"
+			files := maps.Clone(fixtureFiles)
+			if tc.baseEncrypted {
+				files["Manifest.plist"] = strings.Replace(files["Manifest.plist"],
+					"<key>IsEncrypted</key><false/>", "<key>IsEncrypted</key><true/>", 1)
+			}
+			publishFiles(t, lib, root, source, testSnapshot, files)
+			reconcile(t, lib)
+
+			base, err := lib.LatestBase(t.Context(), source, tc.deviceEncrypted)
+			if err != nil || (base != nil) != tc.wantBase {
+				t.Fatalf("LatestBase = %v, %v; want a base: %v", base, err, tc.wantBase)
+			}
+		})
 	}
 }

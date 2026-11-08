@@ -70,7 +70,8 @@
   {#if mode === 'enable'}
     <p class="py-3 text-sm text-base-content/70">
       Encrypted backups include saved passwords, Wi-Fi, call history and Health data. The password
-      lives on the phone and protects every future backup.
+      lives on the phone and protects every future backup. The next backup is a full one; earlier
+      backups stay unencrypted.
     </p>
     <Alert tone="warning" class="text-sm">
       <span class="font-medium">The password cannot be recovered.</span> Without it you can't
@@ -79,7 +80,8 @@
   {:else if mode === 'disable'}
     <p class="py-3 text-sm text-base-content/70">
       Future backups will no longer include saved passwords, Wi-Fi, call history and Health data.
-      You need the current password to turn encryption off.
+      The next backup is a full one; earlier backups stay encrypted. You need the current password
+      to turn encryption off.
     </p>
   {:else}
     <p class="py-3 text-sm text-base-content/70">

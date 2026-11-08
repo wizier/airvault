@@ -154,7 +154,7 @@ func TestCollectMarksRestorePointsMissingObjects(t *testing.T) {
 	}
 	requireBase := func(want string) {
 		t.Helper()
-		base, err := lib.LatestBase(ctx, source)
+		base, err := lib.LatestBase(ctx, source, false)
 		if err != nil || (base == nil) != (want == "") || (base != nil && base.ID() != want) {
 			t.Fatalf("LatestBase = %v, %v; want %q", base, err, want)
 		}

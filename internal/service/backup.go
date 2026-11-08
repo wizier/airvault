@@ -83,7 +83,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 	}
 	s.runs.setStage(run, StagePreparing)
 
-	base, err := s.library.LatestBase(ctx, udid)
+	base, err := s.library.LatestBase(ctx, udid, device.Encrypted)
 	if err != nil {
 		return runOutcome{}, fmt.Errorf("couldn't prepare an immutable backup snapshot: %w", err)
 	}
