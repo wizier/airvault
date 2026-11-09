@@ -15,7 +15,7 @@
     title,
     subtitle,
     rootLabel = 'Files',
-    loadingText = 'Asking the phone…',
+    loadingText = 'Asking the device…',
     onclose,
   }: {
     source: FileSource;

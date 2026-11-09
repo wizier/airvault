@@ -4,6 +4,7 @@ import type { AcceptedRun } from './runs';
 interface PairUsbDevice {
   udid: string;
   name: string;
+  productType?: string;
 }
 
 export interface PairState {

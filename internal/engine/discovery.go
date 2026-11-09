@@ -38,8 +38,9 @@ type DeviceInfo struct {
 
 // USBDevice is a device reachable over USB (for the pairing wizard).
 type USBDevice struct {
-	DeviceID DeviceID `json:"udid"`
-	Name     string   `json:"name"`
+	DeviceID    DeviceID `json:"udid"`
+	Name        string   `json:"name"`
+	ProductType string   `json:"productType,omitempty"`
 }
 
 // Battery is the device's charge level and whether it is charging.
@@ -136,8 +137,8 @@ func (e *Engine) ListUSBDevices(ctx context.Context) ([]USBDevice, error) {
 	for i, device := range attached {
 		usb[i] = USBDevice{DeviceID: DeviceID(device.UDID), Name: device.UDID}
 		wg.Go(func() {
-			if name, err := e.deviceName(ctx, device); err == nil {
-				usb[i].Name = name
+			if name, productType, err := e.usbIdentity(ctx, device); err == nil {
+				usb[i].Name, usb[i].ProductType = name, productType
 			}
 		})
 	}
@@ -145,15 +146,17 @@ func (e *Engine) ListUSBDevices(ctx context.Context) ([]USBDevice, error) {
 	return usb, nil
 }
 
-func (e *Engine) deviceName(ctx context.Context, device ios.Device) (string, error) {
+func (e *Engine) usbIdentity(ctx context.Context, device ios.Device) (name, productType string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 	lockdown, err := ios.DialLockdown(ctx, e.mux, device)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer lockdown.Close()
-	return nonEmpty(ctx, lockdown, "DeviceName")
+	name, errName := nonEmpty(ctx, lockdown, "DeviceName")
+	productType, errType := nonEmpty(ctx, lockdown, "ProductType")
+	return name, productType, errors.Join(errName, errType)
 }
 
 func (e *Engine) Battery(ctx context.Context, device DeviceID) (Battery, error) {

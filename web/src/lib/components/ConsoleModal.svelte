@@ -194,7 +194,7 @@
       type="button"
       class={`btn btn-sm ${paused ? 'btn-warning' : 'btn-ghost'}`}
       onclick={togglePause}
-      title={paused ? 'Resume the log stream from the phone' : 'Stop the log stream from the phone'}
+      title={paused ? 'Resume the log stream from the device' : 'Stop the log stream from the device'}
     >
       <Icon name={paused ? 'play' : 'pause'} size={13} />
       <span class="hidden sm:inline">{paused ? 'Resume' : 'Pause'}</span>

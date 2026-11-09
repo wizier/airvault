@@ -2,8 +2,10 @@
   import { onMount, untrack } from 'svelte';
   import { appIcons, cachedAppIcons, installApp, uninstallApp, type DeviceApp, type InstallProgress } from '../api/apps';
   import { errMsg } from '../api/client';
+  import type { Device } from '../api/devices';
   import { appFileSource } from '../api/files';
   import { createBatchLoader, nearViewport } from '../batch-loader.svelte';
+  import { deviceNoun } from '../device-ui';
   import { liveRun } from '../events.svelte';
   import { deviceAppsResources } from '../stores.svelte';
   import Alert from './Alert.svelte';
@@ -13,7 +15,10 @@
   import Modal from './Modal.svelte';
   import ProgressBar from './ProgressBar.svelte';
 
-  let { udid, name, onclose }: { udid: string; name: string; onclose: () => void } = $props();
+  let { device, onclose }: { device: Device; onclose: () => void } = $props();
+
+  const udid = $derived(device.udid);
+  const noun = $derived(deviceNoun(device.productType));
 
   let search = $state('');
   const appsResource = $derived(deviceAppsResources.for(udid));
@@ -46,10 +51,10 @@
   const installStage = $derived(
     installState
       ? installState.phase === 'staging'
-        ? 'Sending to iPhone'
+        ? `Sending to ${noun}`
         : 'Installing'
       : uploadPct >= 100
-        ? 'Sending to iPhone'
+        ? `Sending to ${noun}`
         : 'Uploading',
   );
   const installIndeterminate = $derived(!installState && uploadPct >= 100);
@@ -126,7 +131,7 @@
 
 <Modal
   title="Apps"
-  subtitle={`Apps installed on ${name}`}
+  subtitle={`Apps installed on ${device.name}`}
   closable
   size="tall"
   class="gap-3 overflow-hidden"
@@ -183,7 +188,7 @@
     {#if loading}
       <p class="flex items-center gap-2 p-4 text-sm text-base-content/60">
         <span class="loading loading-spinner loading-sm"></span>
-        Asking the phone…
+        Asking the {noun}…
       </p>
     {:else if error}
       <ErrorLine {error} variant="alert" className="m-3" />

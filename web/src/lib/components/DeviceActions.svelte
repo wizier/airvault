@@ -1,11 +1,14 @@
 <script lang="ts">
   import type { Device } from '../api/devices';
+  import { deviceNoun } from '../device-ui';
   import { deleteAllBackups, unpair } from '../stores.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import EraseDialog from './EraseDialog.svelte';
   import Icon from './Icon.svelte';
 
   let { device }: { device: Device } = $props();
+
+  const noun = $derived(deviceNoun(device.productType));
 
   type Action = 'unpair' | 'deleteBackups' | 'erase';
   // Opening the dialog moves focus into it, which also closes the dropdown.
@@ -41,11 +44,11 @@
           type="button"
           class="text-error"
           disabled={device.connection === 'offline'}
-          title={device.connection === 'offline' ? 'Connect the phone (Wi-Fi or USB) to erase it' : undefined}
+          title={device.connection === 'offline' ? `Connect the ${noun} (Wi-Fi or USB) to erase it` : undefined}
           onclick={() => open('erase')}
         >
           <Icon name="alert" size={15} />
-          Erase iPhone…
+          Erase {noun}…
         </button>
       </li>
     {/if}
@@ -63,8 +66,8 @@
     onclose={() => (action = null)}
   >
     <p class="py-3 text-sm text-base-content/70">
-      The iPhone is told to forget this AirVault host, and the device is removed from AirVault
-      either way. If it can't be reached right now, clear the trust on the phone later via
+      The {noun} is told to forget this AirVault host, and the device is removed from AirVault
+      either way. If it can't be reached right now, clear the trust on the {noun} later via
       Settings → General → Transfer or Reset → Reset Location &amp; Privacy. To back it up
       again, you'll pair over USB from scratch.
     </p>

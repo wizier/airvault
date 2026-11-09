@@ -6,6 +6,8 @@
   import { backupFiles, backupGallerySource, listBackupComponents, type BackupComponent } from '../api/backup-contents';
   import type { RestorePoint } from '../api/backups';
   import { ApiError, errMsg } from '../api/client';
+  import type { Device } from '../api/devices';
+  import { deviceNoun } from '../device-ui';
   import { formatBytes, formatDateTime } from '../format';
   import BackupCalls from './BackupCalls.svelte';
   import BackupContacts from './BackupContacts.svelte';
@@ -21,9 +23,9 @@
   import Pill from './Pill.svelte';
   import UnlockBackupModal from './UnlockBackupModal.svelte';
 
-  let { point, deviceName, onclose }: {
+  let { point, device, onclose }: {
     point: RestorePoint;
-    deviceName: string;
+    device: Device;
     onclose: () => void;
   } = $props();
 
@@ -31,7 +33,7 @@
   const COMPONENTS: Record<BackupComponent, { icon: IconName; tone: string; title: string; description: string }> = {
     photos: { icon: 'image', tone: 'bg-primary/10 text-primary', title: 'Photos', description: 'Photos, videos and Live Photos by month and album' },
     notes: { icon: 'notes', tone: 'bg-warning/15 text-warning', title: 'Notes', description: 'Notes by folder; locked ones stay locked' },
-    files: { icon: 'folder', tone: 'bg-info/15 text-info', title: 'Files', description: 'Documents kept On My iPhone, by folder' },
+    files: { icon: 'folder', tone: 'bg-info/15 text-info', title: 'Files', description: 'Documents from the Files app, by folder' },
     messages: { icon: 'messages', tone: 'bg-success/15 text-success', title: 'Messages', description: 'iMessage, SMS and RCS chats with attachments' },
     whatsapp: { icon: 'chat', tone: 'bg-success/15 text-success', title: 'WhatsApp', description: 'Chats, groups, photos, voice and documents' },
     calls: { icon: 'call', tone: 'bg-accent/15 text-accent', title: 'Calls', description: 'Phone, FaceTime and app calls' },
@@ -77,7 +79,7 @@
   />
 {:else if showMenu}
   <Modal
-    title={`Backup of ${deviceName}`}
+    title={`Backup of ${device.name}`}
     subtitle={created}
     closable
     size="medium"
@@ -126,7 +128,7 @@
 
 {#if open}
   {@const view = {
-    title: `${COMPONENTS[open].title} — backup of ${deviceName}`,
+    title: `${COMPONENTS[open].title} — backup of ${device.name}`,
     subtitle: created,
     onclose: () => (open = null),
   }}
@@ -144,6 +146,6 @@
   {:else if open === 'passwords'}
     <BackupPasswords {snapshotId} {...view} />
   {:else if open === 'files'}
-    <FileBrowser source={backupFiles(snapshotId, 'files')} rootLabel="On My iPhone" loadingText="Reading the backup…" {...view} />
+    <FileBrowser source={backupFiles(snapshotId, 'files')} rootLabel={`On My ${deviceNoun(device.productType)}`} loadingText="Reading the backup…" {...view} />
   {/if}
 {/if}

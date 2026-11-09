@@ -6,6 +6,7 @@
   import { pairStateStore, devicesStore } from '../stores.svelte';
   import { onPairTrust } from '../events.svelte';
   import { errorCode } from '../api/client';
+  import { deviceIcon, deviceNoun } from '../device-ui';
   import { errorText } from '../error-text';
   import { startTrust as startTrustRequest } from '../api/pairing';
   import Alert from './Alert.svelte';
@@ -49,7 +50,9 @@
   const registered = $derived(
     (devicesStore.data ?? []).find((d) => d.udid === selectedUdid) ?? null,
   );
-  const selectedName = $derived(selectedUsb?.name ?? registered?.name ?? 'your iPhone');
+  const selectedName = $derived(selectedUsb?.name ?? registered?.name ?? 'your device');
+  const productType = $derived(selectedUsb?.productType ?? registered?.productType);
+  const noun = $derived(deviceNoun(productType));
 
   // A plugged-in phone that's already paired never shows in the pick list; say
   // so instead of a misleading endless "waiting" spinner.
@@ -120,8 +123,8 @@
 
 <Modal
   bind:this={modal}
-  title="Pair an iPhone"
-  subtitle="A one-time USB setup — after it, the phone is reachable over Wi-Fi"
+  title="Pair a device"
+  subtitle="A one-time USB setup — after it, the device is reachable over Wi-Fi"
   closable
   size="medium"
   {onclose}
@@ -161,7 +164,7 @@
         {#if step === 1}
           <div class="flex flex-col gap-4">
             <div>
-              <h4 class="text-lg font-semibold">Plug the iPhone into this server</h4>
+              <h4 class="text-lg font-semibold">Plug the device into this server</h4>
               <p class="mt-1 text-sm text-base-content/60">
                 iOS requires a cable for the first handshake — this is the only time you'll need one
               </p>
@@ -176,17 +179,17 @@
                 <Alert tone="info" icon="info" class="text-sm">
                   <span class="font-medium">{pairedOnUsb[0].name}</span>
                   {pairedOnUsb.length > 1 ? ` and ${pairedOnUsb.length - 1} more are` : ' is'} already
-                  paired — manage it from the device list. Only new phones show up here.
+                  paired — manage it from the device list. Only new devices show up here.
                 </Alert>
               {/if}
               <ul class="ml-4 list-disc space-y-1.5 text-sm text-base-content/60 marker:text-base-content/50">
                 <li>Use a data-capable cable, not a charge-only one.</li>
-                <li>Unlock the phone — locked phones may not show up.</li>
+                <li>Unlock the device — locked devices may not show up.</li>
                 <li>Try another USB port if nothing appears.</li>
               </ul>
             {:else if usbDevices.length === 1}
               <div class="flex items-center gap-3 rounded-box bg-base-200 p-4">
-                <span class="flex h-9 w-9 items-center justify-center rounded-box bg-primary/10 text-primary"><Icon name="phone" size={18} /></span>
+                <span class="flex h-9 w-9 items-center justify-center rounded-box bg-primary/10 text-primary"><Icon name={deviceIcon(usbDevices[0].productType)} size={18} /></span>
                 <div class="min-w-0">
                   <p class="truncate text-sm font-semibold">{usbDevices[0].name}</p>
                   <p class="text-xs text-base-content/60">Connected over USB</p>
@@ -204,7 +207,7 @@
                       }`}
                     >
                       <input type="radio" name="usb-device" value={d.udid} bind:group={selectedUdid} class="radio radio-primary radio-sm" />
-                      <Icon name="phone" size={16} class="text-primary" />
+                      <Icon name={deviceIcon(d.productType)} size={16} class="text-primary" />
                       <span class="min-w-0 truncate font-medium">{d.name}</span>
                     </label>
                   {/each}
@@ -225,13 +228,13 @@
               {#if wifiAuthorizationFailed}
                 <h4 class="text-lg font-semibold">USB pairing complete</h4>
                 <p class="mt-1 text-sm text-base-content/60">
-                  The iPhone already trusts AirVault, so you won't need to approve it again
+                  The {noun} already trusts AirVault, so you won't need to approve it again
                 </p>
               {:else}
-                <h4 class="text-lg font-semibold">Tap “Trust” on the iPhone</h4>
+                <h4 class="text-lg font-semibold">Tap “Trust” on the {noun}</h4>
                 <p class="mt-1 text-sm text-base-content/60">
-                  A “Trust This Computer?” prompt is on the phone. Tap
-                  <span class="font-medium text-base-content">Trust</span> and enter the phone's passcode
+                  A “Trust This Computer?” prompt is on the {noun}. Tap
+                  <span class="font-medium text-base-content">Trust</span> and enter the {noun}'s passcode
                 </p>
               {/if}
             </div>
@@ -239,19 +242,19 @@
             {#if trust.kind === 'starting'}
               <div class="flex items-center gap-3 rounded-box bg-base-200 p-4">
                 <span class="loading loading-spinner loading-sm text-primary"></span>
-                <p class="text-sm font-medium">Asking the phone to pair…</p>
+                <p class="text-sm font-medium">Asking the {noun} to pair…</p>
               </div>
             {:else if trust.kind === 'trust_pending'}
               <div class="flex items-center gap-3 rounded-box bg-base-200 p-4">
                 <span class="loading loading-spinner loading-sm text-primary"></span>
-                <p class="text-sm font-medium">Waiting for you to tap Trust on the phone…</p>
+                <p class="text-sm font-medium">Waiting for you to tap Trust on the {noun}…</p>
               </div>
             {:else if trust.kind === 'locked'}
-              <Alert tone="warning" icon="lock" title="Unlock the iPhone">
+              <Alert tone="warning" icon="lock" title={`Unlock the ${noun}`}>
                 The Trust prompt appears right after you unlock it — this screen advances automatically.
               </Alert>
             {:else if trust.kind === 'denied'}
-              <Alert tone="warning" title="“Don't Trust” was tapped on the phone">
+              <Alert tone="warning" title={`“Don't Trust” was tapped on the ${noun}`}>
                 iOS won't ask again on this connection. <span class="font-medium">Unplug the USB
                 cable and plug it back in</span> — the Trust prompt reappears and pairing
                 continues here automatically.
@@ -286,7 +289,7 @@
             </div>
             <div class="mt-1 flex flex-wrap justify-center gap-2">
               <button type="button" class="btn btn-primary" onclick={() => openDevicePage(selectedUdid!)}>
-                <Icon name="phone" size={15} /> Open device page
+                <Icon name={deviceIcon(productType)} size={15} /> Open device page
               </button>
               <button type="button" class="btn btn-ghost" onclick={() => modal.close()}>Close</button>
             </div>

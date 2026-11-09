@@ -14,7 +14,7 @@
     type Device,
     type ThinPeriod,
   } from '../api/devices';
-  import { AUTO_BACKUP_EVERY, AUTO_VERIFY_EVERY, CLEANUP_THIN } from '../device-ui';
+  import { AUTO_BACKUP_EVERY, AUTO_VERIFY_EVERY, CLEANUP_THIN, deviceNoun } from '../device-ui';
   import { errorText } from '../error-text';
   import { formatBytes } from '../format';
   import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
@@ -27,6 +27,8 @@
   import ScheduleFields, { scheduleForm, scheduleSettings, windowInvalid } from './ScheduleFields.svelte';
 
   let { device, onclose }: { device: Device; onclose: () => void } = $props();
+
+  const noun = $derived(deviceNoun(device.productType));
 
   let modal: Modal;
   // Seeded once from the settings at open: a refetch must not reset the form.
@@ -127,8 +129,8 @@
     <AutomaticTask
       title="Back up automatically"
       hint={paired
-        ? 'Starts when you unlock the iPhone at home on Wi-Fi. iOS asks for the passcode each time. An ignored prompt pauses it for an hour, at most three tries a day.'
-        : 'Pair the phone over USB first'}
+        ? `Starts when you unlock the ${noun} at home on Wi-Fi. iOS asks for the passcode each time.`
+        : `Pair the ${noun} over USB first`}
       bind:on={backup.on}
       disabled={busy || !paired}
     >
@@ -162,7 +164,7 @@
           </select>
           <span>days</span>
         </div>
-        <p class="text-xs text-base-content/60">If the phone stops backing up, its last backups are kept</p>
+        <p class="text-xs text-base-content/60">If the {noun} stops backing up, its last backups are kept</p>
       </div>
 
       <div class="flex flex-col gap-1">
@@ -213,7 +215,7 @@
 
     <AutomaticTask
       title="Check integrity automatically"
-      hint="Reads every stored file; the phone isn't needed. While it runs, this phone can't back up, restore or download, and you can cancel it. It may run past the window, and an unfinished check tries again the next day."
+      hint={`Doesn't need the ${noun}. While it runs, this ${noun} can't back up, restore or download.`}
       bind:on={verify.on}
       disabled={busy}
     >

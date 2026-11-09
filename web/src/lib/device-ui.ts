@@ -26,7 +26,7 @@ export function lastBackupFailure(device: Device, live: RunningProgress | null):
 /** Why a device action that needs the phone to itself is disabled, if it is. */
 export function blockedReason(device: Device, live: RunningProgress | null): string | null {
   if (device.connection === 'offline') return 'Device is offline';
-  return live ? 'Another operation is running on this phone' : null;
+  return live ? 'Another operation is running on this device' : null;
 }
 
 /** The IANA zone this browser runs in. */
@@ -415,6 +415,10 @@ export function deviceIcon(productType?: string): IconName {
   return isTablet(productType) ? 'tablet' : 'phone';
 }
 
+export function deviceNoun(productType?: string): string {
+  return isTablet(productType) ? 'iPad' : 'iPhone';
+}
+
 /** iPadOS only split from iOS in 13 — older iPads still report plain iOS. */
 export function osName(productType?: string, version?: string): string {
   return isTablet(productType) && Number.parseInt(version ?? '', 10) >= 13 ? 'iPadOS' : 'iOS';
@@ -427,10 +431,10 @@ function isTablet(productType?: string): boolean {
 /** An ellipsis marks a phase the progress bar cannot measure. Record, not a
  *  switch: a stage added to RunStage without a label stops compiling. */
 const STAGE_LABELS: Record<RunStage, string> = {
-  waiting_for_device: 'Waiting for the phone to come online…',
-  preparing: 'Preparing on the phone…',
-  activating: 'Activating the phone…',
-  calculating_changes: 'Calculating changes on the phone…',
+  waiting_for_device: 'Waiting for the device to come online…',
+  preparing: 'Preparing on the device…',
+  activating: 'Activating the device…',
+  calculating_changes: 'Calculating changes on the device…',
   backing_up: 'Backing up',
   finalizing: 'Finalizing the backup locally…',
   restoring: 'Restoring',
@@ -471,11 +475,11 @@ export const RUN_COPY: Record<RunKind, RunCopy> = {
   restore: {
     busy: 'Restoring…',
     running: 'A restore is running right now',
-    stopHint: 'Stop this restore; the phone then reports it failed and restarts',
+    stopHint: 'Stop this restore; the device then reports it failed and restarts',
     cancelTitle: 'Cancel this restore?',
     stopLabel: 'Stop restore',
     stopEffect:
-      'The phone stays on “Restore in Progress” until iOS gives up, then reports that the restore failed and restarts. The stored backup is not changed.',
+      'The device stays on “Restore in Progress” until iOS gives up, then reports that the restore failed and restarts. The stored backup is not changed.',
     counted: 'transferred',
   },
   verify: {

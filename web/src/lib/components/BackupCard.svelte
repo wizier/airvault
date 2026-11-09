@@ -13,6 +13,7 @@
     autoVerifyStatus,
     blockedReason,
     cleanupStatus,
+    deviceNoun,
     lastBackupFailure,
     RUN_COPY,
     stageUi,
@@ -39,6 +40,7 @@
   const live = $derived(liveRun(udid));
   const isCancelling = $derived(live?.cancelling ?? false);
   const isRunning = $derived(live !== null);
+  const noun = $derived(deviceNoun(device.productType));
   const speed = $derived(formatSpeed(live?.speed));
   const lastFailure = $derived(lastBackupFailure(device, live));
   // ChangePassword and restores talk to the same backupd that is busy during a transfer.
@@ -192,7 +194,7 @@
         {#if !reachable && !isRunning && device.paired}
           <p class="mt-1 flex items-center gap-1.5 text-xs text-base-content/50">
             <Icon name="offline" size={12} />
-            Offline — a backup started now waits for the phone to come back
+            Offline — a backup started now waits for the device to come back
           </p>
         {/if}
       </div>
@@ -219,7 +221,7 @@
               class="btn btn-ghost btn-sm"
               disabled={starting !== null}
               onclick={() => start('verify', 'verify_start_failed')}
-              title="Read every stored file and mark the restore points whose data no longer reads right"
+              title="Check every stored file against its checksum and mark the restore points with damaged files"
             >
               {#if starting === 'verify'}
                 <span class="loading loading-spinner loading-xs"></span>
@@ -235,7 +237,7 @@
               class="btn btn-outline btn-sm"
               disabled={starting !== null || !!blocked}
               onclick={onrestore}
-              title={blocked ?? 'Put a stored backup onto this phone'}
+              title={blocked ?? `Put a stored backup onto this ${noun}`}
             >
               <Icon name="restore" size={14} /> Restore…
             </button>
@@ -246,9 +248,9 @@
             disabled={starting !== null || !device.paired}
             onclick={() => start('backup', 'backup_start_failed')}
             title={!device.paired
-              ? 'Pair the phone over USB first'
+              ? `Pair the ${noun} over USB first`
               : !reachable
-                ? 'The phone is offline — the backup starts as soon as it comes back'
+                ? 'The device is offline — the backup starts as soon as it comes back'
                 : 'Update the stored backup (incremental)'}
           >
             {#if starting === 'backup'}
@@ -286,14 +288,14 @@
         {#if live.stage === 'waiting_for_device' && live.kind !== 'restore'}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
-            Wake the phone or connect it by USB — the backup starts as soon as it appears.
+            Wake the device or connect it by USB — the backup starts as soon as it appears.
           </p>
         {:else if live.stage === 'preparing' && live.kind !== 'restore'}
           <p class="flex items-center gap-1.5 text-xs text-base-content/60">
             <Icon name="info" size={13} />
             {live.auto
-              ? 'Automatic backup — enter the iPhone passcode on the phone within a minute'
-              : 'Enter the iPhone passcode on the phone to continue'}
+              ? `Automatic backup — enter the passcode on the ${noun} within a minute`
+              : `Enter the passcode on the ${noun} to continue`}
           </p>
         {/if}
       </div>
@@ -310,7 +312,7 @@
           </p>
           <p class="mt-0.5 text-xs text-base-content/60">
             {device.encrypted
-              ? 'Backups are protected with a password set on the phone'
+              ? `Backups are protected with a password set on the ${noun}`
               : 'Saved passwords, Wi-Fi, call history and Health data are only included in encrypted backups'}
           </p>
         </div>
@@ -390,7 +392,7 @@
 
 <!-- Mounted fresh per open: per-open form state resets by remount. -->
 {#if passwordMode !== null}
-  <BackupPasswordModal udid={device.udid} name={device.name} mode={passwordMode} onclose={() => (passwordMode = null)} />
+  <BackupPasswordModal {device} mode={passwordMode} onclose={() => (passwordMode = null)} />
 {/if}
 {#if tasksOpen}
   <AutomaticTasksModal {device} onclose={() => (tasksOpen = false)} />

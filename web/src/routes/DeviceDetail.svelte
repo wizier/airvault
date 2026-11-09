@@ -42,10 +42,7 @@
     <BackupHistory {device} onrestore={(snapshotId) => (restoring = { preselect: snapshotId })} />
     {#if restoring}
       <RestoreModal
-        udid={device.udid}
-        name={device.name}
-        iosVersion={device.iosVersion}
-        activationState={device.activationState}
+        {device}
         preselect={restoring.preselect}
         onclose={() => (restoring = null)}
       />

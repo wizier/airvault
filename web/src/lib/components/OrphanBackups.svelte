@@ -5,7 +5,7 @@
   import type { Device } from '../api/devices';
   import { deleteAllBackups } from '../stores.svelte';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
-  import { deviceIcon, modelDisplayName } from '../device-ui';
+  import { deviceIcon, deviceNoun, modelDisplayName } from '../device-ui';
   import { now } from '../clock';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import Icon from './Icon.svelte';
@@ -18,11 +18,11 @@
 <section class="flex flex-col gap-3">
   <div>
     <h2 class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
-      Backups without a phone
+      Backups without a device
     </h2>
     <p class="mt-1 text-xs text-base-content/60">
-      These phones are no longer registered here, but their backups are still stored. Keep them to
-      migrate onto a new phone, or delete them to free the space.
+      These devices are no longer registered here, but their backups are still stored. Keep them to
+      migrate onto a new device, or delete them to free the space.
     </p>
   </div>
   <div class="card bg-base-100 shadow-sm">
@@ -34,7 +34,7 @@
             use:link
             href={`/device/${encodeURIComponent(orphan.udid)}`}
             class="flex min-w-0 items-center gap-3"
-            title="Open the stored backups of this phone"
+            title={`Open the stored backups of this ${deviceNoun(orphan.productType)}`}
           >
             <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-box bg-base-200 text-base-content/60">
               <Icon name={deviceIcon(orphan.productType)} size={17} />
@@ -86,7 +86,7 @@
   >
     <p class="py-3 text-sm text-base-content/70">
       {orphan.restorePoints === 1 ? 'The only restore point' : `All ${orphan.restorePoints} restore points`}
-      of this phone will be removed{#if orphan.diskBytes !== undefined}, freeing about
+      of this {deviceNoun(orphan.productType)} will be removed{#if orphan.diskBytes !== undefined}, freeing about
         <span class="font-medium tabular-nums">{formatBytes(orphan.diskBytes)}</span> on disk{/if}.
       This can't be undone.
     </p>

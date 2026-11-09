@@ -3,6 +3,8 @@
   // last-restore-error); only errors of the start request itself show inline,
   // where they can be corrected.
   import { startRestore, type RestorePoint } from '../api/backups';
+  import type { Device } from '../api/devices';
+  import { deviceNoun } from '../device-ui';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
   import { hardwareResources, restoreSourcesStore } from '../stores.svelte';
   import { Submit } from '../submit.svelte';
@@ -14,23 +16,18 @@
   import PasswordField from './PasswordField.svelte';
 
   let {
-    udid,
-    name,
-    iosVersion,
-    activationState,
+    device,
     preselect = null,
     onclose,
   }: {
-    udid: string;
-    name: string;
-    /** The phone's current iOS version; a backup from a newer iOS is refused. */
-    iosVersion?: string;
-    /** Lockdown ActivationState; "Unactivated" shows the activation notice. */
-    activationState?: string;
+    device: Device;
     /** Snapshot to preselect on open instead of the default (own newest). */
     preselect?: string | null;
     onclose: () => void;
   } = $props();
+
+  const udid = $derived(device.udid);
+  const noun = $derived(deviceNoun(device.productType));
 
   let modal: Modal;
   // Every on-disk backup that could be applied (own + other phones'), newest
@@ -54,10 +51,10 @@
     doNotRestart: false,
   });
   const OVERRIDES: { key: keyof typeof overrides; label: string; hint: string }[] = [
-    { key: 'keepCurrentSettings', label: 'Keep current settings', hint: "Keep the phone's settings, not the backup's" },
+    { key: 'keepCurrentSettings', label: 'Keep current settings', hint: "Use the current settings, not the backup's" },
     { key: 'skipSystemFiles', label: 'Skip system files', hint: 'Do not restore system-level files stored in the backup' },
-    { key: 'keepItemsNotInBackup', label: 'Keep items not in the backup', hint: 'Merge backup data with existing phone content' },
-    { key: 'doNotRestart', label: 'Do not restart', hint: 'Restart the phone manually after the restore' },
+    { key: 'keepItemsNotInBackup', label: 'Keep items not in the backup', hint: 'Merge backup data with existing content' },
+    { key: 'doNotRestart', label: 'Do not restart', hint: 'Restart manually after the restore' },
   ];
   const submit = new Submit('restore_start_failed');
 
@@ -65,7 +62,7 @@
   const phones = $derived.by(() => {
     const byUdid = new Map<string, string>();
     for (const s of sources) {
-      if (!byUdid.has(s.udid)) byUdid.set(s.udid, s.udid === udid ? 'This phone' : s.deviceName || shortUdid(s.udid));
+      if (!byUdid.has(s.udid)) byUdid.set(s.udid, s.udid === udid ? `This ${noun}` : s.deviceName || shortUdid(s.udid));
     }
     return [...byUdid]
       .map(([id, name]) => ({ udid: id, name }))
@@ -88,7 +85,7 @@
   const spaceShort = $derived(
     crossDevice && sel !== null && capacityBytes !== undefined && sel.sizeBytes > capacityBytes,
   );
-  const versionBlocked = $derived(sel !== null && newerIOS(sel.iosVersion, iosVersion));
+  const versionBlocked = $derived(sel !== null && newerIOS(sel.iosVersion, device.iosVersion));
 
   // Mirrors the server rule: a backup from a strictly newer iOS is refused.
   function newerIOS(a?: string, b?: string): boolean {
@@ -137,7 +134,7 @@
 
 <Modal
   bind:this={modal}
-  title={`Restore ${name}?`}
+  title={`Restore ${device.name}?`}
   locked={submit.busy}
   size="medium"
   class="overflow-hidden"
@@ -155,7 +152,7 @@
           disabled={submit.busy}
           onchange={() => (selected = '')}
         >
-          <option value="" disabled>Select a phone…</option>
+          <option value="" disabled>Select a device…</option>
           {#each phones as p (p.udid)}
             <option value={p.udid}>{p.name}</option>
           {/each}
@@ -168,7 +165,7 @@
           bind:value={selected}
           disabled={submit.busy || selectedUdid === ''}
         >
-          <option value="" disabled>{selectedUdid === '' ? 'Choose a phone first' : 'Select a backup…'}</option>
+          <option value="" disabled>{selectedUdid === '' ? 'Choose a device first' : 'Select a backup…'}</option>
           {#each points as s (s.snapshotId)}
             <option value={s.snapshotId}>{backupLabel(s)}</option>
           {/each}
@@ -189,41 +186,41 @@
     {/if}
 
     {#if findMyOn}
-      <FindMyAlert {udid} />
+      <FindMyAlert {device} />
     {/if}
 
     {#if crossDevice}
       <Alert tone="warning" class="mt-3 text-sm">
-        <span class="font-medium">{name}</span> receives the backup of
-        <span class="font-medium">{sel?.deviceName || 'another phone'}</span>
+        <span class="font-medium">{device.name}</span> receives the backup of
+        <span class="font-medium">{sel?.deviceName || 'another device'}</span>
       </Alert>
       <div class="mt-2 rounded-box bg-base-200 p-3 text-xs text-base-content/70">
-        <p class="font-medium text-base-content/80">Moving to this phone</p>
+        <p class="font-medium text-base-content/80">Moving to this {noun}</p>
         <p class="mt-1">
-          A new phone can be paired right from the setup assistant — on the
+          A new {noun} can be paired right from the setup assistant — on the
           “Apps &amp; Data” screen, choose “Restore from Mac or PC” and connect
           the cable
         </p>
       </div>
     {/if}
 
-    {#if activationState === 'Unactivated'}
+    {#if device.activationState === 'Unactivated'}
       <Alert tone="warning" class="mt-3 text-sm">
-        This phone isn't activated yet — it will be activated as the first step
+        This {noun} isn't activated yet — it will be activated as the first step
       </Alert>
     {/if}
 
     {#if versionBlocked}
       <Alert tone="error" class="mt-3 text-sm">
-        This backup was made on iOS {sel?.iosVersion}, newer than the phone's iOS
-        {iosVersion} — update the phone first.
+        This backup was made on iOS {sel?.iosVersion}, newer than the {noun}'s iOS
+        {device.iosVersion} — update the {noun} first.
       </Alert>
     {/if}
 
     {#if spaceShort && sel}
       <Alert tone="error" class="mt-3 text-sm">
-        The backup ({formatBytes(sel.sizeBytes)}) is larger than the phone's total storage
-        ({formatBytes(capacityBytes)}) — the restore will not fit on this phone.
+        The backup ({formatBytes(sel.sizeBytes)}) is larger than the {noun}'s total storage
+        ({formatBytes(capacityBytes)}) — the restore will not fit on this {noun}.
       </Alert>
     {/if}
 
@@ -236,7 +233,7 @@
       </summary>
       <div class="collapse-content flex flex-col gap-2">
         <p class="text-xs text-base-content/60">
-          Default restores settings and system files, removes items outside the backup, and restarts the phone
+          Default restores settings and system files, removes items outside the backup, and restarts the {noun}
         </p>
         {#each OVERRIDES as o (o.key)}
           <label class="label cursor-pointer gap-3 rounded-box bg-base-200 p-3">

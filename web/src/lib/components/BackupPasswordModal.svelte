@@ -1,7 +1,8 @@
 <script lang="ts">
   // enable = new password, change = old + new, disable = old only. The request
   // stays in the modal so device verdicts can be corrected and retried in place.
-  import { changeBackupPassword } from '../api/devices';
+  import { changeBackupPassword, type Device } from '../api/devices';
+  import { deviceIcon, deviceNoun } from '../device-ui';
   import type { ErrorTextKey } from '../error-text';
   import { Submit } from '../submit.svelte';
   import Alert from './Alert.svelte';
@@ -12,12 +13,13 @@
 
   export type PasswordMode = 'enable' | 'change' | 'disable';
 
-  let { udid, name, mode, onclose }: {
-    udid: string;
-    name: string;
+  let { device, mode, onclose }: {
+    device: Device;
     mode: PasswordMode;
     onclose: () => void;
   } = $props();
+
+  const noun = $derived(deviceNoun(device.productType));
 
   let modal: Modal;
   let oldPw = $state('');
@@ -27,10 +29,10 @@
 
   const title = $derived(
     mode === 'enable'
-      ? `Encrypt backups of ${name}`
+      ? `Encrypt backups of ${device.name}`
       : mode === 'change'
-        ? `Change the backup password of ${name}`
-        : `Turn off backup encryption for ${name}`,
+        ? `Change the backup password of ${device.name}`
+        : `Turn off backup encryption for ${device.name}`,
   );
 
   const needsOld = $derived(mode === 'change' || mode === 'disable');
@@ -61,7 +63,7 @@
     }
     const oldPassword = needsOld ? oldPw : '';
     const newPassword = needsNew ? newPw : '';
-    const ok = await submit.run((signal) => changeBackupPassword(udid, oldPassword, newPassword, signal));
+    const ok = await submit.run((signal) => changeBackupPassword(device.udid, oldPassword, newPassword, signal));
     if (ok) modal.close();
   }
 </script>
@@ -70,7 +72,7 @@
   {#if mode === 'enable'}
     <p class="py-3 text-sm text-base-content/70">
       Encrypted backups include saved passwords, Wi-Fi, call history and Health data. The password
-      lives on the phone and protects every future backup. The next backup is a full one; earlier
+      lives on the {noun} and protects every future backup. The next backup is a full one; earlier
       backups stay unencrypted.
     </p>
     <Alert tone="warning" class="text-sm">
@@ -96,7 +98,7 @@
         bind:value={oldPw}
         autocomplete="current-password"
         disabled={submit.busy}
-        error={wrongPassword ? "This doesn't match the backup password on the phone" : null}
+        error={wrongPassword ? `This doesn't match the backup password on the ${noun}` : null}
         focus={wrongPassword}
       />
     {/if}
@@ -109,10 +111,10 @@
   {#if submit.busy}
     <div class="mt-4 flex items-start gap-3 rounded-box bg-base-200 p-4">
       <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-box bg-primary/10 text-primary">
-        <Icon name="phone" size={20} />
+        <Icon name={deviceIcon(device.productType)} size={20} />
       </span>
       <div class="min-w-0">
-        <p class="text-sm font-semibold">Now check the iPhone</p>
+        <p class="text-sm font-semibold">Now check the {noun}</p>
         <p class="mt-0.5 text-sm text-base-content/70">
           Confirm the device passcode there if asked. The password update normally completes
           within a few seconds after confirmation.
@@ -121,7 +123,7 @@
       <span class="loading loading-spinner loading-sm ml-auto shrink-0 self-center"></span>
     </div>
   {:else if deviceLocked}
-    <Alert tone="warning" icon="lock" title="The iPhone is locked" class="mt-3 text-sm">
+    <Alert tone="warning" icon="lock" title={`The ${noun} is locked`} class="mt-3 text-sm">
       Unlock it (keep it unlocked) and try again.
     </Alert>
   {:else if !wrongPassword}

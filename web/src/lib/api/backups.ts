@@ -75,8 +75,8 @@ export function startBackup(udid: string): Promise<AcceptedRun> {
   return request<AcceptedRun>(`${devicePath(udid)}/backup`, { method: 'POST' });
 }
 
-/** Reads every stored object of the phone's backups and marks the restore
- *  points whose data no longer reads right. */
+/** Checks every stored object of the phone's backups against its checksum and
+ *  marks the restore points with damaged files. */
 export function startVerify(udid: string): Promise<AcceptedRun> {
   return request<AcceptedRun>(`${devicePath(udid)}/verify`, { method: 'POST' });
 }

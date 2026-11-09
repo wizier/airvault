@@ -3,7 +3,7 @@
   import { powerDevice, type Device } from '../api/devices';
   import { deviceFileSource } from '../api/files';
   import { deviceGallerySource } from '../api/gallery';
-  import { blockedReason, connectionUi, modelDisplayName, osName } from '../device-ui';
+  import { blockedReason, connectionUi, deviceNoun, modelDisplayName, osName } from '../device-ui';
   import { liveRun } from '../events.svelte';
   import { formatDateTime, relativeTime } from '../format';
   import { now } from '../clock';
@@ -24,6 +24,7 @@
   let { device }: { device: Device } = $props();
 
   const conn = $derived(connectionUi(device.connection));
+  const noun = $derived(deviceNoun(device.productType));
   const reachable = $derived(device.connection !== 'offline');
   const live = $derived(liveRun(device.udid));
   const restoreRunning = $derived(live?.kind === 'restore');
@@ -54,7 +55,7 @@
       tone: 'info',
       text:
         action === 'restart'
-          ? 'Restarting — the phone drops offline and comes back in a couple of minutes'
+          ? `Restarting — the ${noun} drops offline and comes back in a couple of minutes`
           : 'Shutting down — plug it into power or a computer to turn it back on',
     };
   }
@@ -63,7 +64,7 @@
     (document.activeElement as HTMLElement | null)?.blur();
     try {
       await powerDevice(device.udid, 'sleep');
-      controlNotice = { tone: 'info', text: 'Asked the phone to sleep' };
+      controlNotice = { tone: 'info', text: `Asked the ${noun} to sleep` };
     } catch (error) {
       controlNotice = { tone: 'error', text: errMsg(error, 'sleep_request_failed') };
     }
@@ -154,7 +155,7 @@
 {#if openTool === 'console'}
   <ConsoleModal udid={device.udid} name={device.name} onclose={closeTool} />
 {:else if openTool === 'apps'}
-  <AppsModal udid={device.udid} name={device.name} onclose={closeTool} />
+  <AppsModal {device} onclose={closeTool} />
 {:else if openTool === 'files'}
   <FileBrowser
     source={mediaFiles}
@@ -182,10 +183,10 @@
   >
     <p class="py-3 text-sm text-base-content/70">
       {#if restart}
-        The phone reboots immediately and drops offline for a couple of minutes. Unsaved state in open apps may be lost —
+        The {noun} reboots immediately and drops offline for a couple of minutes. Unsaved state in open apps may be lost —
         exactly like holding the power button.
       {:else}
-        The phone powers off and stays offline until it's turned back on by hand (or plugged into power). Remote backups
+        The {noun} powers off and stays offline until it's turned back on by hand (or plugged into power). Remote backups
         stop until then.
       {/if}
     </p>

@@ -6,7 +6,7 @@
   import { downloadBackup, snapshotsReclaimable, type RestorePoint } from '../api/backups';
   import { errMsg } from '../api/client';
   import type { Device } from '../api/devices';
-  import { blockedReason } from '../device-ui';
+  import { blockedReason, deviceNoun } from '../device-ui';
   import { liveRun } from '../events.svelte';
   import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatDuration, relativeTime } from '../format';
@@ -38,6 +38,7 @@
   const live = $derived(liveRun(udid));
   const isRunning = $derived(live !== null);
   const restoreBlocked = $derived(blockedReason(device, live));
+  const noun = $derived(deviceNoun(device.productType));
   // Checkboxes appear only in selection mode; leaving it drops the selection.
   let selecting = $state(false);
   const selected = new SvelteSet<string>();
@@ -123,7 +124,7 @@
             class="btn btn-error btn-xs"
             disabled={isRunning || selectedPoints.length === 0}
             onclick={() => askDelete(selectedPoints)}
-            title={isRunning ? 'Another operation is running on this phone' : 'Delete the selected restore points'}
+            title={isRunning ? 'Another operation is running on this device' : 'Delete the selected restore points'}
           >
             <Icon name="trash" size={13} />
             Delete selected ({selectedPoints.length})
@@ -199,7 +200,7 @@
               <td class="font-mono text-xs text-base-content/60">
                 <div>{formatBytes(point.sizeBytes)}</div>
                 {#if point.transferredBytes !== null}
-                  <div class="text-[10px] text-base-content/40" title="Payload received from the phone during this backup">
+                  <div class="text-[10px] text-base-content/40" title="Payload received from the {noun} during this backup">
                     {formatBytes(point.transferredBytes)} transferred
                   </div>
                 {/if}
@@ -213,7 +214,7 @@
                     onclick={() => onrestore(point.snapshotId)}
                     title={point.damage
                       ? "A damaged restore point can't be restored"
-                      : (restoreBlocked ?? 'Restore this snapshot onto the phone')}
+                      : (restoreBlocked ?? `Restore this snapshot onto the ${noun}`)}
                     aria-label="Restore this snapshot"
                   >
                     <Icon name="restore" size={13} />
@@ -261,7 +262,7 @@
                     class="btn btn-ghost btn-xs text-error"
                     disabled={isRunning}
                     onclick={() => askDelete([point])}
-                    title={isRunning ? 'Another operation is running on this phone' : 'Delete this restore point'}
+                    title={isRunning ? 'Another operation is running on this device' : 'Delete this restore point'}
                     aria-label="Delete restore point"
                   >
                     <Icon name="trash" size={13} />
@@ -304,7 +305,7 @@
 </section>
 
 {#if browsing}
-  <BackupBrowser point={browsing} deviceName={device.name} onclose={() => (browsing = null)} />
+  <BackupBrowser point={browsing} {device} onclose={() => (browsing = null)} />
 {/if}
 
 {#if pending.length > 0}
