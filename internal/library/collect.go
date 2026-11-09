@@ -171,7 +171,7 @@ func (l *Library) Reclaimable(ctx context.Context, source string, ids []string) 
 
 func (l *Library) requireSnapshots(ctx context.Context, source string, ids []string) error {
 	if len(ids) == 0 {
-		return &domain.ValidationError{Code: "snapshot_required", Message: "select at least one restore point"}
+		return &domain.ValidationError{Code: "snapshot_required"}
 	}
 	for _, id := range ids {
 		snapshot, err := l.catalog.Backup.Get(ctx, id)

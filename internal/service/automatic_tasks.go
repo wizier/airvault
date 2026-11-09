@@ -113,8 +113,7 @@ func automaticTasksRow(tasks AutomaticTasks) (model.AutomaticTasks, error) {
 
 func scheduleRow(settings ScheduleSettings, presets []int, intervalCode string) (model.Schedule, error) {
 	if !slices.Contains(presets, settings.EveryDays) {
-		return model.Schedule{}, &domain.ValidationError{Code: intervalCode,
-			Message: fmt.Sprintf("the interval must be one of %v days", presets)}
+		return model.Schedule{}, &domain.ValidationError{Code: intervalCode}
 	}
 	row := model.Schedule{Enabled: settings.Enabled, Days: settings.EveryDays}
 	if settings.Window == nil {
@@ -123,8 +122,7 @@ func scheduleRow(settings ScheduleSettings, presets []int, intervalCode string) 
 	start, startErr := parseClock(settings.Window.Start)
 	end, endErr := parseClock(settings.Window.End)
 	if startErr != nil || endErr != nil || start == end {
-		return model.Schedule{}, &domain.ValidationError{Code: "invalid_auto_window",
-			Message: "the window needs two different HH:MM times"}
+		return model.Schedule{}, &domain.ValidationError{Code: "invalid_auto_window"}
 	}
 	row.WindowStart, row.WindowEnd = &start, &end
 	return row, nil

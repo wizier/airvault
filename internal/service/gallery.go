@@ -92,7 +92,7 @@ func galleryRevision(assets []GalleryAsset) string {
 
 func validPage(offset, limit int) error {
 	if offset < 0 || limit < 1 || limit > 500 {
-		return &domain.ValidationError{Code: "invalid_page", Message: "offset must be non-negative and limit must be 1-500"}
+		return &domain.ValidationError{Code: "invalid_page"}
 	}
 	return nil
 }
@@ -228,7 +228,7 @@ func readThumbInSession(session *devicefs.Session, dcimPath string) ([]byte, err
 	}
 	thumbDir, err := devicefs.ParsePath("PhotoData/Thumbnails/V2/" + assetPath.String())
 	if err != nil {
-		return nil, &domain.ValidationError{Code: "invalid_thumbnail_path", Message: "invalid thumbnail path"}
+		return nil, &domain.ValidationError{Code: "invalid_thumbnail_path"}
 	}
 	thumbs, err := session.Children(thumbDir)
 	if err != nil {
@@ -250,10 +250,10 @@ func sessionDead(ctx context.Context, err error) bool {
 // One media session per page: one lockdown handshake instead of one per tile.
 func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []string) (map[string][]byte, error) {
 	if len(dcimPaths) == 0 {
-		return nil, &domain.ValidationError{Code: "paths_required", Message: "at least one path is required"}
+		return nil, &domain.ValidationError{Code: "paths_required"}
 	}
 	if len(dcimPaths) > 128 {
-		return nil, &domain.ValidationError{Code: "too_many_paths", Message: "too many paths in one batch"}
+		return nil, &domain.ValidationError{Code: "too_many_paths"}
 	}
 	return thumbBatch(ctx, func() (*devicefs.Session, func(), error) {
 		return s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "thumb_failed")

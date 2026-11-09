@@ -54,8 +54,7 @@ func (h *Handler) deleteBackups(c *echo.Context) error {
 	case c.QueryParam("all") == "true":
 		err = h.svc.DeleteBackups(c.Request().Context(), c.Param("udid"))
 	default:
-		err = &domain.ValidationError{Code: "snapshot_required",
-			Message: "select restore points (id=…) or pass all=true"}
+		err = &domain.ValidationError{Code: "snapshot_required"}
 	}
 	if err != nil {
 		return err

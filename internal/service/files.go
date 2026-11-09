@@ -11,18 +11,18 @@ import (
 func parseRequiredPath(raw string) (devicefs.Path, error) {
 	devicePath, err := devicefs.ParsePath(raw)
 	if err != nil || devicePath.String() == "" {
-		return devicefs.Path{}, &domain.ValidationError{Code: "invalid_path", Message: "path is required and must be valid"}
+		return devicefs.Path{}, &domain.ValidationError{Code: "invalid_path"}
 	}
 	return devicePath, nil
 }
 
 func appDocumentsRoot(bundleID string) (devicefs.Root, error) {
 	if bundleID == "" {
-		return devicefs.Root{}, &domain.ValidationError{Code: "bundle_id_required", Message: "bundle id is required"}
+		return devicefs.Root{}, &domain.ValidationError{Code: "bundle_id_required"}
 	}
 	root, err := devicefs.AppDocuments(bundleID)
 	if err != nil {
-		return devicefs.Root{}, &domain.ValidationError{Code: "invalid_bundle_id", Message: err.Error()}
+		return devicefs.Root{}, &domain.ValidationError{Code: "invalid_bundle_id"}
 	}
 	return root, nil
 }
@@ -71,7 +71,7 @@ func (s *Service) deviceFileList(
 ) ([]FileEntry, error) {
 	devicePath, err := devicefs.ParsePath(rawPath)
 	if err != nil {
-		return nil, &domain.ValidationError{Code: "invalid_path", Message: err.Error()}
+		return nil, &domain.ValidationError{Code: "invalid_path"}
 	}
 	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), errorCode)
 	if err != nil {
@@ -179,7 +179,7 @@ func (s *Service) deviceFileStat(ctx context.Context, udid string, root devicefs
 		return DeviceFileStat{}, newEngineActionError("stat_failed", err)
 	}
 	if entry.Kind != devicefs.EntryFile {
-		return DeviceFileStat{}, &domain.ValidationError{Code: "file_required", Message: "path must identify a file"}
+		return DeviceFileStat{}, &domain.ValidationError{Code: "file_required"}
 	}
 	// Stat always sizes a file entry.
 	return DeviceFileStat{Size: *entry.Size, Modified: entry.Modified}, nil

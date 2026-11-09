@@ -56,7 +56,7 @@ func (l *Library) AllRestorePoints(ctx context.Context) ([]model.Backup, error) 
 // unknown one is a validation error.
 func (l *Library) Lookup(ctx context.Context, id string) (*model.Backup, error) {
 	if id == "" {
-		return nil, &domain.ValidationError{Code: "snapshot_required", Message: "a backup snapshot must be selected"}
+		return nil, &domain.ValidationError{Code: "snapshot_required"}
 	}
 	snapshot, err := l.catalog.Backup.Get(ctx, id)
 	if errors.Is(err, domain.ErrNotFound) {
@@ -66,11 +66,11 @@ func (l *Library) Lookup(ctx context.Context, id string) (*model.Backup, error) 
 }
 
 func snapshotNotFound() error {
-	return &domain.ValidationError{Code: "snapshot_not_found", Message: "the selected backup snapshot no longer exists"}
+	return &domain.ValidationError{Code: "snapshot_not_found"}
 }
 
 func snapshotDamaged() error {
-	return &domain.ValidationError{Code: "backup_damaged", Message: "the selected backup is damaged; run an integrity check or delete it"}
+	return &domain.ValidationError{Code: "backup_damaged"}
 }
 
 // Open reads a restore point as an iOS backup; one that is not complete is

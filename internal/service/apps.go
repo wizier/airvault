@@ -34,10 +34,10 @@ const maxAppIconBatch = 100
 
 func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string) (map[string][]byte, error) {
 	if len(bundleIDs) == 0 || slices.Contains(bundleIDs, "") {
-		return nil, &domain.ValidationError{Code: "bundle_id_required", Message: "non-empty bundle ids are required"}
+		return nil, &domain.ValidationError{Code: "bundle_id_required"}
 	}
 	if len(bundleIDs) > maxAppIconBatch {
-		return nil, &domain.ValidationError{Code: "too_many_bundle_ids", Message: "too many bundle ids in one batch"}
+		return nil, &domain.ValidationError{Code: "too_many_bundle_ids"}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, on
 
 func (s *Service) UninstallApp(ctx context.Context, udid, bundleID string) error {
 	if bundleID == "" {
-		return &domain.ValidationError{Code: "bundle_id_required", Message: "bundle id is required"}
+		return &domain.ValidationError{Code: "bundle_id_required"}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err

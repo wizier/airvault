@@ -31,7 +31,7 @@ func (s *Service) Power(ctx context.Context, udid string, action PowerAction) er
 	case PowerSleep:
 		engineAction = engine.PowerSleep
 	default:
-		return &domain.ValidationError{Code: "invalid_power_action", Message: "action must be restart, shutdown or sleep"}
+		return &domain.ValidationError{Code: "invalid_power_action"}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
@@ -97,7 +97,7 @@ const (
 
 func (s *Service) Wallpaper(ctx context.Context, udid string, screen WallpaperScreen) ([]byte, error) {
 	if screen != WallpaperHome && screen != WallpaperLock {
-		return nil, &domain.ValidationError{Code: "invalid_wallpaper_screen", Message: "screen must be home or lock"}
+		return nil, &domain.ValidationError{Code: "invalid_wallpaper_screen"}
 	}
 	// Loaded automatically by device cards; never wakes the phone.
 	if err := s.reachableDevice(ctx, udid); err != nil {

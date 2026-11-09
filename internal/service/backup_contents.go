@@ -113,7 +113,7 @@ func (u *unlockedBackups) close(b *unlockedBackup) {
 }
 
 func backupLocked() error {
-	return &domain.ValidationError{Code: "backup_locked", Message: "unlock this backup with its password to browse it"}
+	return &domain.ValidationError{Code: "backup_locked"}
 }
 
 // UnlockBackup opens a restore point's files for browsing; an encrypted one
@@ -127,13 +127,13 @@ func (s *Service) UnlockBackup(ctx context.Context, snapshotID, password string)
 func (s *Service) unlockBackup(ctx context.Context, snapshotID, password string) (*iosbackup.Contents, error) {
 	backup, err := s.library.Open(ctx, snapshotID)
 	if errors.Is(err, library.ErrIncomplete) {
-		return nil, &domain.ValidationError{Code: "backup_not_browsable", Message: "the selected backup is not confirmed complete and can't be opened"}
+		return nil, &domain.ValidationError{Code: "backup_not_browsable"}
 	}
 	if err != nil {
 		return nil, err
 	}
 	if backup.Encrypted && password == "" {
-		return nil, &domain.ValidationError{Code: "backup_password_required", Message: "this backup is encrypted — its password is required"}
+		return nil, &domain.ValidationError{Code: "backup_password_required"}
 	}
 	s.unlocked.unlocking.Lock()
 	defer s.unlocked.unlocking.Unlock()
@@ -143,7 +143,7 @@ func (s *Service) unlockBackup(ctx context.Context, snapshotID, password string)
 	}
 	contents, err := backup.Unlock(ctx, password)
 	if errors.Is(err, iosbackup.ErrWrongPassword) {
-		return nil, &domain.ValidationError{Code: "invalid_backup_password", Message: "this password does not unlock the selected backup"}
+		return nil, &domain.ValidationError{Code: "invalid_backup_password"}
 	}
 	if err != nil {
 		return nil, s.backupError(ctx, backup.Source(), err)
@@ -174,7 +174,7 @@ func (s *Service) backupError(ctx context.Context, source string, err error) err
 	case errors.Is(err, iosbackup.ErrClosed):
 		return backupLocked()
 	case errors.Is(err, iosbackup.ErrNotStored):
-		return &domain.ValidationError{Code: "backup_file_not_stored", Message: "the backup does not hold this file"}
+		return &domain.ValidationError{Code: "backup_file_not_stored"}
 	case errors.Is(err, fs.ErrNotExist):
 		return domain.ErrNotFound
 	}

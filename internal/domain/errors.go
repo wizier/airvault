@@ -18,13 +18,12 @@ var (
 	ErrOperationState = errors.New("operation state conflict")
 )
 
-// Message never crosses the HTTP boundary; only Code does.
+// ValidationError is input the server refuses. The SPA words it from Code.
 type ValidationError struct {
-	Code    string
-	Message string
+	Code string
 }
 
-func (e *ValidationError) Error() string { return e.Message }
+func (e *ValidationError) Error() string { return e.Code }
 
 // ActionError is for an operation that reached the phone but failed. Only Code
 // crosses the HTTP boundary; Cause stays for logs.

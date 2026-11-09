@@ -12,7 +12,7 @@ import (
 // outcome committed here.
 func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new string) error {
 	if old == "" && new == "" {
-		return &domain.ValidationError{Code: "backup_password_change_empty", Message: "provide the old and/or new password"}
+		return &domain.ValidationError{Code: "backup_password_change_empty"}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err

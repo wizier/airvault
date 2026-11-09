@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"slices"
 	"time"
@@ -110,14 +109,12 @@ func (s *Service) cleanupAfterBackup(ctx context.Context, udid string, points []
 
 func cleanupRow(settings CleanupSettings) (model.Cleanup, error) {
 	if !slices.Contains(cleanupDayPresets, settings.KeepDays) {
-		return model.Cleanup{}, &domain.ValidationError{Code: "invalid_cleanup_days",
-			Message: fmt.Sprintf("cleanup keeps every backup of one of %v last days", cleanupDayPresets)}
+		return model.Cleanup{}, &domain.ValidationError{Code: "invalid_cleanup_days"}
 	}
 	switch settings.Thin {
 	case ThinWeek, ThinMonth, ThinNone:
 	default:
-		return model.Cleanup{}, &domain.ValidationError{Code: "invalid_cleanup_thin",
-			Message: "older backups thin to one a week, one a month or none"}
+		return model.Cleanup{}, &domain.ValidationError{Code: "invalid_cleanup_thin"}
 	}
 	return model.Cleanup{Enabled: settings.Enabled, KeepDays: settings.KeepDays, Thin: string(settings.Thin)}, nil
 }

@@ -20,7 +20,7 @@ func TestAPIErrorPayloadContainsCodeOnly(t *testing.T) {
 		wantPayload string
 	}{
 		{domain.ErrBusy, http.StatusConflict, `{"error":{"code":"resource_busy"}}`},
-		{&domain.ValidationError{Code: "invalid_path", Message: "native path parser detail"},
+		{&domain.ValidationError{Code: "invalid_path"},
 			http.StatusUnprocessableEntity, `{"error":{"code":"invalid_path"}}`},
 	} {
 		status, body := mapAPIError(test.err)

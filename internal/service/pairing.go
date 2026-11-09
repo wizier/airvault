@@ -77,7 +77,7 @@ func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.Pairin
 // the request's ctx; the pairing run lives as long as the app.
 func (s *Service) StartTrustFlow(ctx context.Context, udid string) (string, error) {
 	if domain.ValidateSource(udid) != nil {
-		return "", &domain.ValidationError{Code: "invalid_udid", Message: "a valid udid is required"}
+		return "", &domain.ValidationError{Code: "invalid_udid"}
 	}
 	usb, err := s.ListPairableUSB(ctx)
 	if err != nil {
