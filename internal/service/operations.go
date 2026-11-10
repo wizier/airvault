@@ -16,15 +16,18 @@ import (
 type runKind string
 
 const (
-	runKindBackup    runKind = "backup"
-	runKindRestore   runKind = "restore"
-	runKindInstall   runKind = "install"
-	runKindUninstall runKind = "uninstall"
-	runKindPairing   runKind = "pairing"
-	runKindPassword  runKind = "password"
-	runKindPower     runKind = "power"
-	runKindVerify    runKind = "verify"
-	runKindErase     runKind = "erase"
+	runKindBackup           runKind = "backup"
+	runKindRestore          runKind = "restore"
+	runKindInstall          runKind = "install"
+	runKindUninstall        runKind = "uninstall"
+	runKindPairing          runKind = "pairing"
+	runKindPassword         runKind = "password"
+	runKindPower            runKind = "power"
+	runKindVerify           runKind = "verify"
+	runKindErase            runKind = "erase"
+	runKindUnpair           runKind = "unpair"
+	runKindBackupDeletion   runKind = "backup deletion"
+	runKindSnapshotDeletion runKind = "snapshot deletion"
 )
 
 type runState string

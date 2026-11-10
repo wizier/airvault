@@ -17,11 +17,9 @@ const (
 	// autoBackupDwell is how long an unlock must last before the trigger fires,
 	// so a glance at the phone never raises the passcode prompt.
 	autoBackupDwell = 5 * time.Second
-	// A failed automatic attempt pauses the trigger; at most autoBackupLimit
-	// of them may fall within autoBackupLimitWindow.
-	autoBackupPause       = time.Hour
-	autoBackupLimit       = 3
-	autoBackupLimitWindow = 24 * time.Hour
+	// A failed automatic attempt pauses the trigger; at most autoFailureLimit
+	// of them may fall within autoFailureWindow.
+	autoBackupPause = time.Hour
 )
 
 var autoBackupPresets = []int{1, 3, 7}
@@ -38,7 +36,7 @@ func (r *runRegistry) recordAutoBackup(run *runReservation, state runState, erro
 		h := r.autoHistory[key]
 		if run.auto {
 			copy(h.failures[:], h.failures[1:])
-			h.failures[autoBackupLimit-1] = now
+			h.failures[autoFailureLimit-1] = now
 		}
 		h.pausedUntil = now.Add(autoBackupPause)
 		r.autoHistory[key] = h

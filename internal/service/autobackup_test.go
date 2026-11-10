@@ -22,7 +22,7 @@ func TestAutoWait(t *testing.T) {
 	failed := func(ago ...time.Duration) autoHistory {
 		var h autoHistory
 		for i, d := range ago {
-			h.failures[autoBackupLimit-len(ago)+i] = now.Add(-d)
+			h.failures[autoFailureLimit-len(ago)+i] = now.Add(-d)
 		}
 		return h
 	}
@@ -104,7 +104,7 @@ func TestRecordAutoBackup(t *testing.T) {
 			}
 			s.completeRun(run, runOutcome{errorCode: errorCode}, err)
 		}
-		expect := func(step string, failures [autoBackupLimit]time.Time, pausedUntil time.Time) {
+		expect := func(step string, failures [autoFailureLimit]time.Time, pausedUntil time.Time) {
 			got := s.runs.autoHistory[autoKey{"udid-1", runKindBackup}]
 			for i := range failures {
 				if !got.failures[i].Equal(failures[i]) {
@@ -115,21 +115,21 @@ func TestRecordAutoBackup(t *testing.T) {
 				t.Fatalf("%s: pausedUntil = %v, want %v", step, got.pausedUntil, pausedUntil)
 			}
 		}
-		var none [autoBackupLimit]time.Time
+		var none [autoFailureLimit]time.Time
 
 		finish(false, "device_timeout")
 		expect("manual failure", none, time.Time{})
 		finish(false, domain.CodeBackupNotConfirmed)
 		expect("unanswered manual prompt", none, time.Now().Add(autoBackupPause))
 
-		var failures [autoBackupLimit + 1]time.Time
+		var failures [autoFailureLimit + 1]time.Time
 		for i := range failures {
 			time.Sleep(2 * time.Hour)
 			failures[i] = time.Now()
 			finish(true, domain.CodeBackupNotConfirmed)
 		}
-		expect("automatic failures", [autoBackupLimit]time.Time(failures[1:]),
-			failures[autoBackupLimit].Add(autoBackupPause))
+		expect("automatic failures", [autoFailureLimit]time.Time(failures[1:]),
+			failures[autoFailureLimit].Add(autoBackupPause))
 
 		finish(false, "")
 		if _, kept := s.runs.autoHistory[autoKey{"udid-1", runKindBackup}]; kept {

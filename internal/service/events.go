@@ -78,7 +78,7 @@ type runStartEvent struct {
 	SnapshotID string  `json:"snapshotId,omitempty"`
 }
 
-// runStarted announces a backup, or a restore from snapshotID.
+// runStarted announces a backup, an integrity check, or a restore from snapshotID.
 func runStarted(run *runReservation, snapshotID string) events.Event {
 	return events.Event{Type: "backup.started", Data: runStartEvent{RunID: run.id, UDID: run.udid,
 		Kind: run.kind, SnapshotID: snapshotID}}

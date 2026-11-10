@@ -207,11 +207,8 @@ func galleryAsset(photo iosbackup.Photo) GalleryAsset {
 // BackupPhotoThumbs reads iOS's own thumbnails; photos without one are left
 // out, as from the phone.
 func (s *Service) BackupPhotoThumbs(ctx context.Context, snapshotID string, paths []string) (map[string][]byte, error) {
-	if len(paths) == 0 {
-		return nil, &domain.ValidationError{Code: domain.CodePathsRequired}
-	}
-	if len(paths) > 128 {
-		return nil, &domain.ValidationError{Code: domain.CodeTooManyPaths}
+	if err := validThumbBatch(paths); err != nil {
+		return nil, err
 	}
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) (map[string][]byte, error) {
 		// A library that fails to read is not kept: fail the batch once, not per photo.

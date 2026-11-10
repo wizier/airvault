@@ -50,7 +50,7 @@ func (s *Service) scrub(ctx context.Context, sources []string) {
 // The device row may be absent: the catalog is rebuilt from disk independently.
 // No device lease: nothing here touches the phone.
 func (s *Service) DeleteBackups(ctx context.Context, udid string) error {
-	release, err := s.acquireFor(ctx, "backup deletion", udid, snapshotWriteResource(udid))
+	release, err := s.acquireFor(ctx, runKindBackupDeletion, udid, snapshotWriteResource(udid))
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func (s *Service) deleteSource(ctx context.Context, udid string, release func())
 }
 
 func (s *Service) DeleteSnapshots(ctx context.Context, udid string, snapshotIDs []string) error {
-	release, err := s.acquireFor(ctx, "snapshot deletion", udid, snapshotWriteResource(udid))
+	release, err := s.acquireFor(ctx, runKindSnapshotDeletion, udid, snapshotWriteResource(udid))
 	if err != nil {
 		return err
 	}

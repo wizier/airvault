@@ -97,6 +97,19 @@ func validPage(offset, limit int) error {
 	return nil
 }
 
+const maxThumbBatch = 128
+
+// validThumbBatch checks a request names thumbnails, and no more than one batch of them.
+func validThumbBatch(paths []string) error {
+	if len(paths) == 0 {
+		return &domain.ValidationError{Code: domain.CodePathsRequired}
+	}
+	if len(paths) > maxThumbBatch {
+		return &domain.ValidationError{Code: domain.CodeTooManyPaths}
+	}
+	return nil
+}
+
 func (s *Service) GalleryPage(ctx context.Context, udid string, offset, limit int, revision string) ([]GalleryAsset, int, string, error) {
 	if err := validPage(offset, limit); err != nil {
 		return nil, 0, "", err
@@ -249,11 +262,8 @@ func sessionDead(ctx context.Context, err error) bool {
 
 // One media session per page: one lockdown handshake instead of one per tile.
 func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []string) (map[string][]byte, error) {
-	if len(dcimPaths) == 0 {
-		return nil, &domain.ValidationError{Code: domain.CodePathsRequired}
-	}
-	if len(dcimPaths) > 128 {
-		return nil, &domain.ValidationError{Code: domain.CodeTooManyPaths}
+	if err := validThumbBatch(dcimPaths); err != nil {
+		return nil, err
 	}
 	return thumbBatch(ctx, func() (*devicefs.Session, func(), error) {
 		return s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), domain.CodeThumbFailed)

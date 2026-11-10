@@ -11,6 +11,7 @@ import (
 	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/model"
+	"github.com/wizier/airvault/internal/storage"
 )
 
 type DeviceOverview struct {
@@ -27,7 +28,7 @@ type DeviceOverview struct {
 	ActivationState string     `json:"activationState,omitempty"`
 	LastSeen        *time.Time `json:"lastSeen,omitempty"`
 	LastBackup      *time.Time `json:"lastBackup,omitempty"`
-	// Run kind ("backup"/"restore") to the stable error code of its most recent
+	// Run kind ("backup", "restore", "verify") to the stable error code of its most recent
 	// failed run; the client localizes it.
 	LastRunErrors map[runKind]domain.Code `json:"lastRunErrors,omitempty"`
 	// Live objects plus published manifests; nil means unknown.
@@ -42,6 +43,12 @@ type DeviceOverview struct {
 	// Orphaned marks a source with restore points on disk but no registry row —
 	// its phone was removed while the backups stayed.
 	Orphaned bool `json:"orphaned,omitempty"`
+}
+
+// showBackups fills in what the catalog holds of the source's backups.
+func (o *DeviceOverview) showBackups(backups storage.SourceSummary) {
+	o.LastBackup = optionalTime(backups.LatestRestorable)
+	o.DiskBytes, o.RestorePoints, o.DamagedPoints = backups.DiskBytes, backups.RestorePoints, backups.DamagedPoints
 }
 
 func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOverview {
@@ -107,12 +114,7 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 	for _, d := range devices {
 		seen[d.UDID] = struct{}{}
 		ov := s.decorate(d, rt)
-		if gs, ok := summary[d.UDID]; ok {
-			ov.LastBackup = optionalTime(gs.LatestRestorable)
-			ov.DiskBytes = gs.DiskBytes
-			ov.RestorePoints = gs.RestorePoints
-			ov.DamagedPoints = gs.DamagedPoints
-		}
+		ov.showBackups(summary[d.UDID])
 		ov.AutoBackup = s.scheduleView(runKindBackup, d.UDID, d.AutoBackup, summary[d.UDID], now)
 		ov.Cleanup = new(cleanupSettingsOf(d.Cleanup))
 		ov.AutoVerify = s.scheduleView(runKindVerify, d.UDID, d.AutoVerify, summary[d.UDID], now)
@@ -124,13 +126,12 @@ func (s *Service) DeviceList(ctx context.Context) ([]DeviceOverview, error) {
 		if _, ok := seen[source]; ok {
 			continue
 		}
-		out = append(out, DeviceOverview{
+		orphan := DeviceOverview{
 			UDID: source, Name: cmp.Or(stored.DeviceName, source), Connection: "offline",
-			ProductType: stored.ProductType, IOSVersion: stored.IOSVersion,
-			LastBackup: optionalTime(stored.LatestRestorable),
-			DiskBytes:  stored.DiskBytes, RestorePoints: stored.RestorePoints,
-			DamagedPoints: stored.DamagedPoints, Orphaned: true,
-		})
+			ProductType: stored.ProductType, IOSVersion: stored.IOSVersion, Orphaned: true,
+		}
+		orphan.showBackups(stored)
+		out = append(out, orphan)
 	}
 	slices.SortFunc(out, func(a, b DeviceOverview) int { return cmp.Compare(a.UDID, b.UDID) })
 	return out, nil
@@ -208,7 +209,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	if _, err := s.store.Device.GetByUDID(ctx, udid); err != nil {
 		return err
 	}
-	release, err := s.acquireFor(ctx, "unpair", udid, deviceWriteResource(udid))
+	release, err := s.acquireFor(ctx, runKindUnpair, udid, deviceWriteResource(udid))
 	if err != nil {
 		return err
 	}
@@ -218,7 +219,7 @@ func (s *Service) Unpair(ctx context.Context, udid string, deleteBackups bool) e
 	var releaseSnapshots func()
 	handedOff := false
 	if deleteBackups {
-		if releaseSnapshots, err = s.acquireFor(ctx, "unpair", udid, snapshotWriteResource(udid)); err != nil {
+		if releaseSnapshots, err = s.acquireFor(ctx, runKindUnpair, udid, snapshotWriteResource(udid)); err != nil {
 			return err
 		}
 		// Every path that does not reach DeleteSource gives the lease back

@@ -18,6 +18,12 @@ import (
 // daily backup does not drift later day by day.
 const autoSlack = 4 * time.Hour
 
+// How many failures a task's history keeps and how long each holds the task.
+const (
+	autoFailureLimit  = 3
+	autoFailureWindow = 24 * time.Hour
+)
+
 // Why a scheduled task cannot start yet.
 const (
 	autoWaitFirstBackup = "first_backup" // the first, full backup is manual
@@ -73,7 +79,7 @@ type ScheduleView struct {
 }
 
 type autoHistory struct {
-	failures    [autoBackupLimit]time.Time // oldest first; zero until that many
+	failures    [autoFailureLimit]time.Time // oldest first; zero until that many
 	pausedUntil time.Time
 }
 
@@ -190,7 +196,7 @@ func autoWait(every time.Duration, points int, latest *int64, history autoHistor
 	}
 	hold(autoWaitPaused, history.pausedUntil)
 	if oldest := history.failures[0]; !oldest.IsZero() {
-		hold(autoWaitLimit, oldest.Add(autoBackupLimitWindow))
+		hold(autoWaitLimit, oldest.Add(autoFailureWindow))
 	}
 	if wait == "" {
 		return "", time.Time{}

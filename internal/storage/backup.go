@@ -8,6 +8,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+const backupColumns = `id, source_udid, size_bytes, transferred_bytes, encrypted, device_name, product_type,
+	ios_version, created_at, started_at, damage, damaged_files, verified_at`
+
 // backup_sources caches each source's reachable bytes; no row means the size is
 // unknown until a collection measures it.
 type BackupRepo struct{ s *Store }
@@ -59,7 +62,7 @@ func (r *BackupRepo) DeleteSourceSnapshots(ctx context.Context, source string) e
 
 func (r *BackupRepo) Get(ctx context.Context, id string) (*model.Backup, error) {
 	return getOne[model.Backup](ctx, r.s.ext(),
-		`SELECT * FROM backups WHERE id = ?`, id)
+		`SELECT `+backupColumns+` FROM backups WHERE id = ?`, id)
 }
 
 func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, error) {
@@ -79,7 +82,7 @@ func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, er
 
 func (r *BackupRepo) ListCompleteBySource(ctx context.Context, source string) ([]model.Backup, error) {
 	return listOf[model.Backup](ctx, r.s.ext(), `
-		SELECT * FROM backups
+		SELECT `+backupColumns+` FROM backups
 		WHERE source_udid = ?
 		ORDER BY created_at DESC, id DESC`, source)
 }
@@ -90,7 +93,7 @@ const listCompleteLimit = 1000
 // restore sources.
 func (r *BackupRepo) ListComplete(ctx context.Context) ([]model.Backup, error) {
 	return listOf[model.Backup](ctx, r.s.ext(), `
-		SELECT * FROM backups
+		SELECT `+backupColumns+` FROM backups
 		ORDER BY created_at DESC, id DESC
 		LIMIT ?`, listCompleteLimit)
 }

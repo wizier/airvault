@@ -126,6 +126,31 @@ func TestSetAutomaticTasks(t *testing.T) {
 	}
 }
 
+// What a device shows before anything is saved can be saved as it is: the
+// defaults are among the presets.
+func TestDefaultAutomaticTasksAreValid(t *testing.T) {
+	ctx := context.Background()
+	const phone = "testphoneudid0008"
+	svc, _ := newStoredService(t)
+	svc.runs = newRunRegistry(svc.bus)
+	if err := svc.store.Device.Upsert(ctx, &model.Device{UDID: phone, Name: phone, Paired: true}); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := svc.DeviceList(ctx)
+	if err != nil || len(devices) != 1 {
+		t.Fatalf("devices = %+v, %v; want %s alone", devices, err, phone)
+	}
+	shown := devices[0]
+	defaults := AutomaticTasks{
+		AutoBackup: shown.AutoBackup.ScheduleSettings,
+		Cleanup:    *shown.Cleanup,
+		AutoVerify: shown.AutoVerify.ScheduleSettings,
+	}
+	if err := svc.SetAutomaticTasks(ctx, phone, defaults); err != nil {
+		t.Fatalf("saving the defaults %+v: %v", defaults, err)
+	}
+}
+
 // A backup's schedule counts from the latest restorable one, not the last check.
 func TestScheduleWaitCountsFromTheBackup(t *testing.T) {
 	now := time.Date(2026, 9, 26, 3, 0, 0, 0, time.UTC)
