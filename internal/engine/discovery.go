@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -135,28 +136,27 @@ func (e *Engine) ListUSBDevices(ctx context.Context) ([]USBDevice, error) {
 	usb := make([]USBDevice, len(attached))
 	var wg sync.WaitGroup
 	for i, device := range attached {
-		usb[i] = USBDevice{DeviceID: DeviceID(device.UDID), Name: device.UDID}
 		wg.Go(func() {
-			if name, productType, err := e.usbIdentity(ctx, device); err == nil {
-				usb[i].Name, usb[i].ProductType = name, productType
-			}
+			name, productType := e.usbIdentity(ctx, device)
+			usb[i] = USBDevice{DeviceID: DeviceID(device.UDID), Name: cmp.Or(name, device.UDID), ProductType: productType}
 		})
 	}
 	wg.Wait()
 	return usb, nil
 }
 
-func (e *Engine) usbIdentity(ctx context.Context, device ios.Device) (name, productType string, err error) {
+// usbIdentity is what the device tells of its name and type, "" for what it doesn't.
+func (e *Engine) usbIdentity(ctx context.Context, device ios.Device) (name, productType string) {
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 	lockdown, err := ios.DialLockdown(ctx, e.mux, device)
 	if err != nil {
-		return "", "", err
+		return "", ""
 	}
 	defer lockdown.Close()
-	name, errName := nonEmpty(ctx, lockdown, "DeviceName")
-	productType, errType := nonEmpty(ctx, lockdown, "ProductType")
-	return name, productType, errors.Join(errName, errType)
+	name, _ = lockdown.Value[string](ctx, "", "DeviceName")
+	productType, _ = lockdown.Value[string](ctx, "", "ProductType")
+	return name, productType
 }
 
 func (e *Engine) Battery(ctx context.Context, device DeviceID) (Battery, error) {

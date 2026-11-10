@@ -82,16 +82,27 @@ func TestPresenceAndUSBList(t *testing.T) {
 	}
 }
 
-// A device that won't identify itself is still offered for pairing, by UDID.
-func TestUSBListWithoutProductType(t *testing.T) {
-	p := newTestPhone(t)
-	p.phone.SetValue("", "ProductType", "")
-	usb, err := p.engine.ListUSBDevices(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []USBDevice{{DeviceID: p.udid, Name: string(p.udid)}}; !reflect.DeepEqual(usb, want) {
-		t.Fatalf("USB devices = %+v, want %+v", usb, want)
+// A device is offered for pairing with what it tells of itself; without a name, by UDID.
+func TestUSBListWithPartialIdentity(t *testing.T) {
+	for _, test := range []struct {
+		missing string
+		want    USBDevice
+	}{
+		{"ProductType", USBDevice{Name: "Test iPhone"}},
+		{"DeviceName", USBDevice{Name: "PHONE-UDID", ProductType: "iPhone17,1"}},
+	} {
+		t.Run(test.missing, func(t *testing.T) {
+			p := newTestPhone(t)
+			p.phone.SetValue("", test.missing, "")
+			usb, err := p.engine.ListUSBDevices(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.want.DeviceID = p.udid
+			if want := []USBDevice{test.want}; !reflect.DeepEqual(usb, want) {
+				t.Fatalf("USB devices = %+v, want %+v", usb, want)
+			}
+		})
 	}
 }
 

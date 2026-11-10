@@ -23,13 +23,14 @@ const (
 // ordinary presence changes.
 func (s *Service) Power(ctx context.Context, udid string, action PowerAction) error {
 	var engineAction engine.PowerAction
+	failureCode := domain.CodePowerRequestFailed
 	switch action {
 	case PowerRestart:
 		engineAction = engine.PowerRestart
 	case PowerShutdown:
 		engineAction = engine.PowerShutdown
 	case PowerSleep:
-		engineAction = engine.PowerSleep
+		engineAction, failureCode = engine.PowerSleep, domain.CodeSleepRequestFailed
 	default:
 		return &domain.ValidationError{Code: domain.CodeInvalidPowerAction}
 	}
@@ -38,8 +39,7 @@ func (s *Service) Power(ctx context.Context, udid string, action PowerAction) er
 	}
 	err := s.runCommand(ctx, runKindPower, udid, func(ctx context.Context) error {
 		if err := s.engine.Power(ctx, engine.DeviceID(udid), engineAction); err != nil {
-			slog.DebugContext(ctx, "power: request failed", "udid", udid, "action", action, "error", err)
-			return fmt.Errorf("power %s: %w", action, domain.ErrDeviceOffline)
+			return newEngineActionError(failureCode, err)
 		}
 		slog.DebugContext(ctx, "power: accepted", "udid", udid, "action", action)
 		return nil
