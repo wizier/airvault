@@ -20,26 +20,26 @@ var (
 
 // ValidationError is input the server refuses. The SPA words it from Code.
 type ValidationError struct {
-	Code string
+	Code Code
 }
 
-func (e *ValidationError) Error() string { return e.Code }
+func (e *ValidationError) Error() string { return string(e.Code) }
 
 // ActionError is for an operation that reached the phone but failed. Only Code
 // crosses the HTTP boundary; Cause stays for logs.
 type ActionError struct {
-	Code  string
+	Code  Code
 	Cause error
 }
 
 func (e *ActionError) Error() string {
 	if e.Cause == nil {
-		return e.Code
+		return string(e.Code)
 	}
-	return e.Code + ": " + e.Cause.Error()
+	return string(e.Code) + ": " + e.Cause.Error()
 }
 func (e *ActionError) Unwrap() error { return e.Cause }
 
-func NewActionError(code string, cause error) *ActionError {
+func NewActionError(code Code, cause error) *ActionError {
 	return &ActionError{Code: code, Cause: cause}
 }

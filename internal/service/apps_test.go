@@ -14,7 +14,7 @@ func TestAppIconsValidatesBatch(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		bundleIDs []string
-		code      string
+		code      domain.Code
 	}{
 		{"empty list", nil, "bundle_id_required"},
 		{"empty id", []string{"com.example.app", ""}, "bundle_id_required"},

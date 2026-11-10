@@ -11,24 +11,24 @@ import (
 func parseRequiredPath(raw string) (devicefs.Path, error) {
 	devicePath, err := devicefs.ParsePath(raw)
 	if err != nil || devicePath.String() == "" {
-		return devicefs.Path{}, &domain.ValidationError{Code: "invalid_path"}
+		return devicefs.Path{}, &domain.ValidationError{Code: domain.CodeInvalidPath}
 	}
 	return devicePath, nil
 }
 
 func appDocumentsRoot(bundleID string) (devicefs.Root, error) {
 	if bundleID == "" {
-		return devicefs.Root{}, &domain.ValidationError{Code: "bundle_id_required"}
+		return devicefs.Root{}, &domain.ValidationError{Code: domain.CodeBundleIDRequired}
 	}
 	root, err := devicefs.AppDocuments(bundleID)
 	if err != nil {
-		return devicefs.Root{}, &domain.ValidationError{Code: "invalid_bundle_id"}
+		return devicefs.Root{}, &domain.ValidationError{Code: domain.CodeInvalidBundleID}
 	}
 	return root, nil
 }
 
 func (s *Service) openLeasedSession(ctx context.Context, udid string, root devicefs.Root,
-	resource resourceRequest, errorCode string) (*devicefs.Session, func(), error) {
+	resource resourceRequest, errorCode domain.Code) (*devicefs.Session, func(), error) {
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, nil, err
 	}
@@ -60,18 +60,19 @@ func (s *Service) AppFiles(ctx context.Context, udid, bundleID, rawPath string) 
 	if err != nil {
 		return nil, err
 	}
-	return s.deviceFileList(ctx, udid, root, rawPath, "app_files_failed")
+	return s.deviceFileList(ctx, udid, root, rawPath, domain.CodeAppFilesFailed)
 }
 
 func (s *Service) deviceFileList(
 	ctx context.Context,
 	udid string,
 	root devicefs.Root,
-	rawPath, errorCode string,
+	rawPath string,
+	errorCode domain.Code,
 ) ([]FileEntry, error) {
 	devicePath, err := devicefs.ParsePath(rawPath)
 	if err != nil {
-		return nil, &domain.ValidationError{Code: "invalid_path"}
+		return nil, &domain.ValidationError{Code: domain.CodeInvalidPath}
 	}
 	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), errorCode)
 	if err != nil {
@@ -100,20 +101,20 @@ func (s *Service) AppFileDelete(ctx context.Context, udid, bundleID, devicePath 
 	if err != nil {
 		return err
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, deviceWriteResource(udid), "app_file_delete_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceWriteResource(udid), domain.CodeAppFileDeleteFailed)
 	if err != nil {
 		return err
 	}
 	defer release()
 	if err := session.Remove(parsedPath); err != nil {
 		slog.WarnContext(ctx, "app file delete: engine", "udid", udid, "bundle", bundleID, "path", devicePath, "error", err)
-		return newEngineActionError("app_file_delete_failed", err)
+		return newEngineActionError(domain.CodeAppFileDeleteFailed, err)
 	}
 	return nil
 }
 
 func (s *Service) MediaList(ctx context.Context, udid, rawPath string) ([]FileEntry, error) {
-	return s.deviceFileList(ctx, udid, devicefs.Media(), rawPath, "media_list_failed")
+	return s.deviceFileList(ctx, udid, devicefs.Media(), rawPath, domain.CodeMediaListFailed)
 }
 
 type DeviceDownload struct {
@@ -130,7 +131,7 @@ func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devi
 	if err != nil {
 		return nil, err
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), "download_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), domain.CodeDownloadFailed)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +140,7 @@ func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devi
 	file, err := session.OpenFile(devicePath)
 	if err != nil {
 		release()
-		return nil, newEngineActionError("download_failed", err)
+		return nil, newEngineActionError(domain.CodeDownloadFailed, err)
 	}
 	return &DeviceDownload{
 		File:    file,
@@ -169,17 +170,17 @@ func (s *Service) deviceFileStat(ctx context.Context, udid string, root devicefs
 	if err != nil {
 		return DeviceFileStat{}, err
 	}
-	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), "stat_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, root, deviceReadResource(udid), domain.CodeStatFailed)
 	if err != nil {
 		return DeviceFileStat{}, err
 	}
 	defer release()
 	entry, err := session.Stat(devicePath)
 	if err != nil {
-		return DeviceFileStat{}, newEngineActionError("stat_failed", err)
+		return DeviceFileStat{}, newEngineActionError(domain.CodeStatFailed, err)
 	}
 	if entry.Kind != devicefs.EntryFile {
-		return DeviceFileStat{}, &domain.ValidationError{Code: "file_required"}
+		return DeviceFileStat{}, &domain.ValidationError{Code: domain.CodeFileRequired}
 	}
 	// Stat always sizes a file entry.
 	return DeviceFileStat{Size: *entry.Size, Modified: entry.Modified}, nil

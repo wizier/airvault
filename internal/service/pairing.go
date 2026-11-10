@@ -15,7 +15,7 @@ import (
 // USBDevice is served as the engine reports it.
 type USBDevice = engine.USBDevice
 
-func actionErrorCode(err error, fallback string) string {
+func actionErrorCode(err error, fallback domain.Code) domain.Code {
 	if action, ok := errors.AsType[*domain.ActionError](err); ok && action.Code != "" {
 		return action.Code
 	}
@@ -27,7 +27,7 @@ func actionErrorCode(err error, fallback string) string {
 func (s *Service) ListPairableUSB(ctx context.Context) ([]USBDevice, error) {
 	all, err := s.engine.ListUSBDevices(ctx)
 	if err != nil {
-		return nil, newEngineActionError("pair_state_failed", err)
+		return nil, newEngineActionError(domain.CodePairStateFailed, err)
 	}
 	out := make([]USBDevice, 0, len(all))
 	for _, d := range all {
@@ -52,17 +52,17 @@ func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.Pairin
 	res, err := s.engine.AdvancePairing(ctx, engine.DeviceID(udid))
 	if err != nil {
 		slog.DebugContext(ctx, "pair trust: engine", "udid", udid, "error", err)
-		return res, newEngineActionError("pairing_failed", err)
+		return res, newEngineActionError(domain.CodePairingFailed, err)
 	}
 	if res == engine.TrustWiFiAuthorizationFailed {
 		return res, domain.NewActionError(
-			"wifi_authorization_failed",
+			domain.CodeWiFiAuthorizationFailed,
 			errors.New("USB pairing succeeded, but Wi-Fi setup could not be completed"),
 		)
 	}
 	if res == engine.TrustPaired {
 		if err := s.refreshRegisteredDevices(ctx); err != nil {
-			return res, domain.NewActionError("pairing_registration_failed", err)
+			return res, domain.NewActionError(domain.CodePairingRegistrationFailed, err)
 		}
 		device, err := s.store.Device.GetByUDID(ctx, udid)
 		if err != nil || !device.Paired {
@@ -77,7 +77,7 @@ func (s *Service) pairTrustOnce(ctx context.Context, udid string) (engine.Pairin
 // the request's ctx; the pairing run lives as long as the app.
 func (s *Service) StartTrustFlow(ctx context.Context, udid string) (string, error) {
 	if domain.ValidateSource(udid) != nil {
-		return "", &domain.ValidationError{Code: "invalid_udid"}
+		return "", &domain.ValidationError{Code: domain.CodeInvalidUDID}
 	}
 	usb, err := s.ListPairableUSB(ctx)
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *Service) executeTrustFlow(app context.Context, runID, udid string) erro
 	for {
 		status, err := s.pairTrustOnce(ctx, udid)
 		if err != nil {
-			s.bus.Emit(trustStep(runID, udid, engine.TrustError, actionErrorCode(err, "pairing_failed")))
+			s.bus.Emit(trustStep(runID, udid, engine.TrustError, actionErrorCode(err, domain.CodePairingFailed)))
 		} else {
 			s.bus.Emit(trustStep(runID, udid, status, ""))
 		}
@@ -111,10 +111,10 @@ func (s *Service) executeTrustFlow(app context.Context, runID, udid string) erro
 		}
 		if !sleepContext(ctx, 1500*time.Millisecond) {
 			reason := "pairing timed out — start it again when the phone is ready"
-			errorCode := "pairing_timeout"
+			errorCode := domain.CodePairingTimeout
 			if app.Err() != nil {
 				reason = "pairing cancelled"
-				errorCode = "operation_cancelled"
+				errorCode = domain.CodeOperationCancelled
 			}
 			s.bus.Emit(trustStep(runID, udid, engine.TrustError, errorCode))
 			return fmt.Errorf("%s", reason)

@@ -31,7 +31,7 @@ func (s *Service) Power(ctx context.Context, udid string, action PowerAction) er
 	case PowerSleep:
 		engineAction = engine.PowerSleep
 	default:
-		return &domain.ValidationError{Code: "invalid_power_action"}
+		return &domain.ValidationError{Code: domain.CodeInvalidPowerAction}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
@@ -55,7 +55,7 @@ func (s *Service) EraseDevice(ctx context.Context, udid string) error {
 	}
 	return s.runCommand(ctx, runKindErase, udid, func(ctx context.Context) error {
 		if err := s.engine.EraseDevice(ctx, engine.DeviceID(udid)); err != nil {
-			return newTransferActionError("erase_failed", err)
+			return newTransferActionError(domain.CodeEraseFailed, err)
 		}
 		slog.InfoContext(ctx, "erase: the phone is erasing", "udid", udid)
 		finalCtx := context.WithoutCancel(ctx)
@@ -83,7 +83,7 @@ func (s *Service) LiveBattery(ctx context.Context, udid string) (Battery, error)
 	}
 	battery, err := s.engine.Battery(ctx, engine.DeviceID(udid))
 	if err != nil {
-		return Battery{}, newEngineActionError("battery_query_failed", err)
+		return Battery{}, newEngineActionError(domain.CodeBatteryQueryFailed, err)
 	}
 	return battery, nil
 }
@@ -97,7 +97,7 @@ const (
 
 func (s *Service) Wallpaper(ctx context.Context, udid string, screen WallpaperScreen) ([]byte, error) {
 	if screen != WallpaperHome && screen != WallpaperLock {
-		return nil, &domain.ValidationError{Code: "invalid_wallpaper_screen"}
+		return nil, &domain.ValidationError{Code: domain.CodeInvalidWallpaperScreen}
 	}
 	// Loaded automatically by device cards; never wakes the phone.
 	if err := s.reachableDevice(ctx, udid); err != nil {
@@ -117,7 +117,7 @@ func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleL
 	}
 	stream, err := s.engine.OpenConsole(ctx, engine.DeviceID(udid))
 	if err != nil {
-		return newEngineActionError("console_stream_failed", err)
+		return newEngineActionError(domain.CodeConsoleStreamFailed, err)
 	}
 	defer stream.Close()
 	for ctx.Err() == nil {
@@ -127,7 +127,7 @@ func (s *Service) Console(ctx context.Context, udid string, onLine func(ConsoleL
 				return nil
 			}
 			slog.WarnContext(ctx, "console: engine", "udid", udid, "error", err)
-			return newEngineActionError("console_stream_failed", err)
+			return newEngineActionError(domain.CodeConsoleStreamFailed, err)
 		}
 		onLine(line)
 	}

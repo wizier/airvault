@@ -87,7 +87,7 @@ func photoFilter(key string) (func(iosbackup.Photo) bool, bool) {
 func (s *Service) filteredPhotos(ctx context.Context, snapshotID, filter, month string) ([]iosbackup.Photo, error) {
 	shows, ok := photoFilter(filter)
 	if !ok {
-		return nil, &domain.ValidationError{Code: "invalid_photo_filter"}
+		return nil, &domain.ValidationError{Code: domain.CodeInvalidPhotoFilter}
 	}
 	library, err := s.backupPhotoLibrary(ctx, snapshotID)
 	if err != nil {
@@ -208,10 +208,10 @@ func galleryAsset(photo iosbackup.Photo) GalleryAsset {
 // out, as from the phone.
 func (s *Service) BackupPhotoThumbs(ctx context.Context, snapshotID string, paths []string) (map[string][]byte, error) {
 	if len(paths) == 0 {
-		return nil, &domain.ValidationError{Code: "paths_required"}
+		return nil, &domain.ValidationError{Code: domain.CodePathsRequired}
 	}
 	if len(paths) > 128 {
-		return nil, &domain.ValidationError{Code: "too_many_paths"}
+		return nil, &domain.ValidationError{Code: domain.CodeTooManyPaths}
 	}
 	return readBackup(ctx, s, snapshotID, func(c *iosbackup.Contents) (map[string][]byte, error) {
 		// A library that fails to read is not kept: fail the batch once, not per photo.
@@ -276,14 +276,14 @@ func (s *Service) BackupChatSearch(ctx context.Context, snapshotID string, app i
 // validChats checks a request names a conversation's chats.
 func validChats(chatIDs []int64) error {
 	if len(chatIDs) == 0 {
-		return &domain.ValidationError{Code: "chat_required"}
+		return &domain.ValidationError{Code: domain.CodeChatRequired}
 	}
 	return nil
 }
 
 func searchQuery(query string) (string, error) {
 	if query = strings.TrimSpace(query); utf8.RuneCountInString(query) < 2 {
-		return "", &domain.ValidationError{Code: "query_too_short"}
+		return "", &domain.ValidationError{Code: domain.CodeQueryTooShort}
 	}
 	return query, nil
 }

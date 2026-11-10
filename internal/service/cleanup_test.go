@@ -167,7 +167,7 @@ func TestPrunableNeverTakesBackWhatItKept(t *testing.T) {
 func TestCleanupSettingsValidation(t *testing.T) {
 	invalid := []struct {
 		settings CleanupSettings
-		code     string
+		code     domain.Code
 	}{
 		{CleanupSettings{Enabled: true, KeepDays: 3, Thin: ThinMonth}, "invalid_cleanup_days"},
 		{CleanupSettings{KeepDays: 0, Thin: ThinMonth}, "invalid_cleanup_days"},

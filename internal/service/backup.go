@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/iosbackup"
 	"github.com/wizier/airvault/internal/library"
@@ -78,7 +79,7 @@ func (s *Service) executeBackup(run *runReservation, device *model.Device) (runO
 		if err := ctx.Err(); err != nil {
 			return runOutcome{}, err
 		}
-		return runOutcome{errorCode: "device_never_came_online"},
+		return runOutcome{errorCode: domain.CodeDeviceNeverCameOnline},
 			errors.New("backup: the phone didn't come online — make sure it's on Wi-Fi and awake")
 	}
 	s.runs.setStage(run, StagePreparing)

@@ -99,7 +99,7 @@ func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*Bac
 // wait until the check ends.
 func (s *Service) StartVerify(ctx context.Context, udid string) (string, error) {
 	if domain.ValidateSource(udid) != nil {
-		return "", &domain.ValidationError{Code: "invalid_udid"}
+		return "", &domain.ValidationError{Code: domain.CodeInvalidUDID}
 	}
 	return s.startVerify(udid, false)
 }

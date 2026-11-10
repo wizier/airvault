@@ -25,7 +25,7 @@ func TestAutomaticTasksValidation(t *testing.T) {
 	invalid := []struct {
 		name   string
 		change func(*AutomaticTasks)
-		code   string
+		code   domain.Code
 	}{
 		{"a check's interval for a backup", func(tasks *AutomaticTasks) { tasks.AutoBackup.EveryDays = 14 },
 			"invalid_auto_backup_interval"},

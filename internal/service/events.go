@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/events"
 )
@@ -62,11 +63,11 @@ type trustEvent struct {
 	RunID     string                `json:"runId"`
 	UDID      string                `json:"udid"`
 	Status    engine.PairingOutcome `json:"status"`
-	ErrorCode string                `json:"errorCode,omitempty"`
+	ErrorCode domain.Code           `json:"errorCode,omitempty"`
 }
 
 // trustStep is one step of a pairing run; a failed step has an error code.
-func trustStep(runID, udid string, status engine.PairingOutcome, errorCode string) events.Event {
+func trustStep(runID, udid string, status engine.PairingOutcome, errorCode domain.Code) events.Event {
 	return events.Event{Type: "pair.trust", Data: trustEvent{RunID: runID, UDID: udid, Status: status, ErrorCode: errorCode}}
 }
 
@@ -90,13 +91,13 @@ func runProgressed(progress RunProgress) events.Event {
 
 // runEndEvent carries only stable codes; the client localizes them.
 type runEndEvent struct {
-	RunID     string   `json:"runId"`
-	UDID      string   `json:"udid"`
-	State     runState `json:"state"`
-	Kind      runKind  `json:"kind"`
-	Auto      bool     `json:"auto,omitempty"`
-	ErrorCode string   `json:"errorCode,omitempty"`
-	SizeBytes int64    `json:"sizeBytes,omitempty"`
+	RunID     string      `json:"runId"`
+	UDID      string      `json:"udid"`
+	State     runState    `json:"state"`
+	Kind      runKind     `json:"kind"`
+	Auto      bool        `json:"auto,omitempty"`
+	ErrorCode domain.Code `json:"errorCode,omitempty"`
+	SizeBytes int64       `json:"sizeBytes,omitempty"`
 }
 
 var runEndTypes = map[runState]string{
@@ -105,7 +106,7 @@ var runEndTypes = map[runState]string{
 	runStateFailed:    "backup.failed",
 }
 
-func runEnded(run *runReservation, state runState, errorCode string, sizeBytes int64) events.Event {
+func runEnded(run *runReservation, state runState, errorCode domain.Code, sizeBytes int64) events.Event {
 	return events.Event{Type: runEndTypes[state], Data: runEndEvent{RunID: run.id, UDID: run.udid, State: state,
 		Kind: run.kind, Auto: run.auto, ErrorCode: errorCode, SizeBytes: sizeBytes}}
 }

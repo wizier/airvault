@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 	"github.com/wizier/airvault/internal/storage"
 )
@@ -94,12 +95,12 @@ func TestClockWindow(t *testing.T) {
 func TestRecordAutoBackup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newTestService()
-		finish := func(auto bool, errorCode string) {
+		finish := func(auto bool, errorCode domain.Code) {
 			run := registerRun(s)
 			run.auto = auto
 			var err error
 			if errorCode != "" {
-				err = errors.New(errorCode)
+				err = errors.New(string(errorCode))
 			}
 			s.completeRun(run, runOutcome{errorCode: errorCode}, err)
 		}
@@ -118,14 +119,14 @@ func TestRecordAutoBackup(t *testing.T) {
 
 		finish(false, "device_timeout")
 		expect("manual failure", none, time.Time{})
-		finish(false, errorBackupNotConfirmed)
+		finish(false, domain.CodeBackupNotConfirmed)
 		expect("unanswered manual prompt", none, time.Now().Add(autoBackupPause))
 
 		var failures [autoBackupLimit + 1]time.Time
 		for i := range failures {
 			time.Sleep(2 * time.Hour)
 			failures[i] = time.Now()
-			finish(true, errorBackupNotConfirmed)
+			finish(true, domain.CodeBackupNotConfirmed)
 		}
 		expect("automatic failures", [autoBackupLimit]time.Time(failures[1:]),
 			failures[autoBackupLimit].Add(autoBackupPause))

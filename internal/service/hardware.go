@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 )
 
@@ -58,7 +59,7 @@ func (s *Service) HardwareInfo(ctx context.Context, udid string) (HardwareInfo, 
 	report, err := s.engine.HardwareReport(ctx, engine.DeviceID(udid))
 	if err != nil {
 		slog.WarnContext(ctx, "hardware info: engine", "udid", udid, "error", err)
-		return HardwareInfo{}, newEngineActionError("hardware_query_failed", err)
+		return HardwareInfo{}, newEngineActionError(domain.CodeHardwareQueryFailed, err)
 	}
 	return hardwareInfo(report), nil
 }

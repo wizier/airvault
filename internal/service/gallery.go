@@ -92,7 +92,7 @@ func galleryRevision(assets []GalleryAsset) string {
 
 func validPage(offset, limit int) error {
 	if offset < 0 || limit < 1 || limit > 500 {
-		return &domain.ValidationError{Code: "invalid_page"}
+		return &domain.ValidationError{Code: domain.CodeInvalidPage}
 	}
 	return nil
 }
@@ -119,7 +119,7 @@ func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (gal
 			return entry, nil
 		}
 		return galleryEntry{}, domain.NewActionError(
-			"gallery_revision_changed",
+			domain.CodeGalleryRevisionChanged,
 			domain.ErrOperationState,
 		)
 	}
@@ -127,7 +127,7 @@ func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (gal
 	// scan and context; one cancelled browser request cannot cancel another.
 	assets, err := s.enumerateCameraRoll(ctx, udid)
 	if err != nil {
-		return galleryEntry{}, newEngineActionError("gallery_failed", err)
+		return galleryEntry{}, newEngineActionError(domain.CodeGalleryFailed, err)
 	}
 	entry := galleryEntry{assets: assets, at: time.Now(), revision: galleryRevision(assets)}
 	s.gallery.put(udid, entry)
@@ -137,7 +137,7 @@ func (s *Service) galleryAssets(ctx context.Context, udid, revision string) (gal
 // Stats only the handful of DCIM root children, then lists albums names-only:
 // never one stat per asset.
 func (s *Service) enumerateCameraRoll(ctx context.Context, udid string) ([]GalleryAsset, error) {
-	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "gallery_failed")
+	session, release, err := s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), domain.CodeGalleryFailed)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func readThumbInSession(session *devicefs.Session, dcimPath string) ([]byte, err
 	}
 	thumbDir, err := devicefs.ParsePath("PhotoData/Thumbnails/V2/" + assetPath.String())
 	if err != nil {
-		return nil, &domain.ValidationError{Code: "invalid_thumbnail_path"}
+		return nil, &domain.ValidationError{Code: domain.CodeInvalidThumbnailPath}
 	}
 	thumbs, err := session.Children(thumbDir)
 	if err != nil {
@@ -250,13 +250,13 @@ func sessionDead(ctx context.Context, err error) bool {
 // One media session per page: one lockdown handshake instead of one per tile.
 func (s *Service) ThumbBatch(ctx context.Context, udid string, dcimPaths []string) (map[string][]byte, error) {
 	if len(dcimPaths) == 0 {
-		return nil, &domain.ValidationError{Code: "paths_required"}
+		return nil, &domain.ValidationError{Code: domain.CodePathsRequired}
 	}
 	if len(dcimPaths) > 128 {
-		return nil, &domain.ValidationError{Code: "too_many_paths"}
+		return nil, &domain.ValidationError{Code: domain.CodeTooManyPaths}
 	}
 	return thumbBatch(ctx, func() (*devicefs.Session, func(), error) {
-		return s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), "thumb_failed")
+		return s.openLeasedSession(ctx, udid, devicefs.Media(), deviceReadResource(udid), domain.CodeThumbFailed)
 	}, dcimPaths)
 }
 

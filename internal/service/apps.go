@@ -25,7 +25,7 @@ func (s *Service) Apps(ctx context.Context, udid string) ([]App, error) {
 	apps, err := s.engine.ListApps(ctx, engine.DeviceID(udid))
 	if err != nil {
 		slog.WarnContext(ctx, "apps: engine", "udid", udid, "error", err)
-		return nil, newEngineActionError("app_list_failed", err)
+		return nil, newEngineActionError(domain.CodeAppListFailed, err)
 	}
 	return apps, nil
 }
@@ -34,10 +34,10 @@ const maxAppIconBatch = 100
 
 func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string) (map[string][]byte, error) {
 	if len(bundleIDs) == 0 || slices.Contains(bundleIDs, "") {
-		return nil, &domain.ValidationError{Code: "bundle_id_required"}
+		return nil, &domain.ValidationError{Code: domain.CodeBundleIDRequired}
 	}
 	if len(bundleIDs) > maxAppIconBatch {
-		return nil, &domain.ValidationError{Code: "too_many_bundle_ids"}
+		return nil, &domain.ValidationError{Code: domain.CodeTooManyBundleIDs}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ func (s *Service) AppIcons(ctx context.Context, udid string, bundleIDs []string)
 	if err != nil {
 		// The web keeps its placeholders, so the failure is only logged.
 		slog.DebugContext(ctx, "app icons: engine", "udid", udid, "count", len(bundleIDs), "error", err)
-		return nil, newEngineActionError("app_icons_failed", err)
+		return nil, newEngineActionError(domain.CodeAppIconsFailed, err)
 	}
 	return icons, nil
 }
@@ -79,7 +79,7 @@ func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, on
 		}
 		if err := s.engine.InstallApp(ctx, engine.DeviceID(udid), ipaPath, reportChange); err != nil {
 			slog.DebugContext(ctx, "app install: engine", "udid", udid, "error", err)
-			return newEngineActionError("app_install_failed", err)
+			return newEngineActionError(domain.CodeAppInstallFailed, err)
 		}
 		return nil
 	}, deviceWriteResource(udid))
@@ -91,7 +91,7 @@ func (s *Service) InstallApp(ctx context.Context, udid string, ipa io.Reader, on
 
 func (s *Service) UninstallApp(ctx context.Context, udid, bundleID string) error {
 	if bundleID == "" {
-		return &domain.ValidationError{Code: "bundle_id_required"}
+		return &domain.ValidationError{Code: domain.CodeBundleIDRequired}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
@@ -99,7 +99,7 @@ func (s *Service) UninstallApp(ctx context.Context, udid, bundleID string) error
 	err := s.runCommand(ctx, runKindUninstall, udid, func(ctx context.Context) error {
 		if err := s.engine.UninstallApp(ctx, engine.DeviceID(udid), bundleID); err != nil {
 			slog.DebugContext(ctx, "app uninstall: engine", "udid", udid, "bundle", bundleID, "error", err)
-			return newEngineActionError("app_uninstall_failed", err)
+			return newEngineActionError(domain.CodeAppUninstallFailed, err)
 		}
 		slog.DebugContext(ctx, "app uninstall: done", "udid", udid, "bundle", bundleID)
 		return nil

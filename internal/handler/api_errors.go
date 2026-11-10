@@ -16,7 +16,7 @@ type errorResponse struct {
 }
 
 type errorBody struct {
-	Code string `json:"code"`
+	Code domain.Code `json:"code"`
 }
 
 func (h *Handler) errorHandler(c *echo.Context, err error) {
@@ -55,47 +55,47 @@ func mapAPIError(err error) (int, errorBody) {
 	}
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		return http.StatusNotFound, errorBody{Code: "not_found"}
+		return http.StatusNotFound, errorBody{Code: domain.CodeNotFound}
 	case errors.Is(err, domain.ErrDeviceOffline):
-		return http.StatusConflict, errorBody{Code: "device_offline"}
+		return http.StatusConflict, errorBody{Code: domain.CodeDeviceOffline}
 	case errors.Is(err, domain.ErrPairingRequired):
-		return http.StatusConflict, errorBody{Code: "pairing_required"}
+		return http.StatusConflict, errorBody{Code: domain.CodePairingRequired}
 	case errors.Is(err, domain.ErrPairingCleanup):
-		return http.StatusInternalServerError, errorBody{Code: "pairing_cleanup_failed"}
+		return http.StatusInternalServerError, errorBody{Code: domain.CodePairingCleanupFailed}
 	case errors.Is(err, domain.ErrBusy):
-		return http.StatusConflict, errorBody{Code: "resource_busy"}
+		return http.StatusConflict, errorBody{Code: domain.CodeResourceBusy}
 	case errors.Is(err, domain.ErrCancelled):
-		return http.StatusConflict, errorBody{Code: "operation_cancelled"}
+		return http.StatusConflict, errorBody{Code: domain.CodeOperationCancelled}
 	case errors.Is(err, domain.ErrOperationState):
-		return http.StatusConflict, errorBody{Code: "operation_state_conflict"}
+		return http.StatusConflict, errorBody{Code: domain.CodeOperationStateConflict}
 	}
 	// echo.HTTPError and any other HTTPStatusCoder land here.
 	if status := echo.StatusCode(err); status >= 400 {
 		return status, errorBody{Code: statusCodeName(status)}
 	}
-	return http.StatusInternalServerError, errorBody{Code: "internal_error"}
+	return http.StatusInternalServerError, errorBody{Code: domain.CodeInternalError}
 }
 
-func statusCodeName(status int) string {
+func statusCodeName(status int) domain.Code {
 	switch status {
 	case http.StatusBadRequest:
-		return "bad_request"
+		return domain.CodeBadRequest
 	case http.StatusUnauthorized:
-		return "authentication_required"
+		return domain.CodeAuthenticationRequired
 	case http.StatusForbidden:
-		return "forbidden"
+		return domain.CodeForbidden
 	case http.StatusNotFound:
-		return "not_found"
+		return domain.CodeNotFound
 	case http.StatusMethodNotAllowed:
-		return "method_not_allowed"
+		return domain.CodeMethodNotAllowed
 	case http.StatusRequestEntityTooLarge:
-		return "payload_too_large"
+		return domain.CodePayloadTooLarge
 	case http.StatusUnsupportedMediaType:
-		return "unsupported_media_type"
+		return domain.CodeUnsupportedMediaType
 	default:
 		if status >= 500 {
-			return "internal_error"
+			return domain.CodeInternalError
 		}
-		return "http_" + strconv.Itoa(status)
+		return domain.Code("http_" + strconv.Itoa(status))
 	}
 }

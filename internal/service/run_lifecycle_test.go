@@ -32,18 +32,18 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 // automatic prompt counts as a failure. Forgetting the device clears them all.
 func TestLastRunErrorLifecycle(t *testing.T) {
 	s := newTestService()
-	s.runs.lastError["udid-1"] = map[runKind]string{runKindRestore: "restore_failed"}
+	s.runs.lastError["udid-1"] = map[runKind]domain.Code{runKindRestore: "restore_failed"}
 
 	run := registerRun(s)
 	s.completeRun(run, runOutcome{errorCode: "device_timeout"}, errors.New("device failure"))
-	want := map[runKind]string{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
+	want := map[runKind]domain.Code{runKindBackup: "device_timeout", runKindRestore: "restore_failed"}
 	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after failure lastRunErrors = %v, want %v", got, want)
 	}
 
 	run = registerRun(s)
 	s.completeRun(run, runOutcome{}, nil)
-	want = map[runKind]string{runKindRestore: "restore_failed"}
+	want = map[runKind]domain.Code{runKindRestore: "restore_failed"}
 	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after success lastRunErrors = %v, want %v", got, want)
 	}
@@ -57,7 +57,7 @@ func TestLastRunErrorLifecycle(t *testing.T) {
 
 	run = registerRun(s)
 	run.auto = true
-	s.completeRun(run, runOutcome{errorCode: errorBackupNotConfirmed}, errors.New("prompt unanswered"))
+	s.completeRun(run, runOutcome{errorCode: domain.CodeBackupNotConfirmed}, errors.New("prompt unanswered"))
 	if got := s.runs.lastErrors("udid-1"); !maps.Equal(got, want) {
 		t.Fatalf("after an unanswered automatic prompt lastRunErrors = %v, want %v", got, want)
 	}
@@ -189,7 +189,7 @@ func TestEngineErrorCodes(t *testing.T) {
 	}
 	tests := []struct {
 		kind engine.ErrorKind
-		want string
+		want domain.Code
 	}{
 		{engine.ErrorStorageFull, "storage_full"},
 		{engine.ErrorBusy, "resource_busy"},
@@ -223,7 +223,7 @@ func TestEngineRequestErrors(t *testing.T) {
 	}
 	tests := []struct {
 		err  error
-		want string
+		want domain.Code
 	}{
 		{&engine.Error{Kind: engine.ErrorProtocol}, "download_failed"},
 		{&engine.Error{Kind: engine.ErrorIntegrity}, "download_failed"},

@@ -12,7 +12,7 @@ import (
 // outcome committed here.
 func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new string) error {
 	if old == "" && new == "" {
-		return &domain.ValidationError{Code: "backup_password_change_empty"}
+		return &domain.ValidationError{Code: domain.CodeBackupPasswordChangeEmpty}
 	}
 	if err := s.reachableDevice(ctx, udid); err != nil {
 		return err
@@ -40,7 +40,7 @@ func (s *Service) ChangeBackupPassword(ctx context.Context, udid, old, new strin
 		}
 		if engineErr != nil {
 			slog.DebugContext(ctx, "backup password change rejected", "udid", udid, "error", engineErr)
-			return newTransferActionError("backup_password_change_failed", engineErr)
+			return newTransferActionError(domain.CodeBackupPasswordChangeFailed, engineErr)
 		}
 		return nil
 	}, deviceWriteResource(udid))

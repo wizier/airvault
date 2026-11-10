@@ -116,14 +116,14 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 	}
 	backup, err := s.library.Open(ctx, opts.SnapshotID)
 	if errors.Is(err, library.ErrIncomplete) {
-		return nil, &domain.ValidationError{Code: "backup_not_restorable"}
+		return nil, &domain.ValidationError{Code: domain.CodeBackupNotRestorable}
 	}
 	if err != nil {
 		return nil, err
 	}
 	encrypted, snapshotIOS := backup.Encrypted, backup.IOSVersion
 	if encrypted && opts.Password == "" {
-		return nil, &domain.ValidationError{Code: "backup_password_required"}
+		return nil, &domain.ValidationError{Code: domain.CodeBackupPasswordRequired}
 	}
 	if encrypted {
 		valid, verifyErr := backup.VerifyPassword(opts.Password)
@@ -132,13 +132,13 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 			slog.WarnContext(ctx, "backup password preflight unavailable; the device enforces",
 				"snapshot_id", backup.ID(), "error", verifyErr)
 		case !valid:
-			return nil, &domain.ValidationError{Code: "invalid_backup_password"}
+			return nil, &domain.ValidationError{Code: domain.CodeInvalidBackupPassword}
 		}
 	}
 	// iOS refuses to apply a backup made on a newer iOS; fail before the run
 	// starts instead of minutes into it.
 	if iosbackup.NewerVersion(snapshotIOS, device.IOSVersion) {
-		return nil, &domain.ValidationError{Code: "backup_ios_too_new"}
+		return nil, &domain.ValidationError{Code: domain.CodeBackupIOSTooNew}
 	}
 	return &restorePlan{device: device, backup: backup, opts: opts}, nil
 }

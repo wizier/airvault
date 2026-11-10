@@ -66,7 +66,7 @@ func TestMessageQueriesChecked(t *testing.T) {
 	s := &Service{}
 	_, chatless := s.BackupChatSearch(t.Context(), "x", iosbackup.ComponentMessages, nil, "hi")
 	_, short := s.BackupSearch(t.Context(), "x", iosbackup.ComponentMessages, " a ")
-	for code, err := range map[string]error{"chat_required": chatless, "query_too_short": short} {
+	for code, err := range map[domain.Code]error{"chat_required": chatless, "query_too_short": short} {
 		if v, ok := errors.AsType[*domain.ValidationError](err); !ok || v.Code != code {
 			t.Errorf("%s: err = %v", code, err)
 		}

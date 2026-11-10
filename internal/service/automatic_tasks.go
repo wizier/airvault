@@ -96,7 +96,7 @@ func (s *Service) SetAutomaticTasks(ctx context.Context, udid string, tasks Auto
 }
 
 func automaticTasksRow(tasks AutomaticTasks) (model.AutomaticTasks, error) {
-	autoBackup, err := scheduleRow(tasks.AutoBackup, autoBackupPresets, "invalid_auto_backup_interval")
+	autoBackup, err := scheduleRow(tasks.AutoBackup, autoBackupPresets, domain.CodeInvalidAutoBackupInterval)
 	if err != nil {
 		return model.AutomaticTasks{}, err
 	}
@@ -104,14 +104,14 @@ func automaticTasksRow(tasks AutomaticTasks) (model.AutomaticTasks, error) {
 	if err != nil {
 		return model.AutomaticTasks{}, err
 	}
-	autoVerify, err := scheduleRow(tasks.AutoVerify, autoVerifyPresets, "invalid_auto_verify_interval")
+	autoVerify, err := scheduleRow(tasks.AutoVerify, autoVerifyPresets, domain.CodeInvalidAutoVerifyInterval)
 	if err != nil {
 		return model.AutomaticTasks{}, err
 	}
 	return model.AutomaticTasks{Cleanup: cleanup, AutoBackup: autoBackup, AutoVerify: autoVerify}, nil
 }
 
-func scheduleRow(settings ScheduleSettings, presets []int, intervalCode string) (model.Schedule, error) {
+func scheduleRow(settings ScheduleSettings, presets []int, intervalCode domain.Code) (model.Schedule, error) {
 	if !slices.Contains(presets, settings.EveryDays) {
 		return model.Schedule{}, &domain.ValidationError{Code: intervalCode}
 	}
@@ -122,7 +122,7 @@ func scheduleRow(settings ScheduleSettings, presets []int, intervalCode string) 
 	start, startErr := parseClock(settings.Window.Start)
 	end, endErr := parseClock(settings.Window.End)
 	if startErr != nil || endErr != nil || start == end {
-		return model.Schedule{}, &domain.ValidationError{Code: "invalid_auto_window"}
+		return model.Schedule{}, &domain.ValidationError{Code: domain.CodeInvalidAutoWindow}
 	}
 	row.WindowStart, row.WindowEnd = &start, &end
 	return row, nil

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/wizier/airvault/internal/domain"
 	"github.com/wizier/airvault/internal/engine"
 )
 
@@ -23,20 +24,17 @@ const (
 	autoBackupLimitWindow = 24 * time.Hour
 )
 
-// The passcode prompt was dismissed or left to time out on the phone.
-const errorBackupNotConfirmed = "backup_not_confirmed"
-
 var autoBackupPresets = []int{1, 3, 7}
 
 // A success clears the history. A failed or cancelled automatic attempt counts
 // toward the limit and pauses the trigger; an unanswered prompt also pauses it.
 // hide calls this under the lock, so a run gone from the registry was recorded.
-func (r *runRegistry) recordAutoBackup(run *runReservation, state runState, errorCode string, now time.Time) {
+func (r *runRegistry) recordAutoBackup(run *runReservation, state runState, errorCode domain.Code, now time.Time) {
 	key := autoKey{run.udid, runKindBackup}
 	switch {
 	case state == runStateCompleted:
 		delete(r.autoHistory, key)
-	case run.auto || errorCode == errorBackupNotConfirmed:
+	case run.auto || errorCode == domain.CodeBackupNotConfirmed:
 		h := r.autoHistory[key]
 		if run.auto {
 			copy(h.failures[:], h.failures[1:])

@@ -109,12 +109,12 @@ func (s *Service) cleanupAfterBackup(ctx context.Context, udid string, points []
 
 func cleanupRow(settings CleanupSettings) (model.Cleanup, error) {
 	if !slices.Contains(cleanupDayPresets, settings.KeepDays) {
-		return model.Cleanup{}, &domain.ValidationError{Code: "invalid_cleanup_days"}
+		return model.Cleanup{}, &domain.ValidationError{Code: domain.CodeInvalidCleanupDays}
 	}
 	switch settings.Thin {
 	case ThinWeek, ThinMonth, ThinNone:
 	default:
-		return model.Cleanup{}, &domain.ValidationError{Code: "invalid_cleanup_thin"}
+		return model.Cleanup{}, &domain.ValidationError{Code: domain.CodeInvalidCleanupThin}
 	}
 	return model.Cleanup{Enabled: settings.Enabled, KeepDays: settings.KeepDays, Thin: string(settings.Thin)}, nil
 }

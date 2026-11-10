@@ -30,8 +30,15 @@ const (
 )
 
 type runOutcome struct {
-	errorCode string
+	errorCode domain.Code
 	sizeBytes int64
+}
+
+// What a run that failed without a code of its own reports.
+var runFailedCodes = map[runKind]domain.Code{
+	runKindBackup:  domain.CodeBackupFailed,
+	runKindRestore: domain.CodeRestoreFailed,
+	runKindVerify:  domain.CodeVerifyFailed,
 }
 
 // completeRun alone classifies a run: a failure after a user cancel from the UI
@@ -46,11 +53,11 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 		// snapshot or completed restore into a cancelled run.
 	case s.app.Err() == nil && (run.ctx.Err() != nil || isEngineError(runErr, engine.ErrorCancelled)):
 		state = runStateCancelled
-		eventErrorCode = "operation_cancelled"
+		eventErrorCode = domain.CodeOperationCancelled
 	default:
 		state = runStateFailed
 		if eventErrorCode == "" {
-			eventErrorCode = string(run.kind) + "_failed"
+			eventErrorCode = runFailedCodes[run.kind]
 		}
 	}
 
@@ -61,7 +68,7 @@ func (s *Service) completeRun(run *runReservation, outcome runOutcome, runErr er
 		extra = append(extra, slog.Int64("size_bytes", outcome.sizeBytes))
 	}
 	if eventErrorCode != "" {
-		extra = append(extra, slog.String("error_code", eventErrorCode))
+		extra = append(extra, slog.String("error_code", string(eventErrorCode)))
 	}
 	logOperationFinished(context.WithoutCancel(run.ctx), run.kind, run.udid, state,
 		run.started, runErr, extra...)
@@ -104,52 +111,52 @@ func isEngineError(err error, kind engine.ErrorKind) bool {
 }
 
 // engineErrorCode maps an engine error to a transfer's public code, "" for none.
-func engineErrorCode(err error) string {
+func engineErrorCode(err error) domain.Code {
 	engineErr, ok := errors.AsType[*engine.Error](err)
 	if !ok {
 		return ""
 	}
 	switch engineErr.Kind {
 	case engine.ErrorInvalidBackupPassword:
-		return "invalid_backup_password"
+		return domain.CodeInvalidBackupPassword
 	case engine.ErrorStorageFull:
-		return "storage_full"
+		return domain.CodeStorageFull
 	case engine.ErrorDeviceStorageFull:
-		return "device_storage_full"
+		return domain.CodeDeviceStorageFull
 	case engine.ErrorBusy:
-		return "resource_busy"
+		return domain.CodeResourceBusy
 	case engine.ErrorProtocol, engine.ErrorConnectionLost:
-		return "device_connection_interrupted"
+		return domain.CodeDeviceConnectionInterrupted
 	case engine.ErrorTimeout:
-		return "device_timeout"
+		return domain.CodeDeviceTimeout
 	case engine.ErrorDeviceUnavailable:
-		return "device_offline"
+		return domain.CodeDeviceOffline
 	case engine.ErrorTrustRequired, engine.ErrorUserDenied:
-		return "pairing_required"
+		return domain.CodePairingRequired
 	case engine.ErrorDeviceLocked:
-		return "device_locked"
+		return domain.CodeDeviceLocked
 	case engine.ErrorFindMyEnabled:
-		return "find_my_enabled"
+		return domain.CodeFindMyEnabled
 	case engine.ErrorBackupNotConfirmed:
-		return errorBackupNotConfirmed
+		return domain.CodeBackupNotConfirmed
 	case engine.ErrorIntegrity:
-		return "backup_integrity_failed"
+		return domain.CodeBackupIntegrityFailed
 	case engine.ErrorCancelled:
-		return "operation_cancelled"
+		return domain.CodeOperationCancelled
 	case engine.ErrorOutcomeUnknown:
-		return "operation_outcome_unknown"
+		return domain.CodeOperationOutcomeUnknown
 	default:
 		return ""
 	}
 }
 
-func newTransferActionError(operationCode string, err error) *domain.ActionError {
+func newTransferActionError(operationCode domain.Code, err error) *domain.ActionError {
 	return domain.NewActionError(cmp.Or(engineErrorCode(err), operationCode), err)
 }
 
 // newEngineActionError is for device requests: a missing item is a 404, and
 // protocol or integrity failures keep the operation's own code.
-func newEngineActionError(operationCode string, err error) error {
+func newEngineActionError(operationCode domain.Code, err error) error {
 	if engineErr, ok := errors.AsType[*engine.Error](err); ok {
 		switch engineErr.Kind {
 		case engine.ErrorNotFound:

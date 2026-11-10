@@ -17,12 +17,12 @@ func (h *Handler) installApp(c *echo.Context) error {
 	udid := c.Param("udid")
 	form, err := c.Request().MultipartReader()
 	if err != nil {
-		return &domain.ValidationError{Code: "ipa_required"}
+		return &domain.ValidationError{Code: domain.CodeIPARequired}
 	}
 	for {
 		part, err := form.NextPart()
 		if errors.Is(err, io.EOF) {
-			return &domain.ValidationError{Code: "ipa_required"}
+			return &domain.ValidationError{Code: domain.CodeIPARequired}
 		}
 		if err != nil {
 			return err
@@ -35,7 +35,7 @@ func (h *Handler) installApp(c *echo.Context) error {
 		}
 		defer part.Close()
 		if !strings.HasSuffix(strings.ToLower(part.FileName()), ".ipa") {
-			return &domain.ValidationError{Code: "invalid_ipa"}
+			return &domain.ValidationError{Code: domain.CodeInvalidIPA}
 		}
 		return streamInstall(c, func(onProgress func(service.InstallProgress)) error {
 			return h.svc.InstallApp(c.Request().Context(), udid, part, onProgress)

@@ -29,7 +29,7 @@ type DeviceOverview struct {
 	LastBackup      *time.Time `json:"lastBackup,omitempty"`
 	// Run kind ("backup"/"restore") to the stable error code of its most recent
 	// failed run; the client localizes it.
-	LastRunErrors map[runKind]string `json:"lastRunErrors,omitempty"`
+	LastRunErrors map[runKind]domain.Code `json:"lastRunErrors,omitempty"`
 	// Live objects plus published manifests; nil means unknown.
 	DiskBytes     *int64 `json:"diskBytes,omitempty"`
 	RestorePoints int    `json:"restorePoints,omitempty"`
