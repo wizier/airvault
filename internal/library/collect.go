@@ -64,7 +64,8 @@ func (l *Library) NoticeDamage(ctx context.Context, source string, err error) {
 }
 
 // Verify hashes every object the source's restore points need and records
-// the result, even when stopped early. The caller holds the write lease.
+// the result, even when stopped early or failed by an object it could not
+// read. The caller holds the write lease.
 func (l *Library) Verify(ctx context.Context, source string, progress func(done, total int64)) error {
 	scan, err := l.objects.Scan(ctx, source)
 	if err != nil {
@@ -73,7 +74,7 @@ func (l *Library) Verify(ctx context.Context, source string, progress func(done,
 	started := time.Now().Unix()
 	setAside, verifyErr := l.objects.Verify(ctx, scan, progress)
 	if setAside > 0 {
-		slog.ErrorContext(ctx, "verify: objects failed their hash", "source", source, "objects", setAside)
+		slog.ErrorContext(ctx, "verify: objects set aside as damaged", "source", source, "objects", setAside)
 	}
 	finalCtx := context.WithoutCancel(ctx)
 	if verifyErr == nil {

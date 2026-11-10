@@ -197,6 +197,30 @@ func TestCollectMarksRestorePointsMissingObjects(t *testing.T) {
 	requirePresent(t, objectPath(root, source, older["Manifest.db"]))
 }
 
+// A check that cannot read an object fails, yet records what it found: the
+// restore point is damaged, and not verified.
+func TestVerifyRecordsWhatItCannotRead(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	lib, root := newTestLibrary(t)
+	const source = "testphoneudid0023"
+	ctx := context.Background()
+	publishFixture(t, lib, root, source, testSnapshot)
+	reconcile(t, lib)
+	if err := os.Chmod(objectPath(root, source, fixtureFiles["Manifest.db"]), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lib.Verify(ctx, source, func(int64, int64) {}); err == nil {
+		t.Fatal("a check that could not read an object passed")
+	}
+	row, err := lib.catalog.Backup.Get(ctx, testSnapshot)
+	if err != nil || row.Damage != objectstore.DamageFilesMissing || row.DamagedFiles != 1 || row.VerifiedAt != nil {
+		t.Fatalf("row = %+v, %v; want one file missing and not verified", row, err)
+	}
+}
+
 func objectPath(root, source, content string) string {
 	sum := sha256.Sum256([]byte(content))
 	objectRef := hex.EncodeToString(sum[:])

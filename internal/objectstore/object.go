@@ -13,13 +13,17 @@ import (
 
 var ErrIntegrity = errors.New("backup data failed verification")
 
-// openObject opens a pooled object, checking it is a regular file of size bytes.
+// openObject opens a pooled object. One that is missing, not a regular file or
+// not size bytes is ErrIntegrity; a failure to open it says nothing of its content.
 func (s *Store) openObject(source, ref string, size int64) (*os.File, error) {
 	path, err := s.resolveObjectRef(source, ref)
 	if err != nil {
 		return nil, err
 	}
 	file, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: object %s is missing", ErrIntegrity, ref)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -27,9 +31,9 @@ func (s *Store) openObject(source, ref string, size int64) (*os.File, error) {
 	switch {
 	case err != nil:
 	case !info.Mode().IsRegular():
-		err = fmt.Errorf("object %s is not a regular file", ref)
+		err = fmt.Errorf("%w: object %s is not a regular file", ErrIntegrity, ref)
 	case info.Size() != size:
-		err = errors.Join(fmt.Errorf("object %s is %d bytes, the manifest says %d", ref, info.Size(), size),
+		err = errors.Join(fmt.Errorf("%w: object %s is %d bytes, the manifest says %d", ErrIntegrity, ref, info.Size(), size),
 			setAside(path))
 	}
 	if err != nil {
@@ -108,7 +112,7 @@ type objectReader struct {
 func (s *Store) openReader(source, key, ref string, size int64, fail func(error) error) (io.ReadCloser, error) {
 	file, err := s.openObject(source, ref, size)
 	if err != nil {
-		err = fmt.Errorf("%w: open %q: %v", ErrIntegrity, key, err)
+		err = fmt.Errorf("open %q: %w", key, err)
 		if fail != nil {
 			err = fail(err)
 		}
@@ -165,7 +169,7 @@ type File struct {
 func (s *Store) openFile(source, key, ref string, size int64, random bool) (*File, error) {
 	file, err := s.openObject(source, ref, size)
 	if err != nil {
-		return nil, fmt.Errorf("%w: open %q: %v", ErrIntegrity, key, err)
+		return nil, fmt.Errorf("open %q: %w", key, err)
 	}
 	return &File{key: key, file: file, check: newContentCheck(ref, size), random: random}, nil
 }
