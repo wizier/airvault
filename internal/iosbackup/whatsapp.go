@@ -212,19 +212,19 @@ func (c *Contents) whatsAppPage(ctx context.Context, chatIDs []int64) (chatPage,
 	people, calls := c.whatsAppPeople(ctx, db), c.whatsAppCallLog(ctx)
 	// A chat sorts by ZSORT, which an index serves; a person's chats under a
 	// number and a LID together, and every chat listed, only by date.
-	where, order, args := waChatsSQL, "m.ZMESSAGEDATE DESC, m.Z_PK DESC", []any(nil)
+	where, order, args := waChatsSQL, " ORDER BY m.ZMESSAGEDATE DESC, m.Z_PK DESC", []any(nil)
 	if chatIDs != nil {
 		var chats string
 		chats, args = inList(chatIDs)
 		where = "m.ZCHATSESSION IN (" + chats + ")"
 		if len(chatIDs) == 1 {
-			order = "m.ZSORT DESC, m.Z_PK DESC"
+			order = " ORDER BY m.ZSORT DESC, m.Z_PK DESC"
 		}
 	}
-	return chatPage{db: db, args: args,
+	return chatPage{db: db, args: args, order: order,
 		query: `SELECT m.ZCHATSESSION, ` + waColumns + `
 		FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK = m.ZCHATSESSION ` + waJoins + `
-		WHERE ` + where + ` AND ` + waShownSQL + ` ORDER BY ` + order,
+		WHERE ` + where + ` AND ` + waShownSQL,
 		scan: func(rows *sql.Rows) (Found, error) {
 			var found Found
 			var r waRow

@@ -1,6 +1,7 @@
 package iosbackup
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -17,7 +18,8 @@ type Match struct {
 }
 
 // Search finds the messages of an app that show query, whatever its case, the
-// latest first.
+// latest first. It reads them unsorted and sorts what it found: no index
+// serves the order of every chat's, so SQLite would sort them all in memory.
 func (c *Contents) Search(ctx context.Context, app Component, query string) ([]Found, error) {
 	page, err := c.appPage(ctx, app, nil)
 	if err != nil {
@@ -25,22 +27,24 @@ func (c *Contents) Search(ctx context.Context, app Component, query string) ([]F
 	}
 	query = fold(query)
 	found := []Found{}
-	var last int64 // a message in two chats comes once for each, in a row
-	for message, err := range c.messages(ctx, page, 0, -1) {
+	for rows, err := range c.rows(ctx, page.db, page.query, page.args...) {
+		var message Found
+		if err == nil {
+			message, err = page.scan(rows)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("search the messages: %w", err)
 		}
-		if message.ID == last {
-			continue
-		}
-		last = message.ID
 		if message.says(query) {
-			if found = append(found, message); len(found) == maxFound {
-				break
-			}
+			found = append(found, message)
 		}
 	}
-	return found, nil
+	slices.SortFunc(found, func(a, b Found) int {
+		return cmp.Or(b.Time.Compare(a.Time), cmp.Compare(b.ID, a.ID), cmp.Compare(a.Chat, b.Chat))
+	})
+	// A message in two chats comes once for each.
+	found = slices.CompactFunc(found, func(a, b Found) bool { return a.ID == b.ID })
+	return found[:min(len(found), maxFound)], nil
 }
 
 // Matches finds the messages of a conversation's chats that show query,

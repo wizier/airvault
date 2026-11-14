@@ -47,7 +47,7 @@ func (c *Contents) Folder(ctx context.Context, component Component, folder strin
 		}
 		seen[name] = true
 		entries = append(entries, Entry{Name: name, Folder: file.folder, Size: file.size,
-			Modified: file.modified, Missing: !file.folder && !c.holds(file)})
+			Modified: file.modified, Missing: c.missing(file)})
 	}
 	// Folders the backup records only through the files inside them.
 	implied, err := c.descendantFolders(ctx, domain, dir)

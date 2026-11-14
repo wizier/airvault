@@ -129,7 +129,8 @@ func (c *Contents) Messages(ctx context.Context, app Component, chatIDs []int64,
 // the chat it is in; a page of them reads alike for the chat and its search.
 type chatPage struct {
 	db    *sql.DB
-	query string // SELECT … ORDER BY …, taking args
+	query string // SELECT … WHERE …, taking args
+	order string // ORDER BY …, the latest first
 	args  []any
 	scan  func(*sql.Rows) (Found, error)
 	// complete adds to a page what its rows lack, such as attachments.
@@ -160,7 +161,7 @@ func (c *Contents) appPage(ctx context.Context, app Component, chatIDs []int64) 
 func (c *Contents) messages(ctx context.Context, page chatPage, offset, limit int) iter.Seq2[Found, error] {
 	return func(yield func(Found, error) bool) {
 		args := slices.Concat(page.args, []any{limit, offset})
-		for rows, err := range c.rows(ctx, page.db, page.query+" LIMIT ? OFFSET ?", args...) {
+		for rows, err := range c.rows(ctx, page.db, page.query+page.order+" LIMIT ? OFFSET ?", args...) {
 			var found Found
 			if err == nil {
 				found, err = page.scan(rows)

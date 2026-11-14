@@ -143,7 +143,7 @@ func (c *Contents) noteAttachments(ctx context.Context, db *sql.DB) (map[string]
 			attachments[id] = resolvedAttachment{inline: alt}
 			continue
 		}
-		file := files.find(id, media, filename)
+		file := files.find(id, media)
 		name := cmp.Or(filename, url)
 		if name == "" && file != "" {
 			name = path.Base(file)
@@ -166,30 +166,30 @@ func (c *Contents) noteAttachments(ctx context.Context, db *sql.DB) (map[string]
 	return attachments, nil
 }
 
-// noteFiles finds attachments' files among the notes' ones: by the folder an
-// attachment's or its media's identifier names, else by the file's name.
-type noteFiles struct{ byFolder, byName map[string]string }
+// noteFiles finds attachments' files among the notes' ones, by the folder an
+// attachment's or its media's identifier names. A file's name finds nothing:
+// attachments of different notes share theirs.
+type noteFiles map[string]string
 
 func newNoteFiles(stored map[string]bool) noteFiles {
-	files := noteFiles{byFolder: map[string]string{}, byName: map[string]string{}}
+	files := noteFiles{}
 	for file := range stored {
 		parts := strings.Split(file, "/")
 		for i, part := range parts[:len(parts)-1] {
 			if part == "Media" || part == "FallbackImages" {
 				id := strings.TrimSuffix(parts[i+1], path.Ext(parts[i+1]))
-				files.byFolder[id] = max(files.byFolder[id], file) // the latest of a media's generations
+				files[id] = max(files[id], file) // the latest of a media's generations
 				break
 			}
 		}
-		files.byName[path.Base(file)] = file
 	}
 	return files
 }
 
 // find prefers an attachment's own image, such as a processed scan or a
 // drawing, to its media.
-func (f noteFiles) find(attachment, media, filename string) string {
-	return cmp.Or(f.byFolder[attachment], f.byFolder[media], f.byName[filename])
+func (f noteFiles) find(attachment, media string) string {
+	return cmp.Or(f[attachment], f[media])
 }
 
 // notePages lists the pages of each scanned document, by its identifier; a
@@ -208,7 +208,7 @@ func (c *Contents) notePages(ctx context.Context, db *sql.DB, files noteFiles) (
 		if err != nil {
 			return nil, err
 		}
-		file, name := files.find(id, media, filename), filename
+		file, name := files.find(id, media), filename
 		if name == "" && file != "" {
 			name = path.Base(file)
 		}

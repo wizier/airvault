@@ -115,18 +115,18 @@ func (c *Contents) smsPage(ctx context.Context, chatIDs []int64) (chatPage, erro
 	const byDate = " ORDER BY j.message_date DESC, j.message_id DESC"
 	// A message can be in more than one chat: every chat's has it in each, in a
 	// row; a conversation of several shows it once, as its first chat's.
-	query, args := joined+byDate, []any(nil)
+	query, order, args := joined, byDate, []any(nil)
 	switch {
 	case len(chatIDs) == 1:
-		query, args = joined+" AND j.chat_id = ?"+byDate, []any{chatIDs[0]}
+		query, args = joined+" AND j.chat_id = ?", []any{chatIDs[0]}
 	case len(chatIDs) > 1:
 		chats, ids := inList(chatIDs)
 		query = `SELECT ?, ` + columns + ` FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id
-			WHERE m.ROWID IN (SELECT message_id FROM chat_message_join WHERE chat_id IN (` + chats + `)) AND ` + smsShown + `
-			ORDER BY m.date DESC, m.ROWID DESC`
+			WHERE m.ROWID IN (SELECT message_id FROM chat_message_join WHERE chat_id IN (` + chats + `)) AND ` + smsShown
+		order = " ORDER BY m.date DESC, m.ROWID DESC"
 		args = append([]any{chatIDs[0]}, ids...)
 	}
-	return chatPage{db: db, query: query, args: args,
+	return chatPage{db: db, query: query, order: order, args: args,
 		scan: func(rows *sql.Rows) (Found, error) {
 			var found Found
 			var text string

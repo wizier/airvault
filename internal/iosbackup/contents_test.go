@@ -552,6 +552,31 @@ func typedstream(text string) []byte {
 	return append(append(body, text...), "\x86\x84\x02iI\x01\x05\x92\x84\x84\x84\x0cNSDictionary"...)
 }
 
+// searchSorts reports a search of every chat of app whose query has SQLite
+// sort what it reads: with no index to serve the order, that is every message,
+// in memory, before the first one comes.
+func searchSorts(t *testing.T, c *Contents, app Component) bool {
+	t.Helper()
+	page, err := c.appPage(t.Context(), app, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows, err := range c.rows(t.Context(), page.db, "EXPLAIN QUERY PLAN "+page.query, page.args...) {
+		var id, parent, unused int
+		var detail string
+		if err == nil {
+			err = rows.Scan(&id, &parent, &unused, &detail)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(detail, "TEMP B-TREE") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMessages(t *testing.T) {
 	at := func(d int) time.Time { return time.Date(2026, 7, d, 18, 30, 0, 0, time.UTC) }
 	nanos := func(d int) int64 { return at(d).Sub(time.Unix(coreDataEpoch, 0)).Nanoseconds() }
@@ -573,7 +598,7 @@ func TestMessages(t *testing.T) {
 		// Two groups can share their members and stay apart.
 		exec(`INSERT INTO chat VALUES (1, '+79161234567', 'iMessage', NULL), (2, 'chat123', 'iMessage', 'Trip'),
 			(3, '+79161234567', 'SMS', NULL), (4, 'chat456', 'iMessage', 'Gift'), (5, 'MegaFon', 'SMS', NULL),
-			(6, 'DIT_MOS', 'SMS', NULL)`)
+			(6, 'DIT_MOS', 'SMS', NULL), (7, 'chat789', 'iMessage', 'Pings')`)
 		exec("INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 3), (4, 1), (4, 2), (5, 4), (6, 5)")
 		for _, m := range [][]any{
 			{1, 1, "hi", nil, 0, nanos(1), 1, 0, 0},
@@ -585,6 +610,7 @@ func TestMessages(t *testing.T) {
 			{7, 4, "a scarf?", nil, 2, nanos(1), 0, 0, 0},
 			{8, 5, "balance", nil, 4, nanos(0), 0, 0, 0},
 			{9, 6, "a fine", nil, 5, nanos(-1), 0, 0, 0},
+			{10, 4, "a hat?", nil, 2, nanos(2), 0, 0, 0}, // later than what the table has before it
 		} {
 			service := "iMessage"
 			if m[1] == 3 || m[1] == 5 || m[1] == 6 {
@@ -596,6 +622,12 @@ func TestMessages(t *testing.T) {
 		}
 		// A message can be in two chats of one conversation.
 		exec("INSERT INTO chat_message_join VALUES (3, 1, ?)", nanos(1))
+		// One more of a word than a search finds, the oldest first.
+		for i := range maxFound + 1 {
+			exec("INSERT INTO message (ROWID, text, service, date, is_from_me) VALUES (?, 'ping', 'iMessage', ?, 1)",
+				100+i, nanos(i-300))
+			exec("INSERT INTO chat_message_join VALUES (7, ?, ?)", 100+i, nanos(i-300))
+		}
 		exec(`INSERT INTO attachment VALUES (1, '~/` + photo + `', 'image/heic', 'IMG_1.HEIC', 12, 0),
 			(2, '~/Library/SMS/Attachments/cd/02/GUID2/movie.mov', 'video/quicktime', NULL, 99, 0),
 			(3, '~/Library/SMS/Attachments/ef/03/GUID3/payload', NULL, NULL, 1, 1)`)
@@ -625,11 +657,12 @@ func TestMessages(t *testing.T) {
 		// A message counts in each chat it is in.
 		{IDs: []int64{1, 3}, Title: "Anna B Cole", Participants: []Participant{anna}, Messages: 4, Last: at(3),
 			Snippet: strings.TrimSpace(long)},
-		{IDs: []int64{4}, Title: "Gift", Participants: []Participant{anna, zoe}, Messages: 1, Last: at(1), Snippet: "a scarf?"},
+		{IDs: []int64{4}, Title: "Gift", Participants: []Participant{anna, zoe}, Messages: 2, Last: at(2), Snippet: "a hat?"},
 		{IDs: []int64{5}, Title: "MegaFon", Participants: []Participant{{Address: "MegaFon"}}, Messages: 1, Last: at(0),
 			Snippet: "balance"},
 		{IDs: []int64{6}, Title: "DIT_MOS", Participants: []Participant{{Address: "DIT_MOS"}}, Messages: 1, Last: at(-1),
 			Snippet: "a fine"},
+		{IDs: []int64{7}, Title: "Pings", Messages: maxFound + 1, Last: at(maxFound - 300), Snippet: "ping"},
 	}
 	if !reflect.DeepEqual(chats, wantChats) {
 		t.Fatalf("Chats =\n%+v\nwant\n%+v", chats, wantChats)
@@ -659,6 +692,19 @@ func TestMessages(t *testing.T) {
 		if found, err := contents.Search(t.Context(), ComponentMessages, query); err != nil || len(found) != 1 || found[0].ID != want {
 			t.Errorf("Search(%q) = %+v, %v; want message %d", query, found, err, want)
 		}
+	}
+	// What it finds comes the latest first, whatever the chat and the place in the table.
+	found, err = contents.Search(t.Context(), ComponentMessages, "a ")
+	if err != nil || len(found) != 3 || found[0].ID != 10 || found[1].ID != 7 || found[2].ID != 9 {
+		t.Errorf(`Search("a ") = %+v, %v; want messages 10, 7, 9`, found, err)
+	}
+	// Of more than it finds, it keeps the latest.
+	found, err = contents.Search(t.Context(), ComponentMessages, "ping")
+	if err != nil || len(found) != maxFound || found[0].ID != 100+maxFound || found[maxFound-1].ID != 101 {
+		t.Errorf(`Search("ping") found %d, %v; want the latest %d`, len(found), err, maxFound)
+	}
+	if searchSorts(t, contents, ComponentMessages) {
+		t.Error("a search of every chat has SQLite sort them")
 	}
 	// In a chat, a search tells where what it found stands among what the chat shows.
 	for query, want := range map[string][]Match{"Hi": {{ID: 1, Offset: 2}}, "ПРИВЕТ": {{3, 0}}, "loved": {}} {
@@ -865,6 +911,9 @@ func TestWhatsApp(t *testing.T) {
 			t.Errorf("Search(%q) = %+v, %v; want message %d", query, found, err, want)
 		}
 	}
+	if searchSorts(t, contents, ComponentWhatsApp) {
+		t.Error("a search of every chat has SQLite sort them")
+	}
 	for _, want := range []struct {
 		chats   []int64
 		query   string
@@ -926,7 +975,7 @@ func TestNotes(t *testing.T) {
 			(6, 'ATT-IMG', 'public.jpeg', NULL, 7, NULL), (7, 'MEDIA-1', NULL, NULL, NULL, 'IMG_1.jpeg'),
 			(8, 'ATT-TAG', 'com.apple.notes.inlinetextattachment.hashtag', '#rome', NULL, NULL),
 			(9, 'ATT-TABLE', 'com.apple.notes.table', NULL, NULL, NULL), (10, 'ATT-DRAW', 'com.apple.drawing.2', NULL, NULL, NULL),
-			(11, 'ATT-GONE', 'public.heic', NULL, 12, NULL), (12, 'MEDIA-2', NULL, NULL, NULL, 'IMG_2.HEIC'),
+			(11, 'ATT-GONE', 'public.jpeg', NULL, 12, NULL), (12, 'MEDIA-2', NULL, NULL, NULL, 'IMG_1.jpeg'),
 			(13, 'ATT-SCAN', 'com.apple.notes.gallery', NULL, NULL, NULL)`)
 		// A scanned document's pages, in the order scanned; the second shows its processed image.
 		exec(`INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK, ZIDENTIFIER, ZTYPEUTI, ZMEDIA, ZFILENAME, ZPARENTATTACHMENT) VALUES
@@ -962,7 +1011,7 @@ func TestNotes(t *testing.T) {
 		{ID: 3, Title: "Bank", Folder: "Trips", Modified: at(2), Locked: true},
 		{ID: 2, Title: "Rome", Folder: "Trips", Modified: at(1), Text: "Colosseum \uFFFC at 9 #rome\nПантеон\uFFFC\uFFFC\uFFFC\uFFFC",
 			Attachments: []Attachment{{Name: "IMG_1.jpeg", Path: image}, {Name: "Table"}, {Name: "ATT-DRAW.jpg", Path: drawing},
-				{Name: "IMG_2.HEIC", Missing: true},
+				{Name: "IMG_1.jpeg", Missing: true}, // not another attachment's file of the same name
 				{Name: "Scanned document", Pages: []Attachment{{Name: "scan1.jpg", Path: page1}, {Name: "PAGE-2.jpg", Path: page2}}}}},
 	}
 	if !reflect.DeepEqual(notes, want) {
@@ -992,6 +1041,8 @@ func TestFiles(t *testing.T) {
 		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/Trips/Rome.jpg", flags: 1, content: jpegBytes},
 		// Listed, but its content never made it into the backup.
 		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/gone.dat", flags: 1, content: contract, missing: true},
+		// As iOS lists an empty file: with no content stored.
+		fixtureFile{domain: fileProviderDomain, path: fileProviderStorage + "/empty.txt", flags: 1, missing: true},
 	)
 	contents, err := buildBackup(t, "", files).Unlock(t.Context(), "")
 	if err != nil {
@@ -1001,6 +1052,7 @@ func TestFiles(t *testing.T) {
 	modified := time.Unix(1_700_000_000, 0)
 	for folder, want := range map[string][]Entry{
 		"": {{Name: "Docs", Folder: true, Modified: modified},
+			{Name: "empty.txt", Modified: modified},
 			{Name: "gone.dat", Size: int64(len(contract)), Modified: modified, Missing: true},
 			{Name: "notes.txt", Size: int64(len(heicBytes)), Modified: modified},
 			{Name: "Trips", Folder: true}, {Name: "Архив", Folder: true, Modified: modified}},
@@ -1017,6 +1069,9 @@ func TestFiles(t *testing.T) {
 	reader, _, err := contents.OpenFile(t.Context(), ComponentFiles, "Docs/Contract.pdf")
 	if err != nil || !bytes.Equal(readAll(t, reader), contract) {
 		t.Fatalf("OpenFile: %v", err)
+	}
+	if reader, _, err := contents.OpenFile(t.Context(), ComponentFiles, "empty.txt"); err != nil || len(readAll(t, reader)) != 0 {
+		t.Fatalf("OpenFile of an empty file: %v", err)
 	}
 	if _, _, err := contents.OpenFile(t.Context(), ComponentFiles, "../Other.plist"); err == nil {
 		t.Fatal("OpenFile reached out of the folder")

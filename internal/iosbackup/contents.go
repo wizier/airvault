@@ -1,6 +1,7 @@
 package iosbackup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"database/sql"
@@ -389,11 +390,25 @@ func (c *Contents) holds(file listedFile) bool {
 	return ok
 }
 
+// missing reports a file whose content the snapshot lacks. An empty one has
+// none to lack: iOS lists it and sends nothing.
+func (c *Contents) missing(file listedFile) bool {
+	return !file.folder && file.size > 0 && !c.holds(file)
+}
+
+// emptyFile is the content of a file the backup lists as empty.
+type emptyFile struct{ *bytes.Reader }
+
+func (emptyFile) Close() error { return nil }
+
 func (f listedFile) key() string { return f.id[:2] + "/" + f.id }
 
 func (c *Contents) open(file listedFile) (Reader, error) {
-	if !c.holds(file) {
+	switch {
+	case file.folder || c.missing(file):
 		return nil, fmt.Errorf("%w: %s/%s", ErrNotStored, file.domain, file.path)
+	case !c.holds(file):
+		return emptyFile{bytes.NewReader(nil)}, nil
 	}
 	if c.keys != nil && len(file.wrappedKey) == 0 {
 		return nil, fmt.Errorf("%s/%s: encrypted file has no key", file.domain, file.path)
