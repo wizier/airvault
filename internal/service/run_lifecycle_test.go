@@ -22,8 +22,8 @@ func TestTerminalEventContainsLocalizableCodeOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"runId":"run-1","udid":"udid-1","state":"failed","kind":"backup","errorCode":"backup_failed"}`; event.Type != "backup.failed" || string(data) != want {
-		t.Fatalf("event = %s %s, want backup.failed %s", event.Type, data, want)
+	if want := `{"runId":"run-1","udid":"udid-1","state":"failed","kind":"backup","errorCode":"backup_failed"}`; event.Type != "run.failed" || string(data) != want {
+		t.Fatalf("event = %s %s, want run.failed %s", event.Type, data, want)
 	}
 }
 

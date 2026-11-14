@@ -80,22 +80,19 @@ func (r *BackupRepo) SnapshotSources(ctx context.Context) (map[string]string, er
 	return index, nil
 }
 
-func (r *BackupRepo) ListCompleteBySource(ctx context.Context, source string) ([]model.Backup, error) {
+func (r *BackupRepo) ListBySource(ctx context.Context, source string) ([]model.Backup, error) {
 	return listOf[model.Backup](ctx, r.s.ext(), `
 		SELECT `+backupColumns+` FROM backups
 		WHERE source_udid = ?
 		ORDER BY created_at DESC, id DESC`, source)
 }
 
-const listCompleteLimit = 1000
-
 // No join on devices, so snapshots from forgotten phones remain selectable as
 // restore sources.
-func (r *BackupRepo) ListComplete(ctx context.Context) ([]model.Backup, error) {
+func (r *BackupRepo) List(ctx context.Context) ([]model.Backup, error) {
 	return listOf[model.Backup](ctx, r.s.ext(), `
 		SELECT `+backupColumns+` FROM backups
-		ORDER BY created_at DESC, id DESC
-		LIMIT ?`, listCompleteLimit)
+		ORDER BY created_at DESC, id DESC`)
 }
 
 // Backups hold hundreds of thousands of files, so a request never walks

@@ -32,12 +32,14 @@
         Delete backups…
       </button>
     </li>
-    <li>
-      <button type="button" class="text-error" onclick={() => open('unpair')}>
-        <Icon name="offline" size={15} />
-        Unpair device…
-      </button>
-    </li>
+    {#if !device.orphaned}
+      <li>
+        <button type="button" class="text-error" onclick={() => open('unpair')}>
+          <Icon name="offline" size={15} />
+          Unpair device…
+        </button>
+      </li>
+    {/if}
     {#if device.paired}
       <li class={device.connection === 'offline' ? 'disabled' : ''}>
         <button

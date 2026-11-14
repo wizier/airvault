@@ -2,6 +2,7 @@
   import Router, { router } from 'svelte-spa-router';
   import Nav from './lib/components/Nav.svelte';
   import Alert from './lib/components/Alert.svelte';
+  import { eventsClient } from './lib/events.svelte';
   import { statusStore } from './lib/stores.svelte';
   import Devices from './routes/Devices.svelte';
   import DeviceDetail from './routes/DeviceDetail.svelte';
@@ -14,9 +15,10 @@
     '*': Devices,
   };
 
-  // `offline` starts false and only flips true after a fetch actually fails, so
-  // this never flashes during the initial load.
-  const showOfflineBanner = $derived(statusStore.offline);
+  // Neither flips true before something actually fails, so this never flashes
+  // during the initial load. The stream is what notices an outage: nothing
+  // fetches the status while the page sits open.
+  const showOfflineBanner = $derived(statusStore.offline || eventsClient.down);
   // Login owns the whole viewport — no Nav/SSE (which is what would 401 here).
   const onLogin = $derived(router.location === '/login');
 

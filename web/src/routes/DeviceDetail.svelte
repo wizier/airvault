@@ -37,7 +37,9 @@
 
   {#if device}
     <DeviceOverviewCard {device} />
-    <HardwareCard {udid} reachable={device.connection !== 'offline'} />
+    {#if !device.orphaned}
+      <HardwareCard {udid} reachable={device.connection !== 'offline'} />
+    {/if}
     <BackupCard {device} onrestore={() => (restoring = { preselect: null })} />
     <BackupHistory {device} onrestore={(snapshotId) => (restoring = { preselect: snapshotId })} />
     {#if restoring}

@@ -8,7 +8,7 @@
   import type { Device } from '../api/devices';
   import { blockedReason, deviceNoun } from '../device-ui';
   import { liveRun } from '../events.svelte';
-  import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
+  import { deleteRestorePoints, restorePointsOf, restorePointsStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatDuration, relativeTime } from '../format';
   import { now } from '../clock';
   import BackupBrowser from './BackupBrowser.svelte';
@@ -29,11 +29,10 @@
 
   const udid = $derived(device.udid);
 
-  const points = $derived(restorePointResources.for(udid));
-  $effect(() => points.start());
-  const restorePoints = $derived(points.data ?? []);
-  const pointsLoaded = $derived(points.ready);
-  const pointsError = $derived(points.loadError('backup_history_failed'));
+  $effect(() => restorePointsStore.start());
+  const restorePoints = $derived(restorePointsOf(udid));
+  const pointsLoaded = $derived(restorePointsStore.ready);
+  const pointsError = $derived(restorePointsStore.loadError('backup_history_failed'));
 
   const live = $derived(liveRun(udid));
   const isRunning = $derived(live !== null);

@@ -18,6 +18,8 @@
   const findMyOn = $derived(hwRes.data?.findMyEnabled === true);
   // Erasing is confirmed by typing the phone's name, as it can't be undone.
   let typedName = $state('');
+  // iOS writes a name's apostrophe as ’, which a keyboard does not type.
+  const typed = (name: string) => name.trim().replace(/[‘’ʼ]/g, "'");
 
   $effect(() => {
     void hwRes.refresh();
@@ -30,7 +32,7 @@
   icon="alert"
   confirmLabel={`Erase ${noun}`}
   busyLabel="Erasing…"
-  confirmDisabled={findMyOn || typedName.trim() !== device.name}
+  confirmDisabled={findMyOn || typed(typedName) !== typed(device.name)}
   failureCode="erase_failed"
   onconfirm={() => erase(device.udid)}
   {onclose}

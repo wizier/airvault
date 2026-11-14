@@ -34,9 +34,9 @@ export interface RunningProgress {
   speed: number;
 }
 
-/** udid/deviceName only in the cross-device restore-sources list. */
+/** A backup, in its phone's history and among what a restore can take. */
 export interface RestorePoint {
-  udid?: string;
+  udid: string;
   snapshotId: string;
   started?: string;
   created: string;
@@ -56,12 +56,6 @@ export interface RestorePoint {
   unlocked?: boolean;
 }
 
-export type RestoreSource = RestorePoint & { udid: string };
-
-interface RestorePointsResponse {
-  restorePoints: RestorePoint[];
-}
-
 interface RestoreRequest {
   snapshotId: string;
   password?: string;
@@ -79,11 +73,6 @@ export function startBackup(udid: string): Promise<AcceptedRun> {
  *  marks the restore points with damaged files. */
 export function startVerify(udid: string): Promise<AcceptedRun> {
   return request<AcceptedRun>(`${devicePath(udid)}/verify`, { method: 'POST' });
-}
-
-export async function listRestorePoints(udid: string, signal?: AbortSignal): Promise<RestorePoint[]> {
-  const response = await request<RestorePointsResponse>(`${devicePath(udid)}/backups`, { signal });
-  return response.restorePoints;
 }
 
 export async function deleteDeviceBackups(udid: string): Promise<void> {
@@ -128,9 +117,10 @@ export async function downloadBackup(snapshotId: string): Promise<void> {
   saveUrl(apiUrl(path));
 }
 
-export async function listRestoreSources(signal?: AbortSignal): Promise<RestoreSource[]> {
-  const response = await request<{ restoreSources: RestoreSource[] }>('/restore-sources', { signal });
-  return response.restoreSources;
+/** Every device's, the latest first. */
+export async function listRestorePoints(signal?: AbortSignal): Promise<RestorePoint[]> {
+  const response = await request<{ restorePoints: RestorePoint[] }>('/restore-points', { signal });
+  return response.restorePoints;
 }
 
 export function startRestore(udid: string, options: RestoreRequest): Promise<AcceptedRun> {

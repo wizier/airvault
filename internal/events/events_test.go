@@ -7,14 +7,14 @@ import "testing"
 func TestBusReplaysAndDropsOnlyWhatItMay(t *testing.T) {
 	bus := New()
 	bus.Emit(Event{Type: "device.added"})
-	bus.Emit(Event{Type: "backup.progress", Transient: true})
+	bus.Emit(Event{Type: "run.progress", Transient: true})
 	_, live, replay, complete := bus.Subscribe(1)
 	if !complete || len(replay) != 0 {
 		t.Fatalf("replay after 1 = %v, complete %v; want nothing", replay, complete)
 	}
 
 	for range cap(live) + 1 {
-		bus.Emit(Event{Type: "backup.progress", Transient: true})
+		bus.Emit(Event{Type: "run.progress", Transient: true})
 	}
 	if _, open := <-live; !open {
 		t.Fatal("a dropped transient event closed the subscriber")

@@ -61,10 +61,10 @@ func (s *Service) decorate(d model.Device, rt map[string]deviceRuntime) DeviceOv
 	}
 }
 
-// Shared by the per-device list and the global restore-source list, which also
-// fills UDID.
+// RestorePoint is a backup as the UI lists it: in its phone's history, and
+// among what a restore can take.
 type RestorePoint struct {
-	UDID             string     `json:"udid,omitempty"`
+	UDID             string     `json:"udid"`
 	SnapshotID       string     `json:"snapshotId"`
 	SizeBytes        int64      `json:"sizeBytes"`
 	TransferredBytes *int64     `json:"transferredBytes"`
@@ -83,7 +83,7 @@ type RestorePoint struct {
 
 func restorePoint(row *model.Backup) RestorePoint {
 	return RestorePoint{
-		SnapshotID: row.ID, SizeBytes: row.SizeBytes,
+		UDID: row.SourceUDID, SnapshotID: row.ID, SizeBytes: row.SizeBytes,
 		TransferredBytes: row.TransferredBytes,
 		StartedAt:        optionalTime(row.StartedAt), CreatedAt: time.Unix(row.CreatedAt, 0).UTC(),
 		Encrypted: row.Encrypted, IOSVersion: row.IOSVersion, DeviceName: row.DeviceName,
@@ -148,22 +148,9 @@ func (s *Service) pairedDevice(ctx context.Context, udid string) (*model.Device,
 	return device, nil
 }
 
-func (s *Service) RestorePoints(ctx context.Context, udid string) ([]RestorePoint, error) {
-	rows, err := s.library.RestorePoints(ctx, udid)
-	if err != nil {
-		return nil, err
-	}
-	points := make([]RestorePoint, 0, len(rows))
-	for i := range rows {
-		point := restorePoint(&rows[i])
-		point.Unlocked = point.Encrypted && s.unlocked.has(point.SnapshotID)
-		points = append(points, point)
-	}
-	return points, nil
-}
-
-// Catalog only: no manifest is reparsed on a page load.
-func (s *Service) RestoreSources(ctx context.Context) ([]RestorePoint, error) {
+// RestorePoints lists every source's, the latest first. Catalog only: no
+// manifest is reparsed on a page load.
+func (s *Service) RestorePoints(ctx context.Context) ([]RestorePoint, error) {
 	snapshots, err := s.library.AllRestorePoints(ctx)
 	if err != nil {
 		return nil, err
@@ -179,8 +166,8 @@ func (s *Service) RestoreSources(ctx context.Context) ([]RestorePoint, error) {
 	out := make([]RestorePoint, 0, len(snapshots))
 	for i := range snapshots {
 		point := restorePoint(&snapshots[i])
-		point.UDID = snapshots[i].SourceUDID
 		point.DeviceName = cmp.Or(names[point.UDID], point.DeviceName)
+		point.Unlocked = point.Encrypted && s.unlocked.has(point.SnapshotID)
 		out = append(out, point)
 	}
 	return out, nil

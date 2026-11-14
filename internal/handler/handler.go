@@ -82,7 +82,7 @@ func (h *Handler) Router() *echo.Echo {
 
 	api.POST("/runs/:id/cancel", h.cancelRun)
 
-	api.GET("/restore-sources", h.listRestoreSources)
+	api.GET("/restore-points", h.listRestorePoints)
 	backup := api.Group("/backups/:snapshotId", noStore)
 	backup.GET("/download", h.downloadBackup)
 	backup.HEAD("/download", h.downloadBackup)
@@ -112,7 +112,6 @@ func (h *Handler) Router() *echo.Echo {
 	api.POST("/pair/trust", h.startPairing)
 
 	device := api.Group("/devices/:udid", udidGuard)
-	device.GET("/backups", h.listBackups)
 	device.POST("/backup", h.startBackup)
 	device.POST("/verify", h.startVerify)
 	device.DELETE("/backups", h.deleteBackups)

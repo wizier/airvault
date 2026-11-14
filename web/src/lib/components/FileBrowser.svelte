@@ -112,7 +112,15 @@
   }
 </script>
 
-<Modal {title} {subtitle} closable size="tall" class="gap-3 overflow-hidden" {onclose}>
+<Modal
+  {title}
+  {subtitle}
+  closable
+  size="tall"
+  class="gap-3 overflow-hidden"
+  {onclose}
+  onback={preview ? () => (preview = null) : undefined}
+>
   <ErrorLine error={deleteError} size="xs" className="shrink-0" />
   <ErrorLine error={saveError} size="xs" className="shrink-0" />
 

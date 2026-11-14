@@ -17,7 +17,7 @@
   import { AUTO_BACKUP_EVERY, AUTO_VERIFY_EVERY, CLEANUP_THIN, deviceNoun } from '../device-ui';
   import { errorText } from '../error-text';
   import { formatBytes } from '../format';
-  import { deleteRestorePoints, restorePointResources } from '../stores.svelte';
+  import { deleteRestorePoints, restorePointsOf, restorePointsStore } from '../stores.svelte';
   import { Submit } from '../submit.svelte';
   import AutomaticTask from './AutomaticTask.svelte';
   import CleanupTimeline from './CleanupTimeline.svelte';
@@ -43,9 +43,8 @@
 
   const submit = new Submit('automatic_tasks_save_failed');
 
-  const points = $derived(restorePointResources.for(udid));
-  $effect(() => points.start());
-  const listed = $derived(points.data ?? []);
+  $effect(() => restorePointsStore.start());
+  const listed = $derived(restorePointsOf(udid));
 
   // The plan stays on screen while the next one loads, so the line doesn't jump.
   let plan = $state<string[] | null>(null);
@@ -186,7 +185,7 @@
 
       {#if planError}
         <ErrorLine error={planError} size="xs" />
-      {:else if plan === null || !points.ready}
+      {:else if plan === null || !restorePointsStore.ready}
         <p class="flex items-center gap-2 text-xs text-base-content/60">
           <span class="loading loading-spinner loading-xs"></span>
           Working out which backups stay…

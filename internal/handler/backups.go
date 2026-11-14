@@ -11,10 +11,6 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
-type restorePointsResponse struct {
-	RestorePoints []service.RestorePoint `json:"restorePoints"`
-}
-
 // POST /api/devices/:udid/backup
 func (h *Handler) startBackup(c *echo.Context) error {
 	runID, err := h.svc.StartBackup(c.Request().Context(), c.Param("udid"))
@@ -31,15 +27,6 @@ func (h *Handler) startVerify(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
-}
-
-// GET /api/devices/:udid/backups
-func (h *Handler) listBackups(c *echo.Context) error {
-	points, err := h.svc.RestorePoints(c.Request().Context(), c.Param("udid"))
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, restorePointsResponse{RestorePoints: points})
 }
 
 // Wiping the whole source requires an explicit all=true. An empty selector is

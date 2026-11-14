@@ -89,9 +89,7 @@ func (s *Service) SnapshotsReclaimable(ctx context.Context, udid string, snapsho
 }
 
 func (s *Service) OpenBackupExport(ctx context.Context, snapshotID string) (*BackupExport, error) {
-	return s.library.Export(ctx, snapshotID, func(source string, err error) {
-		s.noticeReadDamage(ctx, source, err)
-	})
+	return s.library.Export(ctx, snapshotID, s.damageNoticer(ctx))
 }
 
 // StartVerify checks that every object the source's restore points need still

@@ -23,15 +23,15 @@ func (h *Handler) startRestore(c *echo.Context) error {
 	return c.JSON(http.StatusAccepted, acceptedRunResponse{RunID: runID})
 }
 
-type restoreSourcesResponse struct {
-	RestoreSources []service.RestorePoint `json:"restoreSources"`
+type restorePointsResponse struct {
+	RestorePoints []service.RestorePoint `json:"restorePoints"`
 }
 
-// GET /api/restore-sources
-func (h *Handler) listRestoreSources(c *echo.Context) error {
-	sources, err := h.svc.RestoreSources(c.Request().Context())
+// GET /api/restore-points
+func (h *Handler) listRestorePoints(c *echo.Context) error {
+	points, err := h.svc.RestorePoints(c.Request().Context())
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, restoreSourcesResponse{RestoreSources: sources})
+	return c.JSON(http.StatusOK, restorePointsResponse{RestorePoints: points})
 }

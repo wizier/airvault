@@ -5,7 +5,7 @@
   import { cancelRun } from '../api/runs';
   import { liveRun } from '../events.svelte';
   import { errorText, type ErrorTextKey } from '../error-text';
-  import { restoreSourcesStore } from '../stores.svelte';
+  import { restorePointsOf, restorePointsStore } from '../stores.svelte';
   import { formatBytes, formatDateTime, formatSpeed, relativeTime } from '../format';
   import { now } from '../clock';
   import {
@@ -94,14 +94,14 @@
   const cleanupText = $derived(cleanupStatus(device.cleanup));
   const verifyStatus = $derived(autoVerifyStatus(device.autoVerify, $now));
 
-  $effect(() => restoreSourcesStore.start());
-  const sources = $derived(restoreSourcesStore.data ?? []);
-  const sourcesLoaded = $derived(restoreSourcesStore.ready);
+  $effect(() => restorePointsStore.start());
+  const sources = $derived(restorePointsStore.data ?? []);
+  const sourcesLoaded = $derived(restorePointsStore.ready);
 
   const stored = $derived(sources.find((source) => source.udid === udid) ?? null);
   const hasRestoreSource = $derived(sources.some((source) => !source.damage));
   // This phone's restore points, for the integrity summary.
-  const ownPoints = $derived(sources.filter((source) => source.udid === udid));
+  const ownPoints = $derived(restorePointsOf(udid));
   const damagedCount = $derived(ownPoints.filter((point) => point.damage).length);
   const damageNote = $derived(
     damagedCount === 0
@@ -303,58 +303,58 @@
 
     <ErrorLine error={actionError ?? runError} size="xs" />
 
-    <div class="flex flex-col gap-3 border-t border-base-300 pt-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="min-w-0">
-          <p class="flex items-center gap-2 text-sm font-semibold">
-            Encryption
-            {@render onOff(device.encrypted)}
-          </p>
-          <p class="mt-0.5 text-xs text-base-content/60">
-            {device.encrypted
-              ? `Backups are protected with a password set on the ${noun}`
-              : 'Saved passwords, Wi-Fi, call history and Health data are only included in encrypted backups'}
-          </p>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          {#if device.encrypted}
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm"
-              disabled={!!blocked}
-              title={blocked}
-              onclick={() => (passwordMode = 'change')}
-            >
-              <Icon name="key" size={14} /> Change password…
-            </button>
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm text-error"
-              disabled={!!blocked}
-              title={blocked}
-              onclick={() => (passwordMode = 'disable')}
-            >
-              <Icon name="unlocked" size={14} /> Turn off…
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="btn btn-outline btn-sm"
-              disabled={!!blocked}
-              title={blocked}
-              onclick={() => (passwordMode = 'enable')}
-            >
-              <Icon name="lock" size={14} /> Set password…
-            </button>
-          {/if}
-        </div>
-      </div>
-      {#if !reachable}
-        <p class="text-xs text-base-content/50">Connect the device (Wi-Fi or USB) to manage encryption.</p>
-      {/if}
-    </div>
-
     {#if !device.orphaned}
+      <div class="flex flex-col gap-3 border-t border-base-300 pt-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="flex items-center gap-2 text-sm font-semibold">
+              Encryption
+              {@render onOff(device.encrypted)}
+            </p>
+            <p class="mt-0.5 text-xs text-base-content/60">
+              {device.encrypted
+                ? `Backups are protected with a password set on the ${noun}`
+                : 'Saved passwords, Wi-Fi, call history and Health data are only included in encrypted backups'}
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            {#if device.encrypted}
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                disabled={!!blocked}
+                title={blocked}
+                onclick={() => (passwordMode = 'change')}
+              >
+                <Icon name="key" size={14} /> Change password…
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm text-error"
+                disabled={!!blocked}
+                title={blocked}
+                onclick={() => (passwordMode = 'disable')}
+              >
+                <Icon name="unlocked" size={14} /> Turn off…
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="btn btn-outline btn-sm"
+                disabled={!!blocked}
+                title={blocked}
+                onclick={() => (passwordMode = 'enable')}
+              >
+                <Icon name="lock" size={14} /> Set password…
+              </button>
+            {/if}
+          </div>
+        </div>
+        {#if !reachable}
+          <p class="text-xs text-base-content/50">Connect the device (Wi-Fi or USB) to manage encryption.</p>
+        {/if}
+      </div>
+
       <div class="flex flex-wrap items-start justify-between gap-3 border-t border-base-300 pt-4">
         <div class="min-w-0 flex-1 basis-64">
           <p class="text-sm font-semibold">Automatic tasks</p>

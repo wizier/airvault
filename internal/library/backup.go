@@ -19,7 +19,7 @@ import (
 // or its encryption differs from the device's: whatever the device doesn't resend stays as the base holds it.
 // When none opens the backup fails rather than silently go full.
 func (l *Library) LatestBase(ctx context.Context, source string, encrypted bool) (*iosbackup.Backup, error) {
-	snapshots, err := l.catalog.Backup.ListCompleteBySource(ctx, source)
+	snapshots, err := l.catalog.Backup.ListBySource(ctx, source)
 	if err != nil {
 		return nil, err
 	}

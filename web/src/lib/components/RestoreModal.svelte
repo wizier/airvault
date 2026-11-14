@@ -6,7 +6,7 @@
   import type { Device } from '../api/devices';
   import { deviceNoun } from '../device-ui';
   import { formatBytes, formatDateTime, relativeTime, shortUdid } from '../format';
-  import { hardwareResources, restoreSourcesStore } from '../stores.svelte';
+  import { hardwareResources, restorePointsStore } from '../stores.svelte';
   import { Submit } from '../submit.svelte';
   import Alert from './Alert.svelte';
   import ErrorLine from './ErrorLine.svelte';
@@ -32,8 +32,8 @@
   let modal: Modal;
   // Every on-disk backup that could be applied (own + other phones'), newest
   // first; a damaged one never can.
-  $effect(() => restoreSourcesStore.start());
-  const sources = $derived((restoreSourcesStore.data ?? []).filter((source) => !source.damage));
+  $effect(() => restorePointsStore.start());
+  const sources = $derived((restorePointsStore.data ?? []).filter((source) => !source.damage));
   // Preselected snapshot or this phone's newest; never auto-pick a foreign phone.
   // Mount-time snapshot — `sources` refreshes while open must not clobber picks.
   // svelte-ignore state_referenced_locally

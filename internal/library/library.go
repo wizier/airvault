@@ -45,11 +45,11 @@ func (l *Library) Summary(ctx context.Context) (map[string]storage.SourceSummary
 }
 
 func (l *Library) RestorePoints(ctx context.Context, source string) ([]model.Backup, error) {
-	return l.catalog.Backup.ListCompleteBySource(ctx, source)
+	return l.catalog.Backup.ListBySource(ctx, source)
 }
 
 func (l *Library) AllRestorePoints(ctx context.Context) ([]model.Backup, error) {
-	return l.catalog.Backup.ListComplete(ctx)
+	return l.catalog.Backup.List(ctx)
 }
 
 // Lookup reads a restore point's catalog row. The id comes from a user, so an
@@ -74,8 +74,9 @@ func snapshotDamaged() error {
 }
 
 // Open reads a restore point as an iOS backup; one that is not complete is
-// ErrIncomplete.
-func (l *Library) Open(ctx context.Context, id string) (*iosbackup.Backup, error) {
+// ErrIncomplete. Damage it finds goes to damaged: recording it takes a lease
+// on the source, which only the caller knows it holds.
+func (l *Library) Open(ctx context.Context, id string, damaged func(source string, err error)) (*iosbackup.Backup, error) {
 	snapshot, err := l.Lookup(ctx, id)
 	if err != nil {
 		return nil, err
@@ -89,12 +90,12 @@ func (l *Library) Open(ctx context.Context, id string) (*iosbackup.Backup, error
 		return nil, snapshotNotFound()
 	}
 	if err != nil {
-		l.NoticeDamage(ctx, snapshot.SourceUDID, err)
+		damaged(snapshot.SourceUDID, err)
 		return nil, fmt.Errorf("open snapshot: %w", err)
 	}
 	backup, err := iosbackup.Open(view)
 	if err != nil {
-		l.NoticeDamage(ctx, snapshot.SourceUDID, err)
+		damaged(snapshot.SourceUDID, err)
 		return nil, fmt.Errorf("%w: %w", ErrIncomplete, err)
 	}
 	return backup, nil

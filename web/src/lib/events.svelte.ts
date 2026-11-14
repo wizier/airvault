@@ -8,8 +8,7 @@ import {
   dropDevice,
   pairStateStore,
   patchDevice,
-  restoreSourcesStore,
-  restorePointResources,
+  restorePointsStore,
   statusStore,
 } from './stores.svelte';
 
@@ -98,8 +97,7 @@ function patchConnection(udid: string, connection: Connection): void {
 function resyncAll(): void {
   void statusStore.refresh();
   void devicesStore.refresh();
-  restoreSourcesStore.invalidate();
-  restorePointResources.invalidateActive();
+  restorePointsStore.invalidate();
   deviceAppsResources.invalidateActive();
 }
 
@@ -116,14 +114,13 @@ function dropRun(udid: string): void {
 
 /** The failed patch is instant feel only; the server folds the last failed run
  *  into the device overview. */
-function backupFinished(
+function runFinished(
   d: RunEvent & { errorCode?: string },
   state: 'completed' | 'failed' | 'cancelled',
 ): void {
   dropRun(d.udid);
   if (d.kind !== 'restore' && state === 'completed') {
-    restorePointResources.invalidate(d.udid);
-    restoreSourcesStore.invalidate();
+    restorePointsStore.invalidate();
   } else if (state === 'failed' && !(d.auto && d.errorCode === 'backup_not_confirmed')) {
     // Optimistic projection of the server's per-kind last-run error; the
     // refetch below confirms it. An unanswered automatic prompt is not one:
@@ -138,6 +135,8 @@ function backupFinished(
 }
 
 class EventsClient {
+  /** The stream cannot reach the backend; it keeps retrying. */
+  down = $state(false);
   #es: EventSource | null = null;
   #subscribers = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -156,6 +155,7 @@ class EventsClient {
       if (this.#subscribers <= 0) {
         this.#subscribers = 0;
         this.#close();
+        this.down = false;
       }
     };
   }
@@ -167,6 +167,7 @@ class EventsClient {
 
     let resync = reconnect;
     es.onopen = () => {
+      this.down = false;
       if (resync) resyncAll();
       resync = true;
     };
@@ -174,6 +175,7 @@ class EventsClient {
     // after a token change, a proxy's 502 during a restart) closes it for good.
     // Reopen it; the status refresh sends a 401 to the login page.
     es.onerror = () => {
+      this.down = true;
       if (es.readyState !== EventSource.CLOSED) return;
       this.#close();
       this.#reconnectTimer = setTimeout(() => this.#open(true), 3_000);
@@ -200,7 +202,7 @@ class EventsClient {
       refreshDevices();
     });
 
-    on<RunEvent>(es, 'backup.started', (d) => {
+    on<RunEvent>(es, 'run.started', (d) => {
       statusStore.mutate((s) => ({
         ...s,
         running: [
@@ -219,21 +221,20 @@ class EventsClient {
       refreshStatus();
     });
     // Mutate in place only, never refetch — the service already throttles these.
-    on<RunningProgress>(es, 'backup.progress', (d) => {
+    on<RunningProgress>(es, 'run.progress', (d) => {
       statusStore.mutate((s) => ({
         ...s,
         running: [...s.running.filter((r) => r.udid !== d.udid), d],
       }));
     });
-    on<RunEvent>(es, 'backup.completed', (d) => backupFinished(d, 'completed'));
-    on<RunFailedEvent>(es, 'backup.failed', (d) => backupFinished(d, 'failed'));
-    on<RunEvent>(es, 'backup.cancelled', (d) => backupFinished(d, 'cancelled'));
-    on<UdidEvent>(es, 'backup.catalog', (d) => {
-      restorePointResources.invalidate(d.udid);
-      restoreSourcesStore.invalidate();
+    on<RunEvent>(es, 'run.completed', (d) => runFinished(d, 'completed'));
+    on<RunFailedEvent>(es, 'run.failed', (d) => runFinished(d, 'failed'));
+    on<RunEvent>(es, 'run.cancelled', (d) => runFinished(d, 'cancelled'));
+    on<UdidEvent>(es, 'backup.catalog', () => {
+      restorePointsStore.invalidate();
       refreshDevices();
     });
-    on<UdidEvent>(es, 'backup.unlocked', (d) => restorePointResources.invalidate(d.udid));
+    on<UdidEvent>(es, 'backup.unlocked', () => restorePointsStore.invalidate());
     on<UdidEvent>(es, 'app.catalog', (d) => deviceAppsResources.invalidate(d.udid));
 
     on<UdidEvent>(es, 'pair.changed', () => refreshPairState());

@@ -23,8 +23,8 @@ func TestEventWireForm(t *testing.T) {
 		{pairableChanged("u"), "pair.changed", `{"udid":"u"}`},
 		{pairingChanged("u", false), "pair.changed", `{"udid":"u","paired":false}`},
 		{trustStep("run-1", "u", engine.TrustPending, ""), "pair.trust", `{"runId":"run-1","udid":"u","status":"trust_pending"}`},
-		{runStarted(restore, "snap"), "backup.started", `{"runId":"run-1","udid":"udid-1","kind":"restore","snapshotId":"snap"}`},
-		{runEnded(restore, runStateCompleted, "", 42), "backup.completed",
+		{runStarted(restore, "snap"), "run.started", `{"runId":"run-1","udid":"udid-1","kind":"restore","snapshotId":"snap"}`},
+		{runEnded(restore, runStateCompleted, "", 42), "run.completed",
 			`{"runId":"run-1","udid":"udid-1","state":"completed","kind":"restore","sizeBytes":42}`},
 		{muxerChanged(MuxerStatus{Up: true, USB: 1}), "muxer.changed", `{"up":true,"usb":1,"wifi":0}`},
 	} {

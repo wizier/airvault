@@ -183,13 +183,14 @@ func TestOpenTellsMissingFromIncomplete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if backup, err := lib.Open(ctx, testSnapshot); err != nil || backup.Info.DeviceName != "Test iPhone" {
+	notice := func(source string, err error) { lib.NoticeDamage(ctx, source, err) }
+	if backup, err := lib.Open(ctx, testSnapshot, notice); err != nil || backup.Info.DeviceName != "Test iPhone" {
 		t.Fatalf("Open = %+v, %v", backup, err)
 	}
-	if _, err := lib.Open(ctx, incompleteID); !errors.Is(err, ErrIncomplete) {
+	if _, err := lib.Open(ctx, incompleteID, notice); !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("incomplete backup: %v, want ErrIncomplete", err)
 	}
-	_, err := lib.Open(ctx, "eeeeeeee-0000-4000-8000-000000000005")
+	_, err := lib.Open(ctx, "eeeeeeee-0000-4000-8000-000000000005", notice)
 	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "snapshot_not_found" {
 		t.Fatalf("unknown snapshot: %v, want snapshot_not_found", err)
 	}
@@ -197,11 +198,12 @@ func TestOpenTellsMissingFromIncomplete(t *testing.T) {
 	if err := os.WriteFile(objectPath(root, source, fixtureFiles["Manifest.db"]), []byte("SQLITE fixture"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lib.Open(ctx, testSnapshot); !errors.Is(err, ErrIncomplete) {
+	if _, err := lib.Open(ctx, testSnapshot, notice); !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("damaged Manifest.db: %v, want ErrIncomplete", err)
 	}
-	// The read set the object aside, so the restore point is now marked.
-	_, err = lib.Open(ctx, testSnapshot)
+	// The read set the object aside and the caller had it recorded, so the
+	// restore point is now marked.
+	_, err = lib.Open(ctx, testSnapshot, notice)
 	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "backup_damaged" {
 		t.Fatalf("after the damaged read: %v, want backup_damaged", err)
 	}

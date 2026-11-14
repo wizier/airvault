@@ -125,7 +125,7 @@ func (s *Service) UnlockBackup(ctx context.Context, snapshotID, password string)
 }
 
 func (s *Service) unlockBackup(ctx context.Context, snapshotID, password string) (*iosbackup.Contents, error) {
-	backup, err := s.library.Open(ctx, snapshotID)
+	backup, err := s.library.Open(ctx, snapshotID, s.damageNoticer(ctx))
 	if errors.Is(err, library.ErrIncomplete) {
 		return nil, &domain.ValidationError{Code: domain.CodeBackupNotBrowsable}
 	}
@@ -210,6 +210,11 @@ func (r damageReporter) ReadAt(p []byte, offset int64) (int, error) {
 		r.report(err)
 	}
 	return n, err
+}
+
+// damageNoticer is noticeReadDamage as the library reports what a read found.
+func (s *Service) damageNoticer(ctx context.Context) func(source string, err error) {
+	return func(source string, err error) { s.noticeReadDamage(ctx, source, err) }
 }
 
 // noticeReadDamage records damage a read found, unless a backup, check or

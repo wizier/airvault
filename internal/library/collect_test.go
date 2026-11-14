@@ -174,7 +174,7 @@ func TestCollectMarksRestorePointsMissingObjects(t *testing.T) {
 	if changed, err := lib.recordHealth(ctx, source, scan); err != nil || len(changed) != 0 {
 		t.Fatalf("recorded again = %+v, %v; want no change", changed, err)
 	}
-	_, err = lib.Open(ctx, newerID)
+	_, err = lib.Open(ctx, newerID, func(string, error) {})
 	if validation, ok := errors.AsType[*domain.ValidationError](err); !ok || validation.Code != "backup_damaged" {
 		t.Fatalf("Open damaged = %v, want backup_damaged", err)
 	}

@@ -114,7 +114,7 @@ func (s *Service) buildRestorePlan(ctx context.Context, targetUDID string, opts 
 	if err != nil {
 		return nil, err
 	}
-	backup, err := s.library.Open(ctx, opts.SnapshotID)
+	backup, err := s.library.Open(ctx, opts.SnapshotID, s.damageNoticer(ctx))
 	if errors.Is(err, library.ErrIncomplete) {
 		return nil, &domain.ValidationError{Code: domain.CodeBackupNotRestorable}
 	}

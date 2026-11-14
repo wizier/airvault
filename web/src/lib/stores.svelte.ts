@@ -3,12 +3,7 @@
 
 import { errMsg, isOffline } from './api/client';
 import { listApps } from './api/apps';
-import {
-  deleteDeviceBackups,
-  deleteSnapshots,
-  listRestorePoints,
-  listRestoreSources,
-} from './api/backups';
+import { deleteDeviceBackups, deleteSnapshots, listRestorePoints, type RestorePoint } from './api/backups';
 import { eraseDevice, getDeviceBattery, getHardwareInfo, listDevices, unpairDevice, type Device } from './api/devices';
 import { getPairState } from './api/pairing';
 import { getStatus } from './api/system';
@@ -137,10 +132,6 @@ class KeyedResources<T> {
     this.#entries.get(key)?.invalidate();
   }
 
-  mutate(key: string, updater: (current: T) => T): void {
-    this.#entries.get(key)?.mutate(updater);
-  }
-
   invalidateActive(): void {
     for (const resource of this.#entries.values()) resource.invalidate();
   }
@@ -148,8 +139,7 @@ class KeyedResources<T> {
 
 export const statusStore = new Resource(getStatus);
 export const devicesStore = new Resource(listDevices);
-export const restoreSourcesStore = new Resource(listRestoreSources);
-export const restorePointResources = new KeyedResources(listRestorePoints);
+export const restorePointsStore = new Resource(listRestorePoints);
 export const deviceAppsResources = new KeyedResources(listApps);
 // A live hardware snapshot per device; read on demand (Refresh re-reads). Keyed
 // by udid so switching devices swaps to a fresh Resource, never stale identity.
@@ -160,6 +150,11 @@ export const batteryResources = new KeyedResources(getDeviceBattery);
 // Pairing-wizard device state: pair.changed / pair.trust / muxer.changed SSE
 // events drive refreshes — each pair-state read costs real lockdown traffic.
 export const pairStateStore = new Resource(getPairState);
+
+/** A device's restore points, the latest first; empty until the list loads. */
+export function restorePointsOf(udid: string): RestorePoint[] {
+  return (restorePointsStore.data ?? []).filter((point) => point.udid === udid);
+}
 
 // Mutations below apply their confirmed result to every affected list at once;
 // the SSE events that follow confirm it idempotently.
@@ -188,8 +183,7 @@ export async function erase(udid: string): Promise<void> {
 export async function deleteAllBackups(device: Device): Promise<void> {
   const udid = device.udid;
   await deleteDeviceBackups(udid);
-  restorePointResources.mutate(udid, () => []);
-  restoreSourcesStore.mutate((sources) => sources.filter((s) => s.udid !== udid));
+  restorePointsStore.mutate((points) => points.filter((p) => p.udid !== udid));
   if (device.orphaned) {
     dropDevice(udid);
     return;
@@ -208,6 +202,5 @@ export async function deleteAllBackups(device: Device): Promise<void> {
 export async function deleteRestorePoints(udid: string, snapshotIds: string[]): Promise<void> {
   await deleteSnapshots(udid, snapshotIds);
   const deleted = new Set(snapshotIds);
-  restorePointResources.mutate(udid, (points) => points.filter((p) => !deleted.has(p.snapshotId)));
-  restoreSourcesStore.mutate((sources) => sources.filter((s) => !deleted.has(s.snapshotId)));
+  restorePointsStore.mutate((points) => points.filter((p) => !deleted.has(p.snapshotId)));
 }

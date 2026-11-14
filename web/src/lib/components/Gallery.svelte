@@ -276,6 +276,7 @@
   size="wide"
   class="relative gap-3"
   {onclose}
+  onback={lightbox ? () => (lightbox = null) : undefined}
 >
   {#snippet headerActions()}
     {#if rescan}

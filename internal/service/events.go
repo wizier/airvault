@@ -80,13 +80,13 @@ type runStartEvent struct {
 
 // runStarted announces a backup, an integrity check, or a restore from snapshotID.
 func runStarted(run *runReservation, snapshotID string) events.Event {
-	return events.Event{Type: "backup.started", Data: runStartEvent{RunID: run.id, UDID: run.udid,
+	return events.Event{Type: "run.started", Data: runStartEvent{RunID: run.id, UDID: run.udid,
 		Kind: run.kind, SnapshotID: snapshotID}}
 }
 
 // runProgressed is transient: the next frame supersedes it.
 func runProgressed(progress RunProgress) events.Event {
-	return events.Event{Type: "backup.progress", Data: progress, Transient: true}
+	return events.Event{Type: "run.progress", Data: progress, Transient: true}
 }
 
 // runEndEvent carries only stable codes; the client localizes them.
@@ -101,9 +101,9 @@ type runEndEvent struct {
 }
 
 var runEndTypes = map[runState]string{
-	runStateCompleted: "backup.completed",
-	runStateCancelled: "backup.cancelled",
-	runStateFailed:    "backup.failed",
+	runStateCompleted: "run.completed",
+	runStateCancelled: "run.cancelled",
+	runStateFailed:    "run.failed",
 }
 
 func runEnded(run *runReservation, state runState, errorCode domain.Code, sizeBytes int64) events.Event {

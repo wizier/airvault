@@ -24,6 +24,7 @@
     size,
     class: cls = '',
     onclose,
+    onback,
     headerActions,
     children,
     actions,
@@ -37,6 +38,8 @@
     /** A ✕ in the header, for windows without a Cancel button. */
     closable?: boolean;
     locked?: boolean;
+    /** Set while a view is open inside the window: Esc leaves it, not the window. */
+    onback?: () => void;
     size?: keyof typeof SIZES;
     /** The layout of the box. */
     class?: string;
@@ -52,13 +55,19 @@
   export function close(): void {
     dialog.close();
   }
+
+  function cancel(event: Event): void {
+    if (!locked && !onback) return;
+    event.preventDefault();
+    if (!locked) onback?.();
+  }
 </script>
 
 <dialog
   class="modal"
   bind:this={dialog}
   {@attach (d) => d.showModal()}
-  oncancel={(event) => locked && event.preventDefault()}
+  oncancel={cancel}
   {onclose}
 >
   <div class={`modal-box ${size ? SIZES[size] : ''} ${cls}`}>
