@@ -284,6 +284,24 @@ func TestBuildSnapshot(t *testing.T) {
 	}
 }
 
+// A phone that does not say what it is fails the backup before the transfer:
+// its restore point would have no name, model or iOS version.
+func TestBuildSnapshotNeedsTheDeviceValues(t *testing.T) {
+	f := newTransferFixture(t)
+	f.phone.Withhold("")
+	f.mobileBackup(t, func(dl *iostest.DeviceLink) {
+		dl.Request()
+		dl.Finish(0, "")
+	})
+	if _, err := f.backup(context.Background(), nil); err == nil {
+		t.Fatal("a backup of a phone that names nothing succeeded")
+	}
+	if f.phone.Dialed(backup2.Service) != 0 {
+		t.Error("the transfer started")
+	}
+	f.syncEnded(t)
+}
+
 // A path outside the source is refused to the device and fails the backup.
 func TestBuildSnapshotConfinesTheDevice(t *testing.T) {
 	f := newTransferFixture(t)

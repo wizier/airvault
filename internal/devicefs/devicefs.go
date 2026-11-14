@@ -208,8 +208,8 @@ func (s *Session) Remove(path Path) error {
 	return afc.Remove(physical)
 }
 
-// ReadFile keeps the session open, unlike OpenFile, which consumes it for
-// streaming.
+// ReadFile reads a small file whole, as a batch of thumbnails does; OpenFile
+// streams a large one.
 func (s *Session) ReadFile(path Path) ([]byte, error) {
 	if path.String() == "" {
 		return nil, fmt.Errorf("cannot read the device root as a file")
@@ -221,11 +221,12 @@ func (s *Session) ReadFile(path Path) ([]byte, error) {
 	return afc.ReadSmall(physical)
 }
 
-// A File is sized when opened; bytes appended later are not part of it.
+// A File is sized when opened; bytes appended later are not part of it. It
+// reads on its session, and closing either closes both.
 type File struct {
-	afc   engine.AFCFile
-	size  int64
-	close func() error
+	afc     engine.AFCFile
+	size    int64
+	session *Session
 
 	readAhead *bufio.Reader
 	offset    int64 // logical position, moved by Seek and Read
@@ -236,28 +237,15 @@ func (s *Session) OpenFile(path Path) (*File, error) {
 	if path.String() == "" {
 		return nil, fmt.Errorf("cannot open the device root as a file")
 	}
-	physical, err := s.root.physical(path)
+	afc, physical, err := s.resolve(path)
 	if err != nil {
 		return nil, err
-	}
-	afc, release := s.take()
-	if afc == nil {
-		return nil, io.ErrClosedPipe
 	}
 	afcFile, err := afc.Open(physical)
 	if err != nil {
-		release()
 		return nil, err
 	}
-	return &File{
-		afc:  afcFile,
-		size: afcFile.Size(),
-		close: sync.OnceValue(func() error {
-			defer release()
-			return afcFile.Close()
-		}),
-		readAhead: bufio.NewReaderSize(afcFile, readAheadSize),
-	}, nil
+	return &File{afc: afcFile, size: afcFile.Size(), session: s, readAhead: bufio.NewReaderSize(afcFile, readAheadSize)}, nil
 }
 
 func (f *File) Read(buffer []byte) (int, error) {
@@ -303,4 +291,4 @@ func (f *File) Size() int64 { return f.size }
 
 func (f *File) ModTime() time.Time { return f.afc.ModTime() }
 
-func (f *File) Close() error { return f.close() }
+func (f *File) Close() error { return f.session.Close() }

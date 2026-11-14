@@ -135,17 +135,13 @@ func (s *Service) openDeviceDownload(ctx context.Context, udid string, root devi
 	if err != nil {
 		return nil, err
 	}
-	// OpenFile hands the AFC session over to the file, so release only frees
-	// the lease once the download closes.
 	file, err := session.OpenFile(devicePath)
 	if err != nil {
 		release()
 		return nil, newEngineActionError(domain.CodeDownloadFailed, err)
 	}
-	return &DeviceDownload{
-		File:    file,
-		cleanup: func() { _ = file.Close(); release() }, // both are idempotent
-	}, nil
+	// The file reads on the session, which release closes with the lease.
+	return &DeviceDownload{File: file, cleanup: release}, nil
 }
 
 func (s *Service) OpenAppFileDownload(ctx context.Context, udid, bundleID, devicePath string) (*DeviceDownload, error) {

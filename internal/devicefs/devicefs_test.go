@@ -63,7 +63,6 @@ func (f *fakeFile) SeekTo(offset int64) error {
 
 func (f *fakeFile) Size() int64        { return f.size }
 func (f *fakeFile) ModTime() time.Time { return time.Time{} }
-func (f *fakeFile) Close() error       { return nil }
 
 func managerForFile(file engine.AFCFile) *Manager {
 	return New(fakeOpener{open: func(context.Context) engine.AFCSession {
@@ -166,7 +165,7 @@ func TestManagerLimitsConcurrentSessionsPerDevice(t *testing.T) {
 			mu.Lock()
 			opened++
 			mu.Unlock()
-			return &fakeSession{}
+			return &fakeSession{file: newFakeFile("x", 1)}
 		}}
 		manager := New(opener)
 		var sessions []*Session
@@ -188,7 +187,16 @@ func TestManagerLimitsConcurrentSessionsPerDevice(t *testing.T) {
 			t.Fatal("fourth session bypassed the limiter")
 		default:
 		}
-		_ = sessions[0].Close()
+		// A file's Close ends its session, which frees the slot.
+		path, err := ParsePath("file.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := sessions[0].OpenFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = file.Close()
 		select {
 		case session := <-openedFourth:
 			if session == nil {

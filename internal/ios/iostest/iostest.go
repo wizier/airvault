@@ -260,6 +260,13 @@ func (d *Device) SetValue(domain, key string, value any) {
 	d.values[domain][key] = value
 }
 
+// Withhold has the device answer every value of domain as missing.
+func (d *Device) Withhold(domain string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.values, domain)
+}
+
 func (d *Device) Value(domain, key string) any {
 	d.mu.Lock()
 	defer d.mu.Unlock()

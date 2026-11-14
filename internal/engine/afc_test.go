@@ -62,8 +62,9 @@ func TestAFCSession(t *testing.T) {
 	}
 }
 
-// A file reads to io.EOF, seeks, and on Close hands its connection back:
-// the next session reuses it without a new handshake.
+// A file reads to io.EOF and seeks on its session, whose Close closes it and
+// hands the connection back: the next session reuses it without a new
+// handshake.
 func TestAFCFileAndPooling(t *testing.T) {
 	p, media := phoneWithMedia(t)
 	ctx := context.Background()
@@ -75,8 +76,8 @@ func TestAFCFileAndPooling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.List("/"); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("session after Open = %v, want io.ErrClosedPipe", err)
+	if _, err := session.List("/"); err != nil {
+		t.Fatalf("session with a file open: %v", err)
 	}
 	if file.Size() != 3<<20 || file.ModTime().IsZero() {
 		t.Fatalf("file size %d, modified %v", file.Size(), file.ModTime())
@@ -87,7 +88,10 @@ func TestAFCFileAndPooling(t *testing.T) {
 	if data, err := io.ReadAll(file); err != nil || string(data) != "vv" {
 		t.Fatalf("read after seek = %q, %v", data, err)
 	}
-	_ = file.Close()
+	_ = session.Close()
+	if _, err := file.Read(make([]byte, 1)); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("read after Close = %v, want io.ErrClosedPipe", err)
+	}
 	if media.OpenHandles() != 0 {
 		t.Fatal("the descriptor was left open")
 	}
@@ -122,7 +126,7 @@ func TestAFCCloseInterruptsARead(t *testing.T) {
 	var readErr error
 	wg.Go(func() { _, readErr = file.Read(make([]byte, 16)) })
 	time.Sleep(20 * time.Millisecond)
-	_ = file.Close()
+	_ = session.Close()
 	wg.Wait()
 	if !errors.Is(readErr, io.ErrClosedPipe) {
 		t.Fatalf("interrupted read = %v, want io.ErrClosedPipe", readErr)

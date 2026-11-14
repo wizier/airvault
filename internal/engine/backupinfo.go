@@ -43,7 +43,10 @@ func (e *Engine) backupInfo(ctx context.Context, udid string) (*iosbackup.Info, 
 		return nil, err
 	}
 	defer session.Close()
-	values, _ := session.Value[map[string]any](ctx, "", "")
+	values, err := session.Value[map[string]any](ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
 	value := func(key string) string {
 		text, _ := values[key].(string)
 		return text
