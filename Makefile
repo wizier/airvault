@@ -1,7 +1,9 @@
 GO              ?= go
 NPM             ?= npm
 DOCKER          ?= docker
-AIR             ?= $(GO) tool air
+# By version, not as a go.mod tool: that would bring air's own dependencies,
+# Hugo among them, into go.mod.
+AIR             ?= $(GO) run github.com/air-verse/air@v1.67.4
 GOLANGCI_LINT   ?= golangci-lint
 VERSION         ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE           ?= ghcr.io/wizier/airvault
